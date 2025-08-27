@@ -83,8 +83,10 @@ MacBot/
 └─ llama.cpp/           # cloned & built by Makefile
 ```
 
----
+## Documentation
 
-## License
-
-This starter code is MIT. Check respective upstream repos for their licenses and model licenses.
+- **[ENHANCED_FEATURES.md](ENHANCED_FEATURES.md)** - Comprehensive feature guide
+- **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API endpoint documentation  
+- **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Configuration options
+- **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup and contribution guide
