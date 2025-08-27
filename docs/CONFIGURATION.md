@@ -1,0 +1,226 @@
+# MacBot Configuration Guide
+
+## Overview
+MacBot uses a YAML configuration file (`config.yaml`) to manage all settings. This file controls model paths, voice settings, system prompts, and service configurations.
+
+## Configuration File Structure
+
+```yaml
+# Model Configuration
+models:
+  llm:
+    path: "llama.cpp/models/your-model.gguf"
+    context_length: 4096
+    threads: -1  # Use all available cores
+
+  stt:
+    model: "base.en"
+    language: "en"
+
+  tts:
+    voice: "en_us"
+    speed: 1.0
+
+# Voice Assistant Settings
+voice_assistant:
+  microphone_device: 0
+  speaker_device: 0
+  vad_threshold: 0.5
+  silence_timeout: 1.0
+  wake_word: "hey macbot"
+
+# System Prompts
+prompts:
+  system: |
+    You are MacBot, a helpful AI assistant running locally on macOS.
+    You have access to various tools and can help with tasks on this computer.
+
+  tool_use: |
+    When using tools, be concise and provide clear instructions.
+
+# Service Configuration
+services:
+  web_dashboard:
+    port: 3000
+    host: "0.0.0.0"
+
+  rag_server:
+    port: 8081
+    host: "localhost"
+    collection_name: "macbot_docs"
+
+  orchestrator:
+    check_interval: 10  # seconds
+    auto_restart: true
+
+# Tool Configuration
+tools:
+  enabled:
+    - web_search
+    - screenshot
+    - app_launcher
+    - system_monitor
+    - weather
+    - rag_search
+
+  web_search:
+    default_engine: "google"
+    timeout: 10
+
+  screenshot:
+    save_path: "~/Desktop"
+    format: "png"
+
+  app_launcher:
+    allowed_apps:
+      - Safari
+      - Terminal
+      - Finder
+      - Mail
+      - Messages
+```
+
+## Model Configuration
+
+### LLM Models
+- **Path**: Absolute or relative path to your GGUF model file
+- **Context Length**: Maximum context window (reduce for lower memory usage)
+- **Threads**: Number of CPU threads to use (-1 for all available)
+
+### STT Models
+- **Model**: Whisper model size (`tiny`, `base`, `small`, `medium`, `large`)
+- **Language**: Language code for transcription (`en`, `es`, `fr`, etc.)
+
+### TTS Models
+- **Voice**: Voice identifier for text-to-speech
+- **Speed**: Speech speed multiplier (0.5-2.0)
+
+## Voice Assistant Settings
+
+### Audio Configuration
+- **Microphone Device**: Audio input device index (0 for default)
+- **Speaker Device**: Audio output device index (0 for default)
+- **VAD Threshold**: Voice activity detection sensitivity (0.1-0.9)
+- **Silence Timeout**: Seconds of silence before processing
+- **Wake Word**: Optional wake word for activation
+
+## System Prompts
+
+### Customizing Prompts
+You can modify the system prompts to change MacBot's behavior:
+
+```yaml
+prompts:
+  system: |
+    You are MacBot, a specialized assistant for [your use case].
+    [Additional instructions here]
+
+  tool_use: |
+    When using tools, always [specific instructions].
+```
+
+## Service Configuration
+
+### Web Dashboard
+- **Port**: Port number for the web interface
+- **Host**: Bind address (0.0.0.0 for all interfaces)
+
+### RAG Server
+- **Port**: Port for the RAG service
+- **Host**: Bind address
+- **Collection Name**: Name for the vector database collection
+
+### Orchestrator
+- **Check Interval**: How often to check service health (seconds)
+- **Auto Restart**: Automatically restart failed services
+
+## Tool Configuration
+
+### Enabling/Disabling Tools
+Add or remove tools from the `enabled` list:
+
+```yaml
+tools:
+  enabled:
+    - web_search
+    - screenshot
+    # - app_launcher  # commented out to disable
+```
+
+### Tool-Specific Settings
+
+#### Web Search
+```yaml
+web_search:
+  default_engine: "google"  # or "duckduckgo", "bing"
+  timeout: 10  # seconds
+```
+
+#### Screenshot
+```yaml
+screenshot:
+  save_path: "~/Desktop"
+  format: "png"  # or "jpg"
+```
+
+#### App Launcher
+```yaml
+app_launcher:
+  allowed_apps:
+    - Safari
+    - Terminal
+    - Finder
+    # Add more apps as needed
+```
+
+## Environment Variables
+
+You can override configuration values using environment variables:
+
+```bash
+export LLAMA_MODEL_PATH="/path/to/model.gguf"
+export WHISPER_MODEL="small.en"
+export MACBOT_PORT=3001
+```
+
+## Configuration Validation
+
+The system validates your configuration on startup. Common issues:
+
+1. **Invalid model paths**: Ensure model files exist and are readable
+2. **Port conflicts**: Check if ports are already in use
+3. **Device indices**: Verify audio device indices are valid
+
+## Advanced Configuration
+
+### Custom Tools
+You can add custom tools by extending the configuration:
+
+```yaml
+tools:
+  custom_tools:
+    my_tool:
+      command: "python /path/to/script.py"
+      description: "My custom tool"
+```
+
+### Performance Tuning
+For better performance on lower-end hardware:
+
+```yaml
+models:
+  llm:
+    context_length: 2048  # Reduce context
+    threads: 4  # Limit CPU threads
+
+voice_assistant:
+  vad_threshold: 0.7  # Less sensitive VAD
+```
+
+## Configuration Reload
+
+Changes to `config.yaml` require restarting the services to take effect. Use the orchestrator to restart all services:
+
+```bash
+python orchestrator.py --restart
+```

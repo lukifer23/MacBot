@@ -1,0 +1,363 @@
+# MacBot Troubleshooting Guide
+
+## Overview
+This guide helps you diagnose and resolve common issues with MacBot. Start with the quick diagnostics, then follow the specific issue sections.
+
+## Quick Diagnostics
+
+### 1. Check Service Status
+```bash
+# Check all services
+python orchestrator.py --status
+
+# Check specific service
+python orchestrator.py --status --service llama_server
+```
+
+### 2. View Logs
+```bash
+# View main log
+tail -f macbot.log
+
+# Check service-specific logs
+tail -f llama.cpp/server.log
+tail -f whisper.cpp/whisper.log
+```
+
+### 3. Test Individual Components
+```bash
+# Test LLM server
+curl http://localhost:8080/health
+
+# Test web dashboard
+curl http://localhost:3000/api/stats
+
+# Test RAG server
+curl http://localhost:8081/health
+```
+
+## Common Issues
+
+### Voice Assistant Won't Start
+
+#### Symptom
+Voice assistant fails to start with microphone errors.
+
+#### Solutions
+1. **Check microphone permissions:**
+   ```bash
+   # Grant microphone access to Terminal
+   # System Settings → Privacy & Security → Microphone
+   ```
+
+2. **Verify audio devices:**
+   ```bash
+   # List available audio devices
+   python -c "import pyaudio; p = pyaudio.PyAudio(); [print(f'{i}: {p.get_device_info_by_index(i)[\"name\"]}') for i in range(p.get_device_count())]; p.terminate()"
+   ```
+
+3. **Update device indices in config:**
+   ```yaml
+   voice_assistant:
+     microphone_device: 1  # Try different indices
+     speaker_device: 1
+   ```
+
+#### Symptom
+Voice assistant starts but doesn't respond to voice.
+
+#### Solutions
+1. **Check VAD threshold:**
+   ```yaml
+   voice_assistant:
+     vad_threshold: 0.3  # Lower = more sensitive
+   ```
+
+2. **Test microphone input:**
+   ```bash
+   # Record a test audio file
+   rec test.wav trim 0 3
+
+   # Test with Whisper
+   ./whisper.cpp/build/bin/whisper-cli -m whisper.cpp/models/ggml-base.en.bin -f test.wav
+   ```
+
+3. **Check for background noise** - try in a quieter environment.
+
+### LLM Server Issues
+
+#### Symptom
+LLM server fails to start.
+
+#### Solutions
+1. **Check model file:**
+   ```bash
+   # Verify model exists and is readable
+   ls -lh llama.cpp/models/*.gguf
+
+   # Check file permissions
+   chmod 644 llama.cpp/models/*.gguf
+   ```
+
+2. **Insufficient memory:**
+   ```bash
+   # Check available RAM
+   vm_stat | grep "Pages free"
+
+   # Reduce context length in config
+   models:
+     llm:
+       context_length: 2048
+   ```
+
+3. **Port already in use:**
+   ```bash
+   # Find process using port 8080
+   lsof -i :8080
+
+   # Kill conflicting process
+   kill -9 <PID>
+   ```
+
+#### Symptom
+LLM responses are slow or stuttering.
+
+#### Solutions
+1. **Reduce context length:**
+   ```yaml
+   models:
+     llm:
+       context_length: 2048
+   ```
+
+2. **Limit CPU threads:**
+   ```yaml
+   models:
+     llm:
+       threads: 4
+   ```
+
+3. **Use smaller model** - try a 3B or 7B parameter model instead of larger ones.
+
+### Web Dashboard Issues
+
+#### Symptom
+Dashboard not accessible.
+
+#### Solutions
+1. **Check if service is running:**
+   ```bash
+   python orchestrator.py --status
+   ```
+
+2. **Verify port availability:**
+   ```bash
+   # Check if port 3000 is in use
+   lsof -i :3000
+   ```
+
+3. **Firewall settings** - ensure local connections are allowed.
+
+#### Symptom
+Dashboard loads but shows no data.
+
+#### Solutions
+1. **Check API endpoints:**
+   ```bash
+   curl http://localhost:3000/api/stats
+   curl http://localhost:3000/api/services
+   ```
+
+2. **Restart services:**
+   ```bash
+   python orchestrator.py --restart
+   ```
+
+### RAG System Issues
+
+#### Symptom
+Knowledge base search not working.
+
+#### Solutions
+1. **Check RAG server status:**
+   ```bash
+   curl http://localhost:8081/health
+   ```
+
+2. **Verify database files:**
+   ```bash
+   ls -lh rag_database/
+   ```
+
+3. **Rebuild knowledge base:**
+   ```bash
+   # Remove old database
+   rm -rf rag_database/
+
+   # Restart RAG server
+   python orchestrator.py --restart --service rag_server
+   ```
+
+### Build Issues
+
+#### Symptom
+Whisper or llama.cpp build fails.
+
+#### Solutions
+1. **Install dependencies:**
+   ```bash
+   brew install cmake ffmpeg portaudio python@3.11
+   ```
+
+2. **Clean and rebuild:**
+   ```bash
+   # For llama.cpp
+   cd llama.cpp
+   rm -rf build/
+   make clean
+   cd ..
+
+   # For whisper.cpp
+   cd whisper.cpp
+   rm -rf build/
+   make clean
+   cd ..
+   ```
+
+3. **Check Xcode command line tools:**
+   ```bash
+   xcode-select --install
+   ```
+
+### Performance Issues
+
+#### Symptom
+System is slow or unresponsive.
+
+#### Solutions
+1. **Monitor resource usage:**
+   ```bash
+   # Check CPU and memory
+   top -pid $(pgrep -f "python orchestrator.py")
+
+   # Check disk space
+   df -h
+   ```
+
+2. **Reduce model sizes:**
+   - Use smaller Whisper model (`tiny.en` or `base.en`)
+   - Use smaller LLM (3B-7B parameters)
+
+3. **Limit concurrent processes:**
+   ```yaml
+   services:
+     orchestrator:
+       max_processes: 3
+   ```
+
+### Audio Quality Issues
+
+#### Symptom
+Poor audio quality or distortion.
+
+#### Solutions
+1. **Check audio settings:**
+   ```yaml
+   voice_assistant:
+     sample_rate: 16000
+     channels: 1
+   ```
+
+2. **Test audio devices:**
+   ```bash
+   # Play test sound
+   say "Test audio output"
+
+   # Record and playback
+   rec test.wav trim 0 2 && play test.wav
+   ```
+
+3. **Update audio drivers** - ensure macOS is up to date.
+
+## Advanced Troubleshooting
+
+### Debug Mode
+Enable debug logging for detailed information:
+
+```bash
+export DEBUG=1
+python voice_assistant.py
+```
+
+### Manual Service Testing
+Test each component individually:
+
+```bash
+# Test LLM only
+cd llama.cpp
+./build/bin/llama-server --model models/your-model.gguf --port 8080
+
+# Test Whisper only
+cd whisper.cpp
+./build/bin/whisper-cli --model models/ggml-base.en.bin --file your-audio.wav
+
+# Test TTS only
+python -c "import kokoro; print('TTS working')"
+```
+
+### Log Analysis
+Search for specific errors:
+
+```bash
+# Search for errors in logs
+grep -i "error\|failed\|exception" macbot.log
+
+# Check for memory issues
+grep -i "memory\|out of memory" macbot.log
+```
+
+### System Resource Monitoring
+Monitor system resources during operation:
+
+```bash
+# Real-time monitoring
+while true; do
+  echo "$(date): CPU $(top -l 1 | grep "CPU usage")"
+  sleep 5
+done
+```
+
+## Getting Help
+
+If you can't resolve an issue:
+
+1. **Check the GitHub repository** for known issues
+2. **Collect diagnostic information:**
+   ```bash
+   # System info
+   system_profiler SPSoftwareDataType SPHardwareDataType
+
+   # Python environment
+   python --version
+   pip list
+
+   # Service versions
+   ./llama.cpp/build/bin/llama-server --version
+   ```
+3. **Include relevant log excerpts** when reporting issues
+
+## Prevention
+
+### Regular Maintenance
+- Keep models and software updated
+- Monitor disk space and clean logs periodically
+- Restart services weekly to clear memory leaks
+
+### Backup Important Data
+```bash
+# Backup configuration
+cp config.yaml config.yaml.backup
+
+# Backup knowledge base
+cp -r rag_database/ rag_database_backup/
+```
