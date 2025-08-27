@@ -1,0 +1,22 @@
+# Change anything here or leave defaults.
+llama:
+  server_url: "http://localhost:8080/v1/chat/completions"
+  temperature: 0.4
+  max_tokens: 200
+
+whisper:
+  bin: "whisper.cpp/build/bin/whisper-cli"
+  model: "whisper.cpp/models/ggml-base.en.bin"
+  language: "en"
+
+tts:
+  voice: "af_heart"    # try: af_heart, af_bella, af_nicole, am_adam, am_michael, etc.
+  speed: 1.0
+
+audio:
+  sample_rate: 16000
+  block_sec: 0.03
+  vad_threshold: 0.005
+  silence_hang: 0.6
+
+system_prompt: "You are a concise, helpful offline voice assistant."

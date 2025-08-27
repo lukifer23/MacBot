@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+whisper.cpp/
+llama.cpp/
+*.wav
+*.txt
+.DS_Store
+
+# Model files (use LFS)
+*.gguf
+*.bin
+*.onnx
+*.safetensors
+
+# Build artifacts
+build/
+*.log
+macbot.log
+
+# OS specific
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Data folders (optional - uncomment if you want to ignore)
+# rag_data/
+# rag_database/

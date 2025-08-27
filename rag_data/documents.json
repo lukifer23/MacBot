@@ -1,0 +1,27 @@
+{
+  "documents": {
+    "doc_1755632094_0": "MacBot is a local voice assistant that runs entirely offline on macOS. \n                It uses llama.cpp for language processing, Whisper for speech recognition, and Kokoro for text-to-speech. \n                The system includes tool calling capabilities for native macOS functions like opening apps, taking screenshots, \n                and web browsing through Safari.",
+    "doc_1755632098_1": "Voice Commands Available:\n                - \"search for [query]\" - Web search using Safari\n                - \"browse [url]\" - Open website in Safari\n                - \"open app [name]\" - Launch macOS applications\n                - \"take screenshot\" - Capture screen\n                - \"weather\" - Open Weather app\n                - \"system info\" - Get system statistics",
+    "doc_1755632098_2": "System Requirements:\n                - macOS 12.0+ (Monterey)\n                - Python 3.11+\n                - 8GB RAM minimum, 16GB recommended\n                - Apple Silicon (M1/M2/M3) with Metal support\n                - 5GB storage for models and dependencies"
+  },
+  "metadata": {
+    "doc_1755632094_0": {
+      "title": "MacBot Overview",
+      "type": "system_info",
+      "added": "2025-08-19T14:34:54.801567",
+      "length": 372
+    },
+    "doc_1755632098_1": {
+      "title": "Voice Commands Reference",
+      "type": "user_guide",
+      "added": "2025-08-19T14:34:58.627400",
+      "length": 368
+    },
+    "doc_1755632098_2": {
+      "title": "System Requirements",
+      "type": "technical",
+      "added": "2025-08-19T14:34:58.696668",
+      "length": 264
+    }
+  }
+}
