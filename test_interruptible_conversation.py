@@ -8,7 +8,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from audio_interrupt import AudioInterruptHandler
-from conversation_manager import ConversationManager
+from conversation_manager import ConversationManager, ConversationState
 import numpy as np
 import time
 
@@ -79,9 +79,9 @@ def test_integration():
     conversation_manager = ConversationManager()
 
     # Register callback
-    def on_state_change(state, context):
-        print(f"🔄 State changed to: {state}")
-        if state == "interrupted":
+    def on_state_change(context):
+        print(f"🔄 State changed to: {context.current_state.value}")
+        if context.current_state == ConversationState.INTERRUPTED:
             audio_handler.interrupt_playback()
 
     conversation_manager.register_state_callback(on_state_change)
