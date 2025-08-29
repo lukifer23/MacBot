@@ -127,14 +127,21 @@ class ToolCaller:
             return f"System info failed: {str(e)}"
     
     def search_knowledge_base(self, query: str) -> str:
-        """Search the local knowledge base using RAG"""
+        """Search the local knowledge base using RAG.
+
+        Returns the top matching documents from the knowledge base or an
+        error message if the RAG system is unavailable."""
         if not ENABLE_RAG:
             return "RAG is not enabled"
-        
+        if not rag_system:
+            return "Knowledge base is unavailable"
+
         try:
-            # This would integrate with your RAG system
-            # For now, return a placeholder
-            return f"Knowledge base search for '{query}' - RAG integration pending"
+            results = rag_system.search(query)
+            if not results:
+                return "No relevant information found in the knowledge base."
+            formatted = "\n".join(f"{i+1}. {doc}" for i, doc in enumerate(results))
+            return f"Top results:\n{formatted}"
         except Exception as e:
             return f"Knowledge base search failed: {str(e)}"
     
@@ -361,12 +368,8 @@ def llama_chat(user_text: str) -> str:
         
         # RAG search
         elif ENABLE_RAG and any(keyword in user_text_lower for keyword in ["knowledge", "document", "file"]):
-            if rag_system:
-                results = rag_system.search(user_text)
-                if results:
-                    return f"From your knowledge base: {' '.join(results[:2])}"
-                else:
-                    return "I couldn't find relevant information in your knowledge base."
+            result = tool_caller.search_knowledge_base(user_text)
+            return result
     
     # Regular chat if no tools needed
     payload = {
