@@ -23,6 +23,7 @@ if os.path.exists(CFG_PATH):
 else:
     CFG = {}
 
+
 def _get(path, default=None):
     cur = CFG
     for part in path.split("."):
@@ -32,29 +33,39 @@ def _get(path, default=None):
             return default
     return cur
 
+
 LLAMA_SERVER = _get("llama.server_url", "http://localhost:8080/v1/chat/completions")
-LLAMA_TEMP   = float(_get("llama.temperature", 0.4))
+LLAMA_TEMP = float(_get("llama.temperature", 0.4))
 LLAMA_MAXTOK = int(_get("llama.max_tokens", 200))
 
-SYSTEM_PROMPT = _get("system_prompt", "You are a helpful AI assistant with access to tools. You can search the web, browse websites, and access your knowledge base. Always be concise and helpful.")
+SYSTEM_PROMPT = _get(
+    "system_prompt",
+    "You are a helpful AI assistant with access to tools. You can search the web, browse websites, and access your knowledge base. Always be concise and helpful.",
+)
 
-WHISPER_BIN   = os.path.abspath(_get("whisper.bin", "whisper.cpp/build/bin/whisper-cli"))
-WHISPER_MODEL = os.path.abspath(_get("whisper.model", "whisper.cpp/models/ggml-base.en.bin"))
-WHISPER_LANG  = _get("whisper.language", "en")
+WHISPER_BIN = os.path.abspath(_get("whisper.bin", "whisper.cpp/build/bin/whisper-cli"))
+WHISPER_MODEL = os.path.abspath(
+    _get("whisper.model", "whisper.cpp/models/ggml-base.en.bin")
+)
+WHISPER_LANG = _get("whisper.language", "en")
 
-VOICE    = _get("tts.voice", "af_heart")
-SPEED    = float(_get("tts.speed", 1.0))
+VOICE = _get("tts.voice", "af_heart")
+SPEED = float(_get("tts.speed", 1.0))
 
-SAMPLE_RATE   = int(_get("audio.sample_rate", 16000))
-BLOCK_DUR     = float(_get("audio.block_sec", 0.03))
-VAD_THRESH    = float(_get("audio.vad_threshold", 0.005))
-SILENCE_HANG  = float(_get("audio.silence_hang", 0.6))
+SAMPLE_RATE = int(_get("audio.sample_rate", 16000))
+BLOCK_DUR = float(_get("audio.block_sec", 0.03))
+VAD_THRESH = float(_get("audio.vad_threshold", 0.005))
+SILENCE_HANG = float(_get("audio.silence_hang", 0.6))
 
 # Interruption settings
 INTERRUPTION_ENABLED = _get("voice_assistant.interruption.enabled", True)
-INTERRUPT_THRESHOLD = float(_get("voice_assistant.interruption.interrupt_threshold", 0.01))
+INTERRUPT_THRESHOLD = float(
+    _get("voice_assistant.interruption.interrupt_threshold", 0.01)
+)
 INTERRUPT_COOLDOWN = float(_get("voice_assistant.interruption.interrupt_cooldown", 0.5))
-CONVERSATION_TIMEOUT = int(_get("voice_assistant.interruption.conversation_timeout", 30))
+CONVERSATION_TIMEOUT = int(
+    _get("voice_assistant.interruption.conversation_timeout", 30)
+)
 CONTEXT_BUFFER_SIZE = int(_get("voice_assistant.interruption.context_buffer_size", 10))
 
 # Tool calling and RAG settings
@@ -65,11 +76,15 @@ RAG_DB_PATH = _get("rag.db_path", "rag_database")
 # ---- Optional: LiveKit turn detector ----
 try:
     from livekit.plugins.turn_detector.english import EnglishModel
+
     TURN_DETECT = EnglishModel()
     HAS_TURN_DETECT = True
 except Exception as e:
-    print(f"[warn] turn-detector unavailable ({e}); falling back to VAD-only endpointing")
+    print(
+        f"[warn] turn-detector unavailable ({e}); falling back to VAD-only endpointing"
+    )
     HAS_TURN_DETECT = False
+
 
 # ---- Tool calling system ----
 class ToolCaller:
@@ -81,91 +96,91 @@ class ToolCaller:
             "search_knowledge_base": self.search_knowledge_base,
             "open_app": self.open_app,
             "take_screenshot": self.take_screenshot,
-            "get_weather": self.get_weather
+            "get_weather": self.get_weather,
         }
-    
+
     def web_search(self, query: str) -> str:
         """Search the web using macOS Safari"""
         try:
             # Use macOS Safari to perform the search
             search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            
+
             # Open Safari with the search query
-            subprocess.run(['open', '-a', 'Safari', search_url], check=True)
-            
+            subprocess.run(["open", "-a", "Safari", search_url], check=True)
+
             return f"I've opened Safari and searched for '{query}'. The results should be displayed in your browser."
         except Exception as e:
             return f"Web search failed: {str(e)}"
-    
+
     def browse_website(self, url: str) -> str:
         """Open website in macOS Safari"""
         try:
             # Ensure URL has protocol
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
-            
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+
             # Open Safari with the URL
-            subprocess.run(['open', '-a', 'Safari', url], check=True)
-            
+            subprocess.run(["open", "-a", "Safari", url], check=True)
+
             return f"I've opened {url} in Safari for you to browse."
         except Exception as e:
             return f"Website browsing failed: {str(e)}"
-    
+
     def get_system_info(self) -> str:
         """Get current system information"""
         try:
             cpu_percent = psutil.cpu_percent(interval=1)
             memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
+            disk = psutil.disk_usage("/")
+
             return f"System Status: CPU {cpu_percent}%, RAM {memory.percent}%, Disk {disk.percent}%"
         except Exception as e:
             return f"System info failed: {str(e)}"
-    
+
     def search_knowledge_base(self, query: str) -> str:
         """Search the local knowledge base using RAG"""
         if not ENABLE_RAG:
             return "RAG is not enabled"
-        
+
         try:
             # This would integrate with your RAG system
             # For now, return a placeholder
             return f"Knowledge base search for '{query}' - RAG integration pending"
         except Exception as e:
             return f"Knowledge base search failed: {str(e)}"
-    
+
     def open_app(self, app_name: str) -> str:
         """Open a macOS application"""
         try:
             # Common app mappings
             app_mapping = {
-                'safari': 'Safari',
-                'chrome': 'Google Chrome',
-                'finder': 'Finder',
-                'terminal': 'Terminal',
-                'mail': 'Mail',
-                'messages': 'Messages',
-                'facetime': 'FaceTime',
-                'photos': 'Photos',
-                'music': 'Music',
-                'calendar': 'Calendar',
-                'notes': 'Notes',
-                'calculator': 'Calculator'
+                "safari": "Safari",
+                "chrome": "Google Chrome",
+                "finder": "Finder",
+                "terminal": "Terminal",
+                "mail": "Mail",
+                "messages": "Messages",
+                "facetime": "FaceTime",
+                "photos": "Photos",
+                "music": "Music",
+                "calendar": "Calendar",
+                "notes": "Notes",
+                "calculator": "Calculator",
             }
-            
+
             app_name_lower = app_name.lower()
             if app_name_lower in app_mapping:
                 app_to_open = app_mapping[app_name_lower]
-                subprocess.run(['open', '-a', app_to_open], check=True)
+                subprocess.run(["open", "-a", app_to_open], check=True)
                 return f"I've opened {app_to_open} for you."
             else:
                 # Try to open the app directly
-                subprocess.run(['open', '-a', app_name], check=True)
+                subprocess.run(["open", "-a", app_name], check=True)
                 return f"I've opened {app_name} for you."
-                
+
         except Exception as e:
             return f"Failed to open {app_name}: {str(e)}"
-    
+
     def take_screenshot(self) -> str:
         """Take a screenshot using macOS built-in tools"""
         try:
@@ -173,25 +188,29 @@ class ToolCaller:
             timestamp = int(time.time())
             filename = f"screenshot_{timestamp}.png"
             filepath = os.path.expanduser(f"~/Desktop/{filename}")
-            
+
             # Take screenshot of entire screen
-            subprocess.run(['screencapture', filepath], check=True)
-            
+            subprocess.run(["screencapture", filepath], check=True)
+
             return f"I've taken a screenshot and saved it to your Desktop as {filename}"
         except Exception as e:
             return f"Screenshot failed: {str(e)}"
-    
+
     def get_weather(self) -> str:
         """Get weather using macOS Weather app"""
         try:
             # Open Weather app
-            subprocess.run(['open', '-a', 'Weather'], check=True)
-            return "I've opened the Weather app for you to check the current conditions."
+            subprocess.run(["open", "-a", "Weather"], check=True)
+            return (
+                "I've opened the Weather app for you to check the current conditions."
+            )
         except Exception as e:
             return f"Weather app failed to open: {str(e)}"
 
+
 # Initialize tool caller
 tool_caller = ToolCaller() if ENABLE_TOOLS else None
+
 
 # ---- RAG System ----
 class RAGSystem:
@@ -201,85 +220,88 @@ class RAGSystem:
         self.embedding_model = None
         self.collection = None
         self.initialize_rag()
-    
+
     def initialize_rag(self):
         """Initialize the RAG system"""
         if not ENABLE_RAG:
             return
-        
+
         try:
             # Initialize ChromaDB
             self.client = chromadb.PersistentClient(path=self.db_path)
-            
+
             # Initialize embedding model
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            
+            self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
             # Create or get collection
             self.collection = self.client.get_or_create_collection(
-                name="knowledge_base",
-                metadata={"hnsw:space": "cosine"}
+                name="knowledge_base", metadata={"hnsw:space": "cosine"}
             )
-            
+
             print("✅ RAG system initialized")
         except Exception as e:
             print(f"❌ RAG initialization failed: {e}")
             self.client = None
-    
+
     def add_document(self, text: str, metadata: dict = None) -> bool:
         """Add a document to the knowledge base"""
         if not self.collection:
             return False
-        
+
         try:
             # Generate embedding
             embedding = self.embedding_model.encode(text).tolist()
-            
+
             # Add to collection
             self.collection.add(
                 embeddings=[embedding],
                 documents=[text],
                 metadatas=[metadata or {}],
-                ids=[f"doc_{int(time.time())}"]
+                ids=[f"doc_{int(time.time())}"],
             )
             return True
         except Exception as e:
             print(f"Failed to add document: {e}")
             return False
-    
+
     def search(self, query: str, n_results: int = 3) -> List[str]:
         """Search the knowledge base"""
         if not self.collection:
             return []
-        
+
         try:
             # Generate query embedding
             query_embedding = self.embedding_model.encode(query).tolist()
-            
+
             # Search collection
             results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results
+                query_embeddings=[query_embedding], n_results=n_results
             )
-            
-            return results['documents'][0] if results['documents'] else []
+
+            return results["documents"][0] if results["documents"] else []
         except Exception as e:
             print(f"RAG search failed: {e}")
             return []
 
+
 # Initialize RAG system
 rag_system = RAGSystem(RAG_DB_PATH) if ENABLE_RAG else None
+
 
 # ---- Simple energy VAD ----
 def is_voiced(block, thresh=VAD_THRESH):
     return np.sqrt(np.mean(block**2)) > thresh
 
+
 # ---- Audio I/O ----
 audio_q = queue.Queue()
+
 
 def _callback(indata, frames, time_info, status):
     if status:
         print(status, file=sys.stderr)
     audio_q.put(indata.copy())
+
 
 # ---- Whisper transcription ----
 def transcribe(wav_f32: np.ndarray) -> str:
@@ -290,7 +312,18 @@ def transcribe(wav_f32: np.ndarray) -> str:
     # call whisper.cpp
     # -nt = no timestamps, -l language
     # -of writes a sidecar .txt next to the input
-    cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-of", tmp]
+    cmd = [
+        WHISPER_BIN,
+        "-m",
+        WHISPER_MODEL,
+        "-f",
+        tmp,
+        "-l",
+        WHISPER_LANG,
+        "-nt",
+        "-of",
+        tmp,
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         print("[whisper] error:", proc.stderr, file=sys.stderr)
@@ -302,88 +335,125 @@ def transcribe(wav_f32: np.ndarray) -> str:
         text = ""
     return text
 
+
 # ---- Enhanced LLM chat with tool calling ----
 def llama_chat(user_text: str) -> str:
     # Check if user is requesting tool usage
     if ENABLE_TOOLS and tool_caller:
         # Enhanced keyword-based tool detection
         user_text_lower = user_text.lower()
-        
+
         # Web search
-        if "search" in user_text_lower and ("web" in user_text_lower or "for" in user_text_lower):
-            query = user_text_lower.replace("search", "").replace("for", "").replace("web", "").strip()
+        if "search" in user_text_lower and (
+            "web" in user_text_lower or "for" in user_text_lower
+        ):
+            query = (
+                user_text_lower.replace("search", "")
+                .replace("for", "")
+                .replace("web", "")
+                .strip()
+            )
             result = tool_caller.web_search(query)
             return f"I searched for '{query}'. {result}"
-        
+
         # Website browsing
-        elif "browse" in user_text_lower or "website" in user_text_lower or "open website" in user_text_lower:
+        elif (
+            "browse" in user_text_lower
+            or "website" in user_text_lower
+            or "open website" in user_text_lower
+        ):
             words = user_text.split()
             for word in words:
                 if word.startswith(("http://", "https://", "www.")):
                     result = tool_caller.browse_website(word)
                     return f"I browsed {word}. {result}"
-        
+
         # App opening
         elif "open" in user_text_lower and "app" in user_text_lower:
             app_name = user_text_lower.replace("open", "").replace("app", "").strip()
             result = tool_caller.open_app(app_name)
             return result
-        
+
         # Screenshot
         elif "screenshot" in user_text_lower or "take picture" in user_text_lower:
             result = tool_caller.take_screenshot()
             return result
-        
+
         # Weather
         elif "weather" in user_text_lower:
             result = tool_caller.get_weather()
             return result
-        
+
         # System info
         elif "system" in user_text_lower and "info" in user_text_lower:
             result = tool_caller.get_system_info()
             return f"Here's your system information: {result}"
-        
+
         # RAG search
-        elif ENABLE_RAG and any(keyword in user_text_lower for keyword in ["knowledge", "document", "file"]):
+        elif ENABLE_RAG and any(
+            keyword in user_text_lower for keyword in ["knowledge", "document", "file"]
+        ):
             if rag_system:
                 results = rag_system.search(user_text)
                 if results:
                     return f"From your knowledge base: {' '.join(results[:2])}"
                 else:
-                    return "I couldn't find relevant information in your knowledge base."
-    
+                    return (
+                        "I couldn't find relevant information in your knowledge base."
+                    )
+
     # Regular chat if no tools needed
+    history_msgs: List[Dict[str, str]] = []
+    if conversation_manager:
+        recent = conversation_manager.get_recent_history(limit=CONTEXT_BUFFER_SIZE)
+        for msg in recent:
+            sender = msg.get("sender")
+            if sender not in {"user", "assistant"}:
+                continue
+            content = msg.get("content", "").strip()
+            history_msgs.append({"role": sender, "content": content})
+
     payload = {
         "model": "local",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_text}
+            {"role": "user", "content": user_text},
         ],
         "temperature": LLAMA_TEMP,
-        "max_tokens": LLAMA_MAXTOK
+        "max_tokens": LLAMA_MAXTOK,
     }
-    
+
+    if history_msgs:
+        payload["messages"][1:1] = history_msgs
+
     try:
-        r = requests.post(LLAMA_SERVER, headers={"Authorization": "Bearer x"}, json=payload, timeout=120)
+        r = requests.post(
+            LLAMA_SERVER,
+            headers={"Authorization": "Bearer x"},
+            json=payload,
+            timeout=120,
+        )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"I'm having trouble connecting to the language model: {str(e)}"
 
+
 # ---- TTS Setup ----
 # Use pyttsx3 as a more compatible TTS engine
 try:
     import pyttsx3
+
     tts_engine = pyttsx3.init()
-    tts_engine.setProperty('rate', int(SPEED * 180))  # Adjust rate for pyttsx3
+    tts_engine.setProperty("rate", int(SPEED * 180))  # Adjust rate for pyttsx3
     HAS_KOKORO = False
     print("✅ Using pyttsx3 for TTS")
 except ImportError:
     print("⚠️  pyttsx3 not available, trying kokoro...")
     try:
         from kokoro import KPipeline
-        tts = KPipeline(lang_code='a')  # American English
+
+        tts = KPipeline(lang_code="a")  # American English
         HAS_KOKORO = True
         print("✅ Using Kokoro for TTS")
     except ImportError:
@@ -396,11 +466,10 @@ if INTERRUPTION_ENABLED:
     audio_handler = AudioInterruptHandler(
         sample_rate=24000,
         vad_threshold=INTERRUPT_THRESHOLD,
-        interrupt_cooldown=INTERRUPT_COOLDOWN
+        interrupt_cooldown=INTERRUPT_COOLDOWN,
     )
     conversation_manager = ConversationManager(
-        max_segments=CONTEXT_BUFFER_SIZE,
-        timeout_seconds=CONVERSATION_TIMEOUT
+        max_segments=CONTEXT_BUFFER_SIZE, timeout_seconds=CONVERSATION_TIMEOUT
     )
 
     # Register conversation state callback for audio interruption
@@ -415,6 +484,7 @@ else:
     # Fallback for when interruption is disabled
     audio_handler = None
     conversation_manager = None
+
 
 def speak(text: str):
     """Speak text using interruptible TTS system"""
@@ -431,8 +501,8 @@ def speak(text: str):
                 if conversation_manager.get_state() != "interrupted":
                     conversation_manager.end_conversation_segment()
 
-            tts_engine.connect('started-utterance', on_start)
-            tts_engine.connect('finished-utterance', on_end)
+            tts_engine.connect("started-utterance", on_start)
+            tts_engine.connect("finished-utterance", on_end)
 
             # Check if we should interrupt before starting
             if not audio_handler.should_interrupt():
@@ -459,26 +529,27 @@ def speak(text: str):
         except Exception as e:
             print(f"TTS Error: {e}")
 
+
 # ---- Web GUI ----
 def start_web_gui():
     """Start a simple web GUI for monitoring and interaction"""
     try:
         from flask import Flask, render_template_string, jsonify, request
         import threading
-        
+
         app = Flask(__name__)
-        
+
         # Global state for the web GUI
         gui_state = {
-            'transcription': '',
-            'response': '',
-            'system_stats': {},
-            'conversation_history': []
+            "transcription": "",
+            "response": "",
+            "system_stats": {},
+            "conversation_history": [],
         }
-        
-        @app.route('/')
+
+        @app.route("/")
         def home():
-            html = '''
+            html = """
             <!DOCTYPE html>
             <html>
             <head>
@@ -601,72 +672,75 @@ def start_web_gui():
                 </script>
             </body>
             </html>
-            '''
+            """
             return html
-        
-        @app.route('/api/stats')
+
+        @app.route("/api/stats")
         def get_stats():
             try:
                 cpu_percent = psutil.cpu_percent(interval=1)
                 memory = psutil.virtual_memory()
-                disk = psutil.disk_usage('/')
-                
-                return jsonify({
-                    'cpu': round(cpu_percent, 1),
-                    'memory': round(memory.percent, 1),
-                    'disk': round(disk.percent, 1)
-                })
+                disk = psutil.disk_usage("/")
+
+                return jsonify(
+                    {
+                        "cpu": round(cpu_percent, 1),
+                        "memory": round(memory.percent, 1),
+                        "disk": round(disk.percent, 1),
+                    }
+                )
             except:
-                return jsonify({'cpu': 0, 'memory': 0, 'disk': 0})
-        
-        @app.route('/api/chat', methods=['POST'])
+                return jsonify({"cpu": 0, "memory": 0, "disk": 0})
+
+        @app.route("/api/chat", methods=["POST"])
         def chat():
             try:
                 data = request.json
-                user_message = data.get('message', '')
-                
+                user_message = data.get("message", "")
+
                 # Get response from LLM
                 response = llama_chat(user_message)
-                
+
                 # Update GUI state
-                gui_state['conversation_history'].append({
-                    'user': user_message,
-                    'bot': response,
-                    'timestamp': time.time()
-                })
-                
-                return jsonify({'response': response})
+                gui_state["conversation_history"].append(
+                    {"user": user_message, "bot": response, "timestamp": time.time()}
+                )
+
+                return jsonify({"response": response})
             except Exception as e:
-                return jsonify({'response': f'Error: {str(e)}'})
-        
-        @app.route('/api/update_transcription')
+                return jsonify({"response": f"Error: {str(e)}"})
+
+        @app.route("/api/update_transcription")
         def update_transcription():
-            return jsonify({
-                'transcription': gui_state['transcription'],
-                'response': gui_state['response']
-            })
-        
+            return jsonify(
+                {
+                    "transcription": gui_state["transcription"],
+                    "response": gui_state["response"],
+                }
+            )
+
         # Start Flask in a separate thread
         def run_flask():
-            app.run(host='0.0.0.0', port=3000, debug=False)
-        
+            app.run(host="0.0.0.0", port=3000, debug=False)
+
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
-        
+
         print("🌐 Web GUI started at http://localhost:3000")
         return True
-        
+
     except ImportError:
         print("❌ Flask not available, web GUI disabled")
         return False
 
+
 # ---- Main loop ----
 def main():
     print("🚀 Starting Enhanced MacBot Voice Assistant...")
-    
+
     # Start web GUI if possible
     web_gui_started = start_web_gui()
-    
+
     print("Local Voice AI ready. Speak after the beep. (Ctrl+C to quit)")
     print("💡 Try saying:")
     print("   • 'search for weather' - Web search")
@@ -677,10 +751,16 @@ def main():
     print("   • 'system info' - System status")
     if web_gui_started:
         print("🌐 Web dashboard available at http://localhost:3000")
-    
+
     sd.play(np.zeros(1200), samplerate=24000, blocking=True)
 
-    stream = sd.InputStream(channels=1, samplerate=SAMPLE_RATE, dtype='float32', blocksize=int(SAMPLE_RATE*BLOCK_DUR), callback=_callback)
+    stream = sd.InputStream(
+        channels=1,
+        samplerate=SAMPLE_RATE,
+        dtype="float32",
+        blocksize=int(SAMPLE_RATE * BLOCK_DUR),
+        callback=_callback,
+    )
     stream.start()
 
     voiced = False
@@ -704,7 +784,8 @@ def main():
                     # simple delay + confirm (for demo)
                     if now - last_voice > 0.35:
                         transcript = transcribe(np.concatenate(seg))
-                        seg.clear(); voiced = False
+                        seg.clear()
+                        voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
                             reply = llama_chat(transcript)
@@ -713,7 +794,8 @@ def main():
                 else:
                     if now - last_voice > SILENCE_HANG:
                         transcript = transcribe(np.concatenate(seg))
-                        seg.clear(); voiced = False
+                        seg.clear()
+                        voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
                             reply = llama_chat(transcript)
@@ -724,6 +806,7 @@ def main():
     finally:
         stream.stop()
         stream.close()
+
 
 if __name__ == "__main__":
     main()
