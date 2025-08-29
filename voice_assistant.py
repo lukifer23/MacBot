@@ -379,13 +379,79 @@ def llama_chat(user_text: str) -> str:
             {"role": "user", "content": user_text}
         ],
         "temperature": LLAMA_TEMP,
-        "max_tokens": LLAMA_MAXTOK
+        "max_tokens": LLAMA_MAXTOK,
+        "stream": True
     }
-    
+
     try:
-        r = requests.post(LLAMA_SERVER, headers={"Authorization": "Bearer x"}, json=payload, timeout=120)
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        with requests.post(
+            LLAMA_SERVER,
+            headers={"Authorization": "Bearer x"},
+            json=payload,
+            stream=True,
+            timeout=120,
+        ) as r:
+            r.raise_for_status()
+
+            full_response = ""
+            spoken_len = 0
+
+            if INTERRUPTION_ENABLED and conversation_manager:
+                conversation_manager.start_response()
+
+            for line in r.iter_lines(decode_unicode=True):
+                if audio_handler and audio_handler.interrupt_requested:
+                    if INTERRUPTION_ENABLED and conversation_manager:
+                        conversation_manager.interrupt_response()
+                    break
+
+                if not line:
+                    continue
+
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                    except Exception:
+                        delta = ""
+
+                    if not delta:
+                        continue
+
+                    full_response += delta
+
+                    if INTERRUPTION_ENABLED and conversation_manager:
+                        conversation_manager.update_response(full_response)
+
+                    new_text = full_response[spoken_len:]
+                    spoken_len = len(full_response)
+
+                    if new_text.strip():
+                        def _speak_chunk(txt=new_text):
+                            try:
+                                if HAS_KOKORO and 'tts' in globals() and audio_handler:
+                                    audio = tts(txt)
+                                    if isinstance(audio, tuple):
+                                        audio_data = audio[0]
+                                    else:
+                                        audio_data = audio
+                                    audio_handler.play_audio(audio_data)
+                                elif 'tts_engine' in globals():
+                                    tts_engine.say(txt)
+                                    tts_engine.runAndWait()
+                            except Exception as e:
+                                print(f"TTS Error: {e}")
+
+                        threading.Thread(target=_speak_chunk, daemon=True).start()
+
+            if INTERRUPTION_ENABLED and conversation_manager and not (audio_handler and audio_handler.interrupt_requested):
+                conversation_manager.update_response(full_response, is_complete=True)
+
+            return full_response
     except Exception as e:
         return f"I'm having trouble connecting to the language model: {str(e)}"
 
