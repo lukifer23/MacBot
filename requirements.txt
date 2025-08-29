@@ -15,8 +15,11 @@ kokoro>=0.9.4
 # LiveKit agents for voice activity detection
 livekit-agents[turn-detector]>=1.2.0
 
-# Optional but recommended
+# WebSocket communication for message bus
 websockets>=10.0
+python-socketio>=5.0.0
+
+# Optional but recommended
 python-socketio>=5.0.0
 
 # Development dependencies (uncomment for development)

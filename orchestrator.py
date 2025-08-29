@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 
+# Import message bus
+from message_bus import MessageBus, start_message_bus, stop_message_bus
+from message_bus_client import MessageBusClient
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +37,13 @@ class MacBotOrchestrator:
         self.processes: Dict[str, subprocess.Popen] = {}
         self.threads: Dict[str, threading.Thread] = {}
         self.running = False
+        
+        # Message bus integration
+        self.message_bus = None
+        self.bus_client = None
+        
+        # Service status tracking
+        self.service_status: Dict[str, Dict] = {}
         
         # Signal handling
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -96,6 +107,132 @@ class MacBotOrchestrator:
                 'file_operations': True
             }
         }
+    
+    def start_message_bus(self) -> bool:
+        """Start the message bus system"""
+        try:
+            logger.info("Starting message bus...")
+            
+            # Start message bus server
+            self.message_bus = start_message_bus(
+                host=self.config.get('communication', {}).get('message_bus', {}).get('host', 'localhost'),
+                port=self.config.get('communication', {}).get('message_bus', {}).get('port', 8082)
+            )
+            
+            # Start orchestrator client
+            self.bus_client = MessageBusClient(
+                host=self.config.get('communication', {}).get('message_bus', {}).get('host', 'localhost'),
+                port=self.config.get('communication', {}).get('message_bus', {}).get('port', 8082),
+                service_type='orchestrator'
+            )
+            self.bus_client.start()
+            
+            # Register message handlers
+            self._register_message_handlers()
+            
+            # Wait for connection
+            timeout = 10
+            start_time = time.time()
+            while not self.bus_client.is_connected() and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+            
+            if self.bus_client.is_connected():
+                logger.info("✅ Message bus connected")
+                return True
+            else:
+                logger.error("❌ Message bus connection failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to start message bus: {e}")
+            return False
+    
+    def stop_message_bus(self):
+        """Stop the message bus system"""
+        try:
+            if self.bus_client:
+                self.bus_client.stop()
+                self.bus_client = None
+            
+            if self.message_bus:
+                stop_message_bus()
+                self.message_bus = None
+            
+            logger.info("✅ Message bus stopped")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop message bus: {e}")
+            return False
+    
+    def _register_message_handlers(self):
+        """Register message handlers for the orchestrator"""
+        if not self.bus_client:
+            return
+            
+        # Handle service registration
+        self.bus_client.register_handler('service_registered', self._handle_service_registered)
+        
+        # Handle status updates
+        self.bus_client.register_handler('status_update', self._handle_status_update)
+        
+        # Handle conversation messages
+        self.bus_client.register_handler('conversation_message', self._handle_conversation_message)
+        
+        # Handle errors
+        self.bus_client.register_handler('error', self._handle_error)
+    
+    async def _handle_service_registered(self, data: dict):
+        """Handle service registration messages"""
+        service_id = data.get('service_id')
+        service_type = data.get('service_type')
+        capabilities = data.get('capabilities', [])
+        
+        if service_id:
+            self.service_status[service_id] = {
+                'type': service_type,
+                'capabilities': capabilities,
+                'status': 'registered',
+                'last_seen': time.time()
+            }
+            
+            logger.info(f"Service registered: {service_type} ({service_id})")
+    
+    async def _handle_status_update(self, data: dict):
+        """Handle status update messages"""
+        service_id = data.get('client_id')
+        status = data.get('status', {})
+        
+        if service_id in self.service_status:
+            self.service_status[service_id].update({
+                'status': status,
+                'last_seen': time.time()
+            })
+    
+    async def _handle_conversation_message(self, data: dict):
+        """Handle conversation messages"""
+        text = data.get('text', '')
+        source = data.get('source', 'unknown')
+        service_type = data.get('service_type', 'unknown')
+        
+        logger.info(f"Conversation from {service_type}: {text[:100]}...")
+        
+        # Broadcast to other services
+        if self.bus_client:
+            self.bus_client.send_message({
+                'type': 'conversation_broadcast',
+                'original_source': service_type,
+                'text': text,
+                'timestamp': time.time()
+            })
+    
+    async def _handle_error(self, data: dict):
+        """Handle error messages"""
+        error = data.get('error', 'Unknown error')
+        service_type = data.get('service_type', 'unknown')
+        
+        logger.error(f"Error from {service_type}: {error}")
+        
+        # Could implement error recovery logic here
     
     def start_llama_server(self) -> bool:
         """Start the llama.cpp server"""
