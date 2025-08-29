@@ -10,7 +10,7 @@ import psutil
 import threading
 import requests
 from datetime import datetime
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, Response, stream_with_context
 import logging
 
 # Configure logging
@@ -523,10 +523,43 @@ DASHBOARD_HTML = """
     </div>
     
     <script>
-        // Auto-refresh stats and service status every 5 seconds
-        setInterval(updateStats, 5000);
-        setInterval(updateServiceStatus, 5000);
-        
+        // Attempt to use Server-Sent Events for real-time updates
+        let eventSource = null;
+
+        function initEventSource() {
+            try {
+                eventSource = new EventSource('/stream');
+                eventSource.onmessage = function(event) {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        if (payload.system_stats) {
+                            renderStats(payload.system_stats);
+                        }
+                        if (payload.service_status) {
+                            renderServiceStatus(payload.service_status);
+                        }
+                    } catch (err) {
+                        console.error('Failed to parse SSE data', err);
+                    }
+                };
+                eventSource.onerror = function() {
+                    console.warn('SSE connection failed, falling back to polling');
+                    eventSource.close();
+                    startPolling();
+                };
+            } catch (err) {
+                console.warn('SSE not supported, falling back to polling');
+                startPolling();
+            }
+        }
+
+        function startPolling() {
+            updateStats();
+            updateServiceStatus();
+            setInterval(updateStats, 5000);
+            setInterval(updateServiceStatus, 5000);
+        }
+
         // Voice recording state
         let isRecording = false;
         let mediaRecorder = null;
@@ -538,9 +571,54 @@ DASHBOARD_HTML = """
         let silenceThreshold = 2000; // 2 seconds of silence to auto-send
         let lastVoiceActivity = 0;
         
+        function renderStats(data) {
+            if (data.cpu !== undefined) {
+                document.getElementById('cpu-usage').textContent = data.cpu + '%';
+            }
+            if (data.ram !== undefined) {
+                document.getElementById('ram-usage').textContent = data.ram + '%';
+            }
+            if (data.disk !== undefined) {
+                document.getElementById('disk-usage').textContent = data.disk + '%';
+            }
+            if (data.network && data.network.bytes_sent !== undefined) {
+                document.getElementById('network-usage').textContent = formatBytes(data.network.bytes_sent + data.network.bytes_recv);
+            }
+        }
+
+        function renderServiceStatus(data) {
+            const llmStatus = document.getElementById('llm-status');
+            if (data.llama && data.llama.status === 'running') {
+                llmStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
+            } else {
+                llmStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
+            }
+
+            const voiceStatus = document.getElementById('voice-status');
+            if (data.voice_assistant && data.voice_assistant.status === 'running') {
+                voiceStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
+            } else {
+                voiceStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
+            }
+
+            const ragStatus = document.getElementById('rag-status');
+            if (data.rag && data.rag.status === 'running') {
+                ragStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
+            } else {
+                ragStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
+            }
+
+            const webStatus = document.getElementById('web-status');
+            if (data.web_gui && data.web_gui.status === 'running') {
+                webStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
+            } else {
+                webStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Running';
+            }
+        }
+
         function updateStats() {
             console.log('Updating stats...'); // Debug log
-            
+
             fetch('/api/stats')
                 .then(response => {
                     console.log('Stats response status:', response.status); // Debug log
@@ -551,33 +629,20 @@ DASHBOARD_HTML = """
                 })
                 .then(data => {
                     console.log('Stats data received:', data); // Debug log
-                    
-                    if (data.cpu !== undefined) {
-                        document.getElementById('cpu-usage').textContent = data.cpu + '%';
-                    }
-                    if (data.ram !== undefined) {
-                        document.getElementById('ram-usage').textContent = data.ram + '%';
-                    }
-                    if (data.disk !== undefined) {
-                        document.getElementById('disk-usage').textContent = data.disk + '%';
-                    }
-                    if (data.network && data.network.bytes_sent !== undefined) {
-                        document.getElementById('network-usage').textContent = formatBytes(data.network.bytes_sent + data.network.bytes_recv);
-                    }
+                    renderStats(data);
                 })
                 .catch(error => {
                     console.error('Stats update error:', error);
-                    // Show error in stats
                     document.getElementById('cpu-usage').textContent = 'Error';
                     document.getElementById('ram-usage').textContent = 'Error';
                     document.getElementById('disk-usage').textContent = 'Error';
                     document.getElementById('network-usage').textContent = 'Error';
                 });
         }
-        
+
         function updateServiceStatus() {
             console.log('Updating service status...'); // Debug log
-            
+
             fetch('/api/services')
                 .then(response => {
                     console.log('Service status response:', response.status); // Debug log
@@ -588,49 +653,17 @@ DASHBOARD_HTML = """
                 })
                 .then(data => {
                     console.log('Service status data:', data); // Debug log
-                    
-                    // Update LLM status
-                    const llmStatus = document.getElementById('llm-status');
-                    if (data.llama && data.llama.status === 'running') {
-                        llmStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
-                    } else {
-                        llmStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
-                    }
-                    
-                    // Update Voice Assistant status
-                    const voiceStatus = document.getElementById('voice-status');
-                    if (data.voice_assistant && data.voice_assistant.status === 'running') {
-                        voiceStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
-                    } else {
-                        voiceStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
-                    }
-                    
-                    // Update RAG status
-                    const ragStatus = document.getElementById('rag-status');
-                    if (data.rag && data.rag.status === 'running') {
-                        ragStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
-                    } else {
-                        ragStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
-                    }
-                    
-                    // Update Web Dashboard status
-                    const webStatus = document.getElementById('web-status');
-                    if (data.web_gui && data.web_gui.status === 'running') {
-                        webStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
-                    } else {
-                        webStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Running';
-                    }
+                    renderServiceStatus(data);
                 })
                 .catch(error => {
                     console.error('Service status update error:', error);
-                    // Show error in all statuses
                     document.getElementById('llm-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
                     document.getElementById('voice-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
                     document.getElementById('rag-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
                     document.getElementById('web-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
                 });
         }
-        
+
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
             const k = 1024;
@@ -939,6 +972,7 @@ DASHBOARD_HTML = """
         // Add proper event listeners instead of relying on onclick
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM loaded, setting up event listeners...');
+            initEventSource();
             
             const sendButton = document.getElementById('chat-button');
             const voiceButton = document.getElementById('voice-button');
@@ -1079,8 +1113,24 @@ def api_services():
         
     except Exception as e:
         logger.error(f"Error checking service status: {e}")
-    
+
     return jsonify(service_status)
+
+@app.route('/stream')
+def stream():
+    """SSE stream for system stats and service status"""
+    def event_stream():
+        while True:
+            stats = get_system_stats()
+            check_service_health()
+            data = json.dumps({
+                'system_stats': stats,
+                'service_status': service_status
+            })
+            yield f"data: {data}\n\n"
+            time.sleep(5)
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
