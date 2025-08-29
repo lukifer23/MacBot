@@ -15,6 +15,7 @@
 - **📚 RAG Knowledge Base**: Document ingestion and semantic search
 - **🐳 Docker Support**: Containerized deployment with docker-compose
 - **⚙️ Comprehensive Configuration**: YAML-based configuration system
+- **🎯 Interruptible Conversations**: Natural conversation flow with barge-in capability
 
 ## 🚀 Quick Start
 
@@ -183,6 +184,33 @@ MacBot supports various voice commands:
 - **"browse github.com"** - Open websites
 - **"what's the weather"** - Weather app
 
+## 🎤 Interruptible Conversations
+
+MacBot features natural conversation flow with barge-in capability:
+
+### How It Works
+- **Real-time Interruption**: Speak while MacBot is responding to interrupt
+- **Context Preservation**: Conversation history is maintained across interruptions
+- **Seamless Flow**: Natural back-and-forth conversation without waiting for responses to complete
+
+### Configuration
+Configure interruption settings in `config.yaml`:
+
+```yaml
+interruption:
+  enabled: true
+  voice_threshold: 0.3
+  cooldown_period: 1.0
+  interruption_timeout: 5.0
+  buffer_size: 100
+```
+
+### Usage
+- Start speaking naturally during MacBot's responses
+- The system will detect your voice and stop current speech
+- Your new request will be processed immediately
+- Previous conversation context is preserved
+
 ## 🔧 Development
 
 ### Setup Development Environment
@@ -234,6 +262,7 @@ docker run -v $(pwd):/app -p 3000:3000 macbot:dev
 - **macOS**: 12.0+ (Monterey or later)
 - **Python**: 3.9+
 - **Git LFS**: For model file management
+- **TTS Engine**: pyttsx3 (for interruptible text-to-speech)
 
 ## 🤝 Contributing
 
@@ -253,7 +282,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **llama.cpp** - Efficient LLM inference
 - **Whisper.cpp** - Fast speech recognition
-- **Kokoro** - High-quality text-to-speech
+- **pyttsx3** - Cross-platform text-to-speech with interruption support
 - **ChromaDB** - Vector database for RAG
 - **LiveKit** - Voice activity detection
 

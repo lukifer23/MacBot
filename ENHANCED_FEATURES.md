@@ -167,6 +167,43 @@ python web_dashboard.py
 "what can you do?"      → List capabilities
 ```
 
+## 🎤 Interruptible Conversation System
+
+### **Natural Conversation Flow**
+MacBot now supports natural, interruptible conversations with barge-in capability:
+
+- **Real-time Interruption**: Speak while MacBot is responding to interrupt immediately
+- **Context Preservation**: Full conversation history maintained across interruptions
+- **Seamless Experience**: Natural back-and-forth without waiting for responses to complete
+
+### **How It Works**
+1. **Voice Activity Detection**: System continuously monitors for user speech
+2. **Instant Interruption**: TTS playback stops immediately when user speaks
+3. **Context Management**: Previous conversation context is preserved
+4. **Immediate Processing**: New user input is processed without delay
+
+### **Configuration Options**
+```yaml
+interruption:
+  enabled: true                    # Enable/disable interruption
+  voice_threshold: 0.3            # Voice detection sensitivity (0.0-1.0)
+  cooldown_period: 1.0            # Minimum time between interruptions (seconds)
+  interruption_timeout: 5.0       # Max wait time for interruption (seconds)
+  buffer_size: 100                # Conversation history buffer size
+```
+
+### **Technical Implementation**
+- **Audio Interrupt Handler**: macOS AudioQueue-based TTS interruption
+- **Conversation Manager**: State machine with context buffering
+- **Thread-safe Operations**: Concurrent audio playback with interruption monitoring
+- **Fallback Mechanisms**: Graceful degradation when interruption is disabled
+
+### **Usage Examples**
+- Start speaking naturally during MacBot's responses
+- Interrupt with questions like "Wait, actually..." or "No, I meant..."
+- Continue conversations seamlessly without losing context
+- Natural conversation flow similar to human-to-human interaction
+
 ## 🚨 Troubleshooting
 
 ### **Common Issues**

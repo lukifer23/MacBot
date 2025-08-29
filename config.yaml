@@ -29,6 +29,14 @@ voice_assistant:
   vad_threshold: 0.005
   silence_hang: 0.6
   wake_word: "hey macbot"
+  
+  # Interruptible Conversation Settings
+  interruption:
+    enabled: true
+    interrupt_threshold: 0.01  # VAD threshold for interruption detection
+    interrupt_cooldown: 0.5    # Minimum time between interruptions (seconds)
+    conversation_timeout: 30   # Maximum conversation segment length (seconds)
+    context_buffer_size: 10    # Number of recent conversation segments to keep
 
 # System Prompts
 prompts:

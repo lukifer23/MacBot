@@ -11,6 +11,10 @@ from pathlib import Path
 import chromadb
 from sentence_transformers import SentenceTransformer
 
+# Import interruptible conversation system
+from audio_interrupt import AudioInterruptHandler
+from conversation_manager import ConversationManager
+
 # ---- Load config ----
 CFG_PATH = os.path.abspath("config.yaml")
 if os.path.exists(CFG_PATH):
@@ -45,6 +49,13 @@ SAMPLE_RATE   = int(_get("audio.sample_rate", 16000))
 BLOCK_DUR     = float(_get("audio.block_sec", 0.03))
 VAD_THRESH    = float(_get("audio.vad_threshold", 0.005))
 SILENCE_HANG  = float(_get("audio.silence_hang", 0.6))
+
+# Interruption settings
+INTERRUPTION_ENABLED = _get("voice_assistant.interruption.enabled", True)
+INTERRUPT_THRESHOLD = float(_get("voice_assistant.interruption.interrupt_threshold", 0.01))
+INTERRUPT_COOLDOWN = float(_get("voice_assistant.interruption.interrupt_cooldown", 0.5))
+CONVERSATION_TIMEOUT = int(_get("voice_assistant.interruption.conversation_timeout", 30))
+CONTEXT_BUFFER_SIZE = int(_get("voice_assistant.interruption.context_buffer_size", 10))
 
 # Tool calling and RAG settings
 ENABLE_TOOLS = _get("tools.enabled", True)
@@ -360,14 +371,93 @@ def llama_chat(user_text: str) -> str:
     except Exception as e:
         return f"I'm having trouble connecting to the language model: {str(e)}"
 
-# ---- Kokoro TTS ----
-from kokoro import KPipeline
-tts = KPipeline(lang_code='a')  # American English
+# ---- TTS Setup ----
+# Use pyttsx3 as a more compatible TTS engine
+try:
+    import pyttsx3
+    tts_engine = pyttsx3.init()
+    tts_engine.setProperty('rate', int(SPEED * 180))  # Adjust rate for pyttsx3
+    HAS_KOKORO = False
+    print("✅ Using pyttsx3 for TTS")
+except ImportError:
+    print("⚠️  pyttsx3 not available, trying kokoro...")
+    try:
+        from kokoro import KPipeline
+        tts = KPipeline(lang_code='a')  # American English
+        HAS_KOKORO = True
+        print("✅ Using Kokoro for TTS")
+    except ImportError:
+        print("❌ No TTS engine available")
+        HAS_KOKORO = False
+        tts = None
+
+# ---- Interruptible Conversation System ----
+if INTERRUPTION_ENABLED:
+    audio_handler = AudioInterruptHandler(
+        sample_rate=24000,
+        vad_threshold=INTERRUPT_THRESHOLD,
+        interrupt_cooldown=INTERRUPT_COOLDOWN
+    )
+    conversation_manager = ConversationManager(
+        max_segments=CONTEXT_BUFFER_SIZE,
+        timeout_seconds=CONVERSATION_TIMEOUT
+    )
+
+    # Register conversation state callback for audio interruption
+    def on_conversation_state_change(state, context):
+        """Handle conversation state changes"""
+        if state == "interrupted":
+            audio_handler.interrupt()
+            print("🎤 Conversation interrupted by user")
+
+    conversation_manager.register_state_callback(on_conversation_state_change)
+else:
+    # Fallback for when interruption is disabled
+    audio_handler = None
+    conversation_manager = None
 
 def speak(text: str):
-    # Stream chunks to avoid long blocking buffers
-    for _, _, audio in tts(text, voice=VOICE, speed=SPEED, split_pattern=r"[.?!]\s+"):
-        sd.play(audio, samplerate=24000, blocking=True)
+    """Speak text using interruptible TTS system"""
+    if INTERRUPTION_ENABLED and audio_handler and conversation_manager:
+        try:
+            # Start conversation segment
+            conversation_manager.start_conversation_segment()
+
+            # Use pyttsx3 for TTS with interruption capability
+            def on_start(name):
+                pass
+
+            def on_end(name):
+                if conversation_manager.get_state() != "interrupted":
+                    conversation_manager.end_conversation_segment()
+
+            tts_engine.connect('started-utterance', on_start)
+            tts_engine.connect('finished-utterance', on_end)
+
+            # Check if we should interrupt before starting
+            if not audio_handler.should_interrupt():
+                tts_engine.say(text)
+                tts_engine.runAndWait()
+            else:
+                # Audio was interrupted before starting
+                conversation_manager.interrupt_conversation()
+                print("🎤 Speech interrupted before starting")
+
+        except Exception as e:
+            print(f"Interruptible TTS Error: {e}")
+            # Fallback to original blocking method
+            try:
+                tts_engine.say(text)
+                tts_engine.runAndWait()
+            except Exception as e2:
+                print(f"Fallback TTS also failed: {e2}")
+    else:
+        # Original blocking TTS when interruption is disabled
+        try:
+            tts_engine.say(text)
+            tts_engine.runAndWait()
+        except Exception as e:
+            print(f"TTS Error: {e}")
 
 # ---- Web GUI ----
 def start_web_gui():
