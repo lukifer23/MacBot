@@ -13,7 +13,11 @@ from sentence_transformers import SentenceTransformer
 
 # Import interruptible conversation system
 from audio_interrupt import AudioInterruptHandler
-from conversation_manager import ConversationManager
+from conversation_manager import (
+    ConversationManager,
+    ConversationContext,
+    ConversationState,
+)
 
 # ---- Load config ----
 CFG_PATH = os.path.abspath("config.yaml")
@@ -281,6 +285,17 @@ def _callback(indata, frames, time_info, status):
         print(status, file=sys.stderr)
     audio_q.put(indata.copy())
 
+    if (
+        INTERRUPTION_ENABLED
+        and audio_handler
+        and conversation_manager
+        and conversation_manager.current_context
+        and conversation_manager.current_context.current_state
+        == ConversationState.SPEAKING
+    ):
+        if audio_handler.check_voice_activity(indata.reshape(-1)):
+            conversation_manager.interrupt_response()
+
 # ---- Whisper transcription ----
 def transcribe(wav_f32: np.ndarray) -> str:
     # write temp wav
@@ -399,15 +414,15 @@ if INTERRUPTION_ENABLED:
         interrupt_cooldown=INTERRUPT_COOLDOWN
     )
     conversation_manager = ConversationManager(
-        max_segments=CONTEXT_BUFFER_SIZE,
-        timeout_seconds=CONVERSATION_TIMEOUT
+        max_history=CONTEXT_BUFFER_SIZE,
+        context_timeout=CONVERSATION_TIMEOUT
     )
 
     # Register conversation state callback for audio interruption
-    def on_conversation_state_change(state, context):
+    def on_conversation_state_change(context: ConversationContext):
         """Handle conversation state changes"""
-        if state == "interrupted":
-            audio_handler.interrupt()
+        if context.current_state == ConversationState.INTERRUPTED:
+            audio_handler.interrupt_playback()
             print("🎤 Conversation interrupted by user")
 
     conversation_manager.register_state_callback(on_conversation_state_change)
@@ -420,28 +435,25 @@ def speak(text: str):
     """Speak text using interruptible TTS system"""
     if INTERRUPTION_ENABLED and audio_handler and conversation_manager:
         try:
-            # Start conversation segment
-            conversation_manager.start_conversation_segment()
+            conversation_manager.start_response(text)
 
             # Use pyttsx3 for TTS with interruption capability
             def on_start(name):
                 pass
 
             def on_end(name):
-                if conversation_manager.get_state() != "interrupted":
-                    conversation_manager.end_conversation_segment()
+                if (
+                    conversation_manager.current_context
+                    and conversation_manager.current_context.current_state
+                    != ConversationState.INTERRUPTED
+                ):
+                    conversation_manager.complete_response()
 
             tts_engine.connect('started-utterance', on_start)
             tts_engine.connect('finished-utterance', on_end)
 
-            # Check if we should interrupt before starting
-            if not audio_handler.should_interrupt():
-                tts_engine.say(text)
-                tts_engine.runAndWait()
-            else:
-                # Audio was interrupted before starting
-                conversation_manager.interrupt_conversation()
-                print("🎤 Speech interrupted before starting")
+            tts_engine.say(text)
+            tts_engine.runAndWait()
 
         except Exception as e:
             print(f"Interruptible TTS Error: {e}")
@@ -707,6 +719,9 @@ def main():
                         seg.clear(); voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+                            if INTERRUPTION_ENABLED and conversation_manager:
+                                conversation_manager.start_conversation()
+                                conversation_manager.add_user_input(transcript)
                             reply = llama_chat(transcript)
                             print(f"[BOT] {reply}\n")
                             speak(reply)
@@ -716,6 +731,9 @@ def main():
                         seg.clear(); voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+                            if INTERRUPTION_ENABLED and conversation_manager:
+                                conversation_manager.start_conversation()
+                                conversation_manager.add_user_input(transcript)
                             reply = llama_chat(transcript)
                             print(f"[BOT] {reply}\n")
                             speak(reply)
