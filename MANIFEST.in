@@ -1,0 +1,38 @@
+# Include configuration files
+include config.yaml
+include requirements.txt
+include pyproject.toml
+
+# Include documentation
+include README.md
+include ENHANCED_FEATURES.md
+recursive-include docs *.md
+
+# Include scripts
+include *.sh
+include Makefile
+
+# Include data files (but not large model files)
+graft rag_data
+graft rag_database
+
+# Exclude development and build files
+exclude .git*
+exclude .DS_Store
+exclude *.pyc
+exclude __pycache__
+exclude .pytest_cache
+exclude .mypy_cache
+exclude .venv
+exclude build
+exclude dist
+exclude *.egg-info
+
+# Exclude large binary files and build artifacts
+exclude llama.cpp/build
+exclude whisper.cpp/build
+exclude *.gguf
+exclude *.bin
+exclude *.onnx
+exclude *.safetensors
+exclude *.log

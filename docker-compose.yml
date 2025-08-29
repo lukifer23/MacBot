@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  macbot-orchestrator:
+    build: .
+    container_name: macbot-orchestrator
+    ports:
+      - "3000:3000"  # Web dashboard
+      - "8080:8080"  # LLM server
+      - "8081:8081"  # RAG server
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./rag_data:/app/rag_data
+      - ./rag_database:/app/rag_database
+      - ./logs:/app/logs
+      - ./llama.cpp/models:/app/llama.cpp/models:ro  # Mount model files as read-only
+      - ./whisper.cpp/models:/app/whisper.cpp/models:ro
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=INFO
+    depends_on:
+      - macbot-llm
+      - macbot-rag
+    command: python orchestrator.py
+    restart: unless-stopped
+
+  macbot-llm:
+    build: .
+    container_name: macbot-llm
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./llama.cpp/models:/app/llama.cpp/models:ro
+    environment:
+      - LLAMA_MODEL_PATH=/app/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+      - LLAMA_CONTEXT_LENGTH=4096
+      - LLAMA_THREADS=4
+    command: >
+      sh -c "
+        if [ -f /app/llama.cpp/models/*.gguf ]; then
+          cd llama.cpp && ./build/bin/llama-server \
+            -m /app/llama.cpp/models/*.gguf \
+            -c 4096 \
+            -t 4 \
+            --port 8080
+        else
+          echo 'No GGUF model found. Please mount model files to /app/llama.cpp/models/'
+          exit 1
+        fi
+      "
+    restart: unless-stopped
+
+  macbot-rag:
+    build: .
+    container_name: macbot-rag
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./rag_data:/app/rag_data
+      - ./rag_database:/app/rag_database
+    environment:
+      - RAG_SERVER_PORT=8081
+      - RAG_DATA_DIR=/app/rag_data
+    command: python rag_server.py
+    restart: unless-stopped
+
+  macbot-voice:
+    build: .
+    container_name: macbot-voice
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./rag_data:/app/rag_data
+      - ./rag_database:/app/rag_database
+    environment:
+      - PYTHONPATH=/app
+      - AUDIO_SAMPLE_RATE=16000
+    devices:
+      - /dev/snd:/dev/snd  # Audio devices (Linux)
+    command: python voice_assistant.py
+    restart: unless-stopped
+    depends_on:
+      - macbot-orchestrator
+
+volumes:
+  rag_data:
+    driver: local
+  rag_database:
+    driver: local
+  logs:
+    driver: local
+
+networks:
+  default:
+    name: macbot-network

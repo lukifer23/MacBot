@@ -1,22 +1,112 @@
-# Change anything here or leave defaults.
-llama:
-  server_url: "http://localhost:8080/v1/chat/completions"
-  temperature: 0.4
-  max_tokens: 200
+# MacBot Configuration File
+# This file controls all aspects of MacBot's behavior
 
-whisper:
-  bin: "whisper.cpp/build/bin/whisper-cli"
-  model: "whisper.cpp/models/ggml-base.en.bin"
-  language: "en"
+# Model Configuration
+models:
+  llm:
+    path: "llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    context_length: 4096
+    threads: -1  # Use all available cores
+    server_url: "http://localhost:8080/v1/chat/completions"
+    temperature: 0.4
+    max_tokens: 200
 
-tts:
-  voice: "af_heart"    # try: af_heart, af_bella, af_nicole, am_adam, am_michael, etc.
-  speed: 1.0
+  stt:
+    bin: "whisper.cpp/build/bin/whisper-cli"
+    model: "whisper.cpp/models/ggml-base.en.bin"
+    language: "en"
 
-audio:
+  tts:
+    voice: "af_heart"  # try: af_heart, af_bella, af_nicole, am_adam, am_michael, etc.
+    speed: 1.0
+
+# Voice Assistant Settings
+voice_assistant:
+  microphone_device: 0
+  speaker_device: 0
   sample_rate: 16000
   block_sec: 0.03
   vad_threshold: 0.005
   silence_hang: 0.6
+  wake_word: "hey macbot"
 
-system_prompt: "You are a concise, helpful offline voice assistant."
+# System Prompts
+prompts:
+  system: |
+    You are MacBot, a helpful AI assistant running locally on macOS.
+    You have access to various tools and can help with tasks on this computer.
+    Always be concise and helpful in your responses.
+
+  tool_use: |
+    When using tools, be concise and provide clear instructions.
+    Explain what you're doing and why.
+
+# Service Configuration
+services:
+  web_dashboard:
+    port: 3000
+    host: "0.0.0.0"
+
+  rag_server:
+    port: 8081
+    host: "localhost"
+    collection_name: "macbot_docs"
+    data_dir: "rag_data"
+
+  orchestrator:
+    check_interval: 10  # seconds
+    auto_restart: true
+
+# Tool Configuration
+tools:
+  enabled:
+    - web_search
+    - screenshot
+    - app_launcher
+    - system_monitor
+    - weather
+    - rag_search
+
+  web_search:
+    default_engine: "google"
+    timeout: 10
+
+  screenshot:
+    save_path: "~/Desktop"
+    format: "png"
+
+  app_launcher:
+    allowed_apps:
+      - Safari
+      - Terminal
+      - Finder
+      - Mail
+      - Messages
+      - FaceTime
+      - Photos
+      - Music
+      - Calendar
+      - Notes
+      - Calculator
+
+  system_monitor:
+    update_interval: 5
+
+  weather:
+    default_location: ""
+
+  rag_search:
+    max_results: 5
+    similarity_threshold: 0.7
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "macbot.log"
+
+# Performance Tuning
+performance:
+  max_concurrent_requests: 3
+  memory_limit_mb: 4096
+  cpu_limit_percent: 80
