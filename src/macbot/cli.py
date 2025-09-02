@@ -51,17 +51,17 @@ Examples:
 
     try:
         if args.command == 'orchestrator':
-            import orchestrator
-            # The orchestrator module runs when imported
+            from macbot.orchestrator import main as orchestrator_main
+            orchestrator_main()
         elif args.command == 'dashboard':
-            import web_dashboard
-            # The web_dashboard module runs when imported
+            from macbot.web_dashboard import main as dashboard_main
+            dashboard_main()
         elif args.command == 'rag':
-            import rag_server
-            # The rag_server module runs when imported
+            from macbot.rag_server import main as rag_main
+            rag_main()
         elif args.command == 'voice':
-            import voice_assistant
-            # The voice_assistant module runs when imported
+            from macbot.voice_assistant import main as voice_main
+            voice_main()
     except ImportError as e:
         print(f"Error importing module: {e}")
         print("Make sure all dependencies are installed: pip install -r requirements.txt")

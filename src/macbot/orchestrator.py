@@ -9,7 +9,7 @@ import signal
 import subprocess
 import threading
 
-# Add src/ to path for imports
+# Add src/ to path for imports if run directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import psutil
 import yaml
@@ -18,23 +18,25 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 
-# Import message bus
-from message_bus import MessageBus, start_message_bus, stop_message_bus
-from message_bus_client import MessageBusClient
+from .message_bus import MessageBus, start_message_bus, stop_message_bus
+from .message_bus_client import MessageBusClient
+from . import config as CFG
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('macbot.log'),
+        logging.FileHandler('logs/macbot.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 class MacBotOrchestrator:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = None):
+        if config_path is None:
+            config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml')
         self.config_path = config_path
         self.config = self.load_config()
         self.processes: Dict[str, subprocess.Popen] = {}
@@ -255,8 +257,9 @@ class MacBotOrchestrator:
             # Wait for server to be ready
             for _ in range(30):  # 30 second timeout
                 try:
-                    # llama.cpp doesn't have a health endpoint, check if it's listening on port 8080
-                    response = requests.get('http://localhost:8080/v1/models', timeout=1)
+                    # llama.cpp doesn't have a health endpoint, check if it's listening
+                    from . import config as _cfg
+                    response = requests.get(_cfg.get_llm_models_endpoint(), timeout=1)
                     if response.status_code == 200:
                         logger.info("✅ llama.cpp server ready")
                         return True
@@ -273,7 +276,7 @@ class MacBotOrchestrator:
     def start_web_gui(self) -> bool:
         """Start the web GUI dashboard"""
         try:
-            cmd = ['python', 'web_dashboard.py']
+            cmd = ['python', '-m', 'macbot.web_dashboard']
             
             logger.info("Starting web GUI...")
             process = subprocess.Popen(
@@ -307,7 +310,7 @@ class MacBotOrchestrator:
             return True
             
         try:
-            cmd = ['python', 'rag_server.py']
+            cmd = ['python', '-m', 'macbot.rag_server']
             logger.info("Starting RAG service...")
             process = subprocess.Popen(
                 cmd,
@@ -319,7 +322,8 @@ class MacBotOrchestrator:
             # Wait for RAG service to be ready
             for _ in range(15):  # 15 second timeout
                 try:
-                    response = requests.get('http://localhost:8001/health', timeout=1)
+                    host, port = CFG.get_rag_host_port()
+                    response = requests.get(f"http://{host}:{port}/health", timeout=1)
                     if response.status_code == 200:
                         logger.info("✅ RAG service ready")
                         return True
@@ -336,7 +340,7 @@ class MacBotOrchestrator:
     def start_voice_assistant(self) -> bool:
         """Start the enhanced voice assistant"""
         try:
-            cmd = ['python', 'voice_assistant.py']
+            cmd = ['python', '-m', 'macbot.voice_assistant']
             logger.info("Starting enhanced voice assistant...")
             process = subprocess.Popen(
                 cmd,
@@ -440,9 +444,10 @@ class MacBotOrchestrator:
         self.threads['monitor'] = monitor_thread
         
         logger.info("🎉 All services started successfully!")
-        logger.info(f"🌐 Web GUI: http://localhost:{self.config['web_gui']['port']}")
+        host, port = CFG.get_web_dashboard_host_port()
+        logger.info(f"🌐 Web GUI: http://{host}:{port}")
         logger.info(f"🤖 Voice Assistant: Ready")
-        logger.info(f"🔍 RAG Service: {'Ready' if self.config['rag']['enabled'] else 'Disabled'}")
+        logger.info(f"🔍 RAG Service: {'Ready' if self.config.get('rag', {}).get('enabled', True) else 'Disabled'}")
         
         return True
     
@@ -489,8 +494,9 @@ class MacBotOrchestrator:
         print(f"\n💻 System: CPU {cpu_percent}% | RAM {memory.percent}%")
         
         # Service URLs
-        print(f"\n🌐 Web GUI: http://localhost:{self.config['web_gui']['port']}")
-        print(f"🤖 LLM API: http://localhost:8080")
+        host, port = CFG.get_web_dashboard_host_port()
+        print(f"\n🌐 Web GUI: http://{host}:{port}")
+        print(f"🤖 LLM API: {CFG.get_llm_models_endpoint().rsplit('/v1',1)[0]}")
 
 def main():
     """Main entry point"""

@@ -1,4 +1,12 @@
-# MacBot Troubleshooting Guide
+# MacBot Trouble# View Logs
+```bash
+# View main log
+tail -f logs/macbot.log
+
+# Check service-specific logs
+tail -f models/llama.cpp/server.log
+tail -f models/whisper.cpp/whisper.log
+```Guide
 
 ## Overview
 This guide helps you diagnose and resolve common issues with MacBot. Start with the quick diagnostics, then follow the specific issue sections.
@@ -79,7 +87,7 @@ Voice assistant starts but doesn't respond to voice.
    rec test.wav trim 0 3
 
    # Test with Whisper
-   ./whisper.cpp/build/bin/whisper-cli -m whisper.cpp/models/ggml-base.en.bin -f test.wav
+   ./models/whisper.cpp/build/bin/whisper-cli -m models/whisper.cpp/models/ggml-base.en.bin -f test.wav
    ```
 
 3. **Check for background noise** - try in a quieter environment.
@@ -93,10 +101,10 @@ LLM server fails to start.
 1. **Check model file:**
    ```bash
    # Verify model exists and is readable
-   ls -lh llama.cpp/models/*.gguf
+   ls -lh models/llama.cpp/models/*.gguf
 
    # Check file permissions
-   chmod 644 llama.cpp/models/*.gguf
+   chmod 644 models/llama.cpp/models/*.gguf
    ```
 
 2. **Insufficient memory:**
@@ -186,16 +194,16 @@ Knowledge base search not working.
 
 2. **Verify database files:**
    ```bash
-   ls -lh rag_database/
+   ls -lh data/rag_database/
    ```
 
 3. **Rebuild knowledge base:**
    ```bash
    # Remove old database
-   rm -rf rag_database/
+   rm -rf data/rag_database/
 
    # Restart RAG server
-   python orchestrator.py --restart --service rag_server
+   python -m macbot.orchestrator --restart --service rag_server
    ```
 
 ### Build Issues
@@ -212,16 +220,16 @@ Whisper or llama.cpp build fails.
 2. **Clean and rebuild:**
    ```bash
    # For llama.cpp
-   cd llama.cpp
+   cd models/llama.cpp
    rm -rf build/
    make clean
-   cd ..
+   cd ../..
 
    # For whisper.cpp
-   cd whisper.cpp
+   cd models/whisper.cpp
    rm -rf build/
    make clean
-   cd ..
+   cd ../..
    ```
 
 3. **Check Xcode command line tools:**
@@ -286,7 +294,7 @@ Enable debug logging for detailed information:
 
 ```bash
 export DEBUG=1
-python voice_assistant.py
+python -m macbot.voice_assistant
 ```
 
 ### Manual Service Testing
@@ -294,11 +302,11 @@ Test each component individually:
 
 ```bash
 # Test LLM only
-cd llama.cpp
+cd models/llama.cpp
 ./build/bin/llama-server --model models/your-model.gguf --port 8080
 
 # Test Whisper only
-cd whisper.cpp
+cd models/whisper.cpp
 ./build/bin/whisper-cli --model models/ggml-base.en.bin --file your-audio.wav
 
 # Test TTS only
@@ -342,7 +350,7 @@ If you can't resolve an issue:
    pip list
 
    # Service versions
-   ./llama.cpp/build/bin/llama-server --version
+   ./models/llama.cpp/build/bin/llama-server --version
    ```
 3. **Include relevant log excerpts** when reporting issues
 
@@ -359,5 +367,5 @@ If you can't resolve an issue:
 cp config.yaml config.yaml.backup
 
 # Backup knowledge base
-cp -r rag_database/ rag_database_backup/
+cp -r data/rag_database/ data/rag_database_backup/
 ```

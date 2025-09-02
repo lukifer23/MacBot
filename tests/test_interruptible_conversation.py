@@ -5,10 +5,10 @@ Test script for interruptible conversation system
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from audio_interrupt import AudioInterruptHandler
-from conversation_manager import ConversationManager, ConversationState
+from macbot.audio_interrupt import AudioInterruptHandler
+from macbot.conversation_manager import ConversationManager, ConversationState
 import numpy as np
 import time
 

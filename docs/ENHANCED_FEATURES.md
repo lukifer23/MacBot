@@ -98,10 +98,10 @@ POST /api/chat       - Chat interface
 python orchestrator.py
 
 # Check status
-python orchestrator.py --status
+python -m macbot.orchestrator --status
 
 # Stop everything
-python orchestrator.py --stop
+python -m macbot.orchestrator --stop
 ```
 
 ### **Individual Services**
@@ -113,7 +113,7 @@ make run-llama
 make run-assistant
 
 # Start web dashboard
-python web_dashboard.py
+python -m macbot.web_dashboard
 ```
 
 ## 📊 System Requirements
@@ -134,9 +134,9 @@ python web_dashboard.py
 ### **Key Files**
 - `config.yaml` - Main configuration
 - `Makefile` - Build and run commands
-- `orchestrator.py` - Service management
-- `web_dashboard.py` - Web interface
-- `voice_assistant.py` - Enhanced voice assistant
+- `src/macbot/orchestrator.py` - Service management
+- `src/macbot/web_dashboard.py` - Web interface
+- `src/macbot/voice_assistant.py` - Enhanced voice assistant
 
 ### **Model Configuration**
 - **LLM**: Qwen3-4B-Instruct-2507 (2.3GB)
@@ -225,14 +225,14 @@ interruption:
 ### **Logs & Debugging**
 ```bash
 # Check orchestrator logs
-tail -f macbot.log
+tail -f logs/macbot.log
 
 # Check service status
-python orchestrator.py --status
+python -m macbot.orchestrator --status
 
 # Test individual components
-python web_dashboard.py
-python voice_assistant.py
+python -m macbot.web_dashboard
+python -m macbot.voice_assistant
 ```
 
 ## 🔮 Future Enhancements

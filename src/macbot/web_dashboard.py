@@ -21,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+from . import config as CFG
 
 # Global state
 system_stats = {
@@ -31,11 +32,15 @@ system_stats = {
     'timestamp': datetime.now().isoformat()
 }
 
+llm_models_endpoint = CFG.get_llm_models_endpoint()
+rag_host, rag_port = CFG.get_rag_host_port()
+wd_host, wd_port = CFG.get_web_dashboard_host_port()
+
 service_status = {
-    'llama': {'status': 'unknown', 'port': 8080, 'endpoint': 'http://localhost:8080'},
+    'llama': {'status': 'unknown', 'port': None, 'endpoint': llm_models_endpoint.rsplit('/v1', 1)[0]},
     'voice_assistant': {'status': 'unknown', 'port': None, 'endpoint': 'Voice Interface'},
-    'rag': {'status': 'unknown', 'port': 8001, 'endpoint': 'http://localhost:8001'},
-    'web_gui': {'status': 'running', 'port': 3000, 'endpoint': 'http://localhost:3000'}
+    'rag': {'status': 'unknown', 'port': rag_port, 'endpoint': f'http://{rag_host}:{rag_port}'},
+    'web_gui': {'status': 'running', 'port': wd_port, 'endpoint': f'http://{wd_host}:{wd_port}'}
 }
 
 # HTML template for the dashboard
@@ -446,7 +451,7 @@ DASHBOARD_HTML = """
                     <div class="service-card">
                         <h3>🔍 RAG System</h3>
                         <div class="service-status" id="rag-status">Status: <span class="status-dot">🟡</span> Checking...</div>
-                        <div class="service-info">Type: http://localhost:8001</div>
+                        <div class="service-info">Endpoint: {{ services['rag']['endpoint'] }}</div>
                     </div>
                     <div class="service-card">
                         <h3>🌐 Web Dashboard</h3>
@@ -1050,7 +1055,7 @@ def check_service_health():
     try:
         # Check llama.cpp server
         try:
-            response = requests.get('http://localhost:8080/v1/models', timeout=2)
+            response = requests.get(llm_models_endpoint, timeout=2)
             service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
         except:
             service_status['llama']['status'] = 'stopped'
@@ -1068,7 +1073,7 @@ def check_service_health():
         
         # Check RAG service
         try:
-            response = requests.get('http://localhost:8001/health', timeout=2)
+            response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
             service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
         except:
             service_status['rag']['status'] = 'stopped'
@@ -1096,14 +1101,14 @@ def api_services():
     try:
         # Check LLM server
         try:
-            response = requests.get('http://localhost:8080/v1/models', timeout=2)
+            response = requests.get(llm_models_endpoint, timeout=2)
             service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
         except:
             service_status['llama']['status'] = 'stopped'
         
         # Check RAG server
         try:
-            response = requests.get('http://localhost:8001/health', timeout=2)
+            response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
             service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
         except:
             service_status['rag']['status'] = 'stopped'
@@ -1251,7 +1256,7 @@ def process_with_llm(message: str) -> str:
     try:
         # Check if llama server is running
         try:
-            response = requests.get('http://localhost:8080/v1/models', timeout=2)
+            response = requests.get(llm_models_endpoint, timeout=2)
             if response.status_code != 200:
                 return "LLM server is not running. Please start the orchestrator first."
         except:
@@ -1387,7 +1392,7 @@ def get_rag_context(query: str) -> str:
     try:
         # Check if RAG service is running
         try:
-            response = requests.get('http://localhost:8001/health', timeout=2)
+            response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
             if response.status_code != 200:
                 return None
         except:
@@ -1395,7 +1400,7 @@ def get_rag_context(query: str) -> str:
         
         # Search RAG system
         rag_response = requests.post(
-            'http://localhost:8001/api/search',
+            f"http://{rag_host}:{rag_port}/api/search",
             json={'query': query},
             timeout=5
         )
@@ -1436,5 +1441,12 @@ def start_dashboard(host='0.0.0.0', port=3000):
         logger.error(f"Failed to start web dashboard: {e}")
         raise
 
+def main():
+    host, port = CFG.get_web_dashboard_host_port()
+    try:
+        start_dashboard(host=host, port=port)
+    except Exception:
+        start_dashboard()
+
 if __name__ == '__main__':
-    start_dashboard()
+    main()

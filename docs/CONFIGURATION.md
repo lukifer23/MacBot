@@ -222,5 +222,5 @@ voice_assistant:
 Changes to `config.yaml` require restarting the services to take effect. Use the orchestrator to restart all services:
 
 ```bash
-python orchestrator.py --restart
+python -m macbot.orchestrator --restart
 ```

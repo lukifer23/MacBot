@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+from . import config as CFG
 
 class RAGServer:
     def __init__(self, data_dir: str = "rag_data"):
@@ -425,5 +426,13 @@ def start_rag_server(host='0.0.0.0', port=8001):
         logger.error(f"Failed to start RAG server: {e}")
         raise
 
+def main():
+    host, port = CFG.get_rag_host_port()
+    try:
+        start_rag_server(host=host, port=port)
+    except Exception:
+        # Fallback to defaults if config missing
+        start_rag_server()
+
 if __name__ == '__main__':
-    start_rag_server()
+    main()

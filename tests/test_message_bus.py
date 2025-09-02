@@ -5,10 +5,10 @@ Test script for MacBot Message Bus System
 import sys
 import os
 import time
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from message_bus import MessageBus, start_message_bus, stop_message_bus
-from message_bus_client import MessageBusClient
+from macbot.message_bus import MessageBus, start_message_bus, stop_message_bus
+from macbot.message_bus_client import MessageBusClient
 
 def test_message_bus():
     """Test the message bus system"""

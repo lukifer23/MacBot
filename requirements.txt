@@ -19,9 +19,6 @@ livekit-agents[turn-detector]>=1.2.0
 websockets>=10.0
 python-socketio>=5.0.0
 
-# Optional but recommended
-python-socketio>=5.0.0
-
 # Development dependencies (uncomment for development)
 # pytest>=7.0.0
 # black>=22.0.0

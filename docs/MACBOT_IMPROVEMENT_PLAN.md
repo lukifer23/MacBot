@@ -23,14 +23,14 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 ### Phase 1 Files Created/Modified:
 - `message_bus.py` - Core message bus implementation
 - `message_bus_client.py` - Client library for services
-- `orchestrator.py` - Updated with message bus integration
+- `src/macbot/orchestrator.py` - Updated with message bus integration
 - `requirements.txt` - Added websockets dependency
 - `test_message_bus.py` - Test suite for message bus
 
 ### Phase 2 Files Created/Modified:
 - `audio_interrupt.py` - NEW: macOS AudioQueue-based TTS interruption
 - `conversation_manager.py` - NEW: Conversation state management with buffering
-- `voice_assistant.py` - UPDATED: Integrated interruption system with pyttsx3 TTS
+- `src/macbot/voice_assistant.py` - UPDATED: Integrated interruption system with pyttsx3 TTS
 - `config.yaml` - UPDATED: Added interruption settings (enabled, threshold, cooldown, timeout, buffer_size)
 - `requirements.txt` - UPDATED: Added pyttsx3 dependency
 
@@ -97,7 +97,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - ✅ Create interrupt signal handling
 
 **Files Created/Modified:**
-- ✅ `voice_assistant.py` - Integrated TTS interruption logic
+- ✅ `src/macbot/voice_assistant.py` - Integrated TTS interruption logic
 - ✅ New file: `audio_interrupt.py` - macOS-specific audio interruption
 - ✅ `config.yaml` - Added interruption sensitivity settings
 - ✅ New file: `conversation_manager.py` - Conversation state management
@@ -115,7 +115,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - ✅ Create conversation history management
 
 **Files Created/Modified:**
-- ✅ `voice_assistant.py` - Added state management integration
+- ✅ `src/macbot/voice_assistant.py` - Added state management integration
 - ✅ New file: `conversation_manager.py` - Handle conversation flow
 - ✅ `config.yaml` - Added conversation buffer settings
 
@@ -132,9 +132,9 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Enable partial response display in web interface
 
 **Files to Modify:**
-- `voice_assistant.py` - Add streaming response handler
-- `web_dashboard.py` - Add SSE client and incremental display
-- `orchestrator.py` - Route streaming responses through message bus
+- `src/macbot/voice_assistant.py` - Add streaming response handler
+- `src/macbot/web_dashboard.py` - Add SSE client and incremental display
+- `src/macbot/orchestrator.py` - Route streaming responses through message bus
 
 **Benefits:**
 - Immediate response feedback
@@ -151,8 +151,8 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Add manual intervention capabilities
 
 **Files to Modify:**
-- `web_dashboard.py` - Add real-time updates and controls
-- `orchestrator.py` - Broadcast system state changes
+- `src/macbot/web_dashboard.py` - Add real-time updates and controls
+- `src/macbot/orchestrator.py` - Broadcast system state changes
 - New file: `web_realtime.py` - WebSocket handling
 
 **Benefits:**
@@ -168,7 +168,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Integrate with existing Whisper pipeline
 
 **Files to Modify:**
-- `web_dashboard.py` - Add voice input UI and WebRTC
+- `src/macbot/web_dashboard.py` - Add voice input UI and WebRTC
 - New file: `web_voice.py` - Browser voice handling
 - `config.yaml` - Add web voice settings
 
@@ -187,7 +187,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Create health check endpoints
 
 **Files to Modify:**
-- `orchestrator.py` - Enhanced health monitoring
+- `src/macbot/orchestrator.py` - Enhanced health monitoring
 - All service files - Add health endpoints
 - New file: `health_monitor.py` - Centralized health tracking
 
@@ -204,8 +204,8 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Create service dependency mapping
 
 **Files to Modify:**
-- `orchestrator.py` - Add fallback logic
-- `voice_assistant.py` - Add offline capabilities
+- `src/macbot/orchestrator.py` - Add fallback logic
+- `src/macbot/voice_assistant.py` - Add offline capabilities
 - `config.yaml` - Add degradation settings
 
 **Benefits:**
@@ -223,7 +223,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Add parallel processing where possible
 
 **Files to Modify:**
-- `voice_assistant.py` - Audio processing optimizations
+- `src/macbot/voice_assistant.py` - Audio processing optimizations
 - New file: `audio_optimizer.py` - Performance improvements
 - `config.yaml` - Add performance tuning options
 
@@ -240,9 +240,9 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Optimize model memory usage
 
 **Files to Modify:**
-- `voice_assistant.py` - Memory optimization
-- `rag_server.py` - Database optimization
-- `orchestrator.py` - Resource monitoring
+- `src/macbot/voice_assistant.py` - Memory optimization
+- `src/macbot/rag_server.py` - Database optimization
+- `src/macbot/orchestrator.py` - Resource monitoring
 
 **Benefits:**
 - Stable long-term performance
@@ -259,7 +259,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Implement advanced file operations
 
 **Files to Modify:**
-- `voice_assistant.py` - Enhanced tool system
+- `src/macbot/voice_assistant.py` - Enhanced tool system
 - New file: `tool_manager.py` - Advanced tool orchestration
 - `config.yaml` - Add tool configuration options
 
@@ -276,9 +276,9 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - Create performance metrics
 
 **Files to Modify:**
-- New file: `analytics.py` - Conversation analytics
-- `web_dashboard.py` - Add analytics display
-- `config.yaml` - Add analytics settings
+- New file: `src/macbot/analytics.py` - Conversation analytics
+- `src/macbot/web_dashboard.py` - Add analytics display
+- `config/config.yaml` - Add analytics settings
 
 **Benefits:**
 - Usage insights

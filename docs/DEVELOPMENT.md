@@ -49,32 +49,57 @@ make build-all
 
 ```
 MacBot/
-├── docs/                    # Documentation
+├── src/macbot/              # Main package
+│   ├── cli.py              # Command-line interface
+│   ├── __init__.py         # Package initialization
+│   ├── voice_assistant.py  # Voice assistant with interruption
+│   ├── audio_interrupt.py  # TTS interruption handler
+│   ├── conversation_manager.py # Conversation state management
+│   ├── message_bus.py      # Real-time communication
+│   ├── message_bus_client.py # Message bus client
+│   ├── orchestrator.py     # Service orchestration
+│   ├── web_dashboard.py    # Web interface
+│   └── rag_server.py      # RAG knowledge base
+├── scripts/                # Shell scripts
+│   ├── bootstrap_mac.sh   # Bootstrap script
+│   └── start_macbot.sh    # Startup script
+├── tests/                  # Test files
+│   ├── test_interruptible_conversation.py
+│   ├── test_message_bus.py
+│   └── test_message_bus_client.py
+├── config/                 # Configuration files
+│   └── config.yaml        # Main configuration
+├── docs/                   # Documentation
 │   ├── API_REFERENCE.md
 │   ├── CONFIGURATION.md
 │   ├── TROUBLESHOOTING.md
 │   └── DEVELOPMENT.md
-├── llama.cpp/              # LLM inference engine (submodule)
-├── whisper.cpp/            # Speech recognition (submodule)
-├── rag_data/               # RAG knowledge base data
-├── rag_database/           # Vector database files
-├── .venv/                  # Python virtual environment
-├── config.yaml             # Main configuration
+├── data/                   # Data directories
+│   ├── rag_data/          # Knowledge base data
+│   │   ├── documents.json
+│   │   └── chroma_db/
+│   └── rag_database/      # Vector database
+│       └── chroma.sqlite3
+├── models/                 # Model directories
+│   ├── llama.cpp/         # LLM inference engine
+│   └── whisper.cpp/       # Speech recognition
+├── logs/                   # Log files
+│   └── macbot.log         # Application logs
 ├── requirements.txt        # Python dependencies
+├── requirements-dev.txt    # Development dependencies
+├── pyproject.toml          # Modern Python packaging
+├── setup.py               # Legacy packaging
 ├── Makefile               # Build and run commands
-├── orchestrator.py        # Service management
-├── voice_assistant.py     # Main voice assistant
-├── web_dashboard.py       # Web interface
-├── rag_server.py         # RAG service
-├── start_macbot.sh        # Startup script
-└── README.md              # Main documentation
+├── docker-compose.yml     # Docker orchestration
+├── Dockerfile            # Container definition
+└── README.md
 ```
 
 ## Architecture Overview
 
 ### Core Components
 
-#### 1. Orchestrator (`orchestrator.py`)
+#### 1. Orchestrator (`src/macbot/orchestrator.py`)
 - **Purpose**: Manages all services and their lifecycle
 - **Features**:
   - Automatic startup and shutdown
@@ -82,7 +107,7 @@ MacBot/
   - Service dependency management
   - Graceful error handling
 
-#### 2. Voice Assistant (`voice_assistant.py`)
+#### 2. Voice Assistant (`src/macbot/voice_assistant.py`)
 - **Purpose**: Main voice interaction interface
 - **Features**:
   - Voice activity detection
@@ -91,7 +116,7 @@ MacBot/
   - Text-to-speech (Kokoro)
   - Tool integration
 
-#### 3. Web Dashboard (`web_dashboard.py`)
+#### 3. Web Dashboard (`src/macbot/web_dashboard.py`)
 - **Purpose**: Web-based monitoring and control interface
 - **Features**:
   - Real-time system statistics
@@ -136,7 +161,7 @@ python -m pytest tests/
 make test
 
 # Manual testing
-python voice_assistant.py --debug
+python -m macbot.voice_assistant --debug
 ```
 
 ### 4. Update Documentation
@@ -205,7 +230,7 @@ def some_function():
 ```python
 # tests/test_voice_assistant.py
 import pytest
-from voice_assistant import VoiceAssistant
+from macbot.voice_assistant import VoiceAssistant
 
 class TestVoiceAssistant:
     def test_initialization(self):
@@ -258,8 +283,8 @@ def take_screenshot(save_path: str = "~/Desktop") -> str:
 
 ### 2. Register Tool
 ```python
-# voice_assistant.py
-from tools.custom_tools import take_screenshot
+# src/macbot/voice_assistant.py
+from .tools.custom_tools import take_screenshot
 
 class VoiceAssistant:
     def __init__(self):
@@ -325,7 +350,7 @@ def profile_function():
 ```bash
 # Enable debug logging
 export DEBUG=1
-python voice_assistant.py
+python -m macbot.voice_assistant
 
 # Or set in config
 logging:
@@ -387,12 +412,12 @@ Types:
 ### Local Deployment
 ```bash
 # Full deployment
-./start_macbot.sh
+./scripts/start_macbot.sh
 
 # Individual services
 make run-assistant
 make run-llama
-python web_dashboard.py
+python -m macbot.web_dashboard
 ```
 
 ### Production Considerations
