@@ -20,6 +20,17 @@ from conversation_manager import (
     ConversationState,
 )
 
+# Import optional dependencies
+try:
+    import chromadb
+except ImportError:
+    chromadb = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
 # ---- Load config ----
 CFG_PATH = os.path.abspath("config/config.yaml")
 if os.path.exists(CFG_PATH):
@@ -37,34 +48,53 @@ def _get(path, default=None):
             return default
     return cur
 
-LLAMA_SERVER = _get("llama.server_url", "http://localhost:8080/v1/chat/completions")
-LLAMA_TEMP   = float(_get("llama.temperature", 0.4))
-LLAMA_MAXTOK = int(_get("llama.max_tokens", 200))
+def _get_float(path, default=0.0):
+    val = _get(path, default)
+    if isinstance(val, (int, float)):
+        return float(val)
+    return default
 
-SYSTEM_PROMPT = _get("system_prompt", "You are a helpful AI assistant with access to tools. You can search the web, browse websites, and access your knowledge base. Always be concise and helpful.")
+def _get_int(path, default=0):
+    val = _get(path, default)
+    if isinstance(val, (int, float)):
+        return int(val)
+    return default
 
-WHISPER_BIN   = os.path.abspath(str(_get("whisper.bin", "models/whisper.cpp/build/bin/whisper-cli")))
-WHISPER_MODEL = os.path.abspath(str(_get("whisper.model", "models/whisper.cpp/models/ggml-base.en.bin")))
-WHISPER_LANG  = _get("whisper.language", "en")
+def _get_str(path, default=""):
+    val = _get(path, default)
+    if isinstance(val, str):
+        return val
+    return str(val) if val is not None else default
 
-VOICE    = _get("tts.voice", "af_heart")
-SPEED    = float(_get("tts.speed", 1.0))
+LLAMA_SERVER = _get_str("llama.server_url", "http://localhost:8080/v1/chat/completions")
+LLAMA_TEMP   = _get_float("llama.temperature", 0.4)
+LLAMA_MAXTOK = _get_int("llama.max_tokens", 200)
 
-SAMPLE_RATE   = int(_get("audio.sample_rate", 16000))
-BLOCK_DUR     = float(_get("audio.block_sec", 0.03))
-VAD_THRESH    = float(_get("audio.vad_threshold", 0.005))
-SILENCE_HANG  = float(_get("audio.silence_hang", 0.6))
+SYSTEM_PROMPT = _get_str("system_prompt", "You are a helpful AI assistant with access to tools. You can search the web, browse websites, and access your knowledge base. Always be concise and helpful.")
+
+WHISPER_BIN   = os.path.abspath(_get_str("whisper.bin", "models/whisper.cpp/build/bin/whisper-cli"))
+WHISPER_MODEL = os.path.abspath(_get_str("whisper.model", "models/whisper.cpp/models/ggml-base.en.bin"))
+WHISPER_LANG  = _get_str("whisper.language", "en")
+
+VOICE    = _get_str("tts.voice", "af_heart")
+SPEED    = _get_float("tts.speed", 1.0)
+
+SAMPLE_RATE   = _get_int("audio.sample_rate", 16000)
+BLOCK_DUR     = _get_float("audio.block_sec", 0.03)
+VAD_THRESH    = _get_float("audio.vad_threshold", 0.005)
+SILENCE_HANG  = _get_float("audio.silence_hang", 0.6)
 
 # Interruption settings
 INTERRUPTION_ENABLED = _get("voice_assistant.interruption.enabled", True)
-INTERRUPT_THRESHOLD = float(_get("voice_assistant.interruption.interrupt_threshold", 0.01))
-INTERRUPT_COOLDOWN = float(_get("voice_assistant.interruption.interrupt_cooldown", 0.5))
-CONVERSATION_TIMEOUT = int(_get("voice_assistant.interruption.conversation_timeout", 30))
-CONTEXT_BUFFER_SIZE = int(_get("voice_assistant.interruption.context_buffer_size", 10))
+INTERRUPT_THRESHOLD = _get_float("voice_assistant.interruption.interrupt_threshold", 0.01)
+INTERRUPT_COOLDOWN = _get_float("voice_assistant.interruption.interrupt_cooldown", 0.5)
+CONVERSATION_TIMEOUT = _get_int("voice_assistant.interruption.conversation_timeout", 30)
+CONTEXT_BUFFER_SIZE = _get_int("voice_assistant.interruption.context_buffer_size", 10)
 
 # Tool calling and RAG settings
 ENABLE_TOOLS = _get("tools.enabled", True)
 ENABLE_RAG = _get("rag.enabled", True)
+RAG_DB_PATH = _get_str("rag.db_path", "data/rag_database")
 RAG_DB_PATH = _get("rag.db_path", "rag_database")
 
 # ---- Optional: LiveKit turn detector ----
@@ -221,9 +251,13 @@ class RAGSystem:
         
         try:
             # Initialize ChromaDB
+            if chromadb is None:
+                raise ImportError("chromadb not available")
             self.client = chromadb.PersistentClient(path=self.db_path)
             
             # Initialize embedding model
+            if SentenceTransformer is None:
+                raise ImportError("sentence_transformers not available")
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
             
             # Create or get collection
@@ -237,9 +271,9 @@ class RAGSystem:
             print(f"❌ RAG initialization failed: {e}")
             self.client = None
     
-    def add_document(self, text: str, metadata: dict = None) -> bool:
+    def add_document(self, text: str, metadata: Optional[dict] = None) -> bool:
         """Add a document to the knowledge base"""
-        if not self.collection:
+        if not self.collection or not self.embedding_model:
             return False
         
         try:
@@ -260,7 +294,7 @@ class RAGSystem:
     
     def search(self, query: str, n_results: int = 3) -> List[str]:
         """Search the knowledge base"""
-        if not self.collection:
+        if not self.collection or not self.embedding_model:
             return []
         
         try:
@@ -279,7 +313,7 @@ class RAGSystem:
             return []
 
 # Initialize RAG system
-rag_system = RAGSystem(RAG_DB_PATH) if ENABLE_RAG else None
+rag_system = RAGSystem(str(RAG_DB_PATH)) if ENABLE_RAG else None
 
 # ---- Simple energy VAD ----
 def is_voiced(block, thresh=VAD_THRESH):
@@ -434,7 +468,7 @@ def llama_chat(user_text: str) -> str:
                     if new_text.strip():
                         def _speak_chunk(txt=new_text):
                             try:
-                                if HAS_KOKORO and 'tts' in globals() and audio_handler:
+                                if HAS_KOKORO and tts is not None and audio_handler:
                                     audio = tts(txt)
                                     if isinstance(audio, tuple):
                                         audio_data = audio[0]
@@ -479,10 +513,11 @@ except ImportError:
 # ---- Interruptible Conversation System ----
 if INTERRUPTION_ENABLED:
     audio_handler = AudioInterruptHandler(
-        sample_rate=24000,
-        vad_threshold=INTERRUPT_THRESHOLD,
-        interrupt_cooldown=INTERRUPT_COOLDOWN
+        sample_rate=24000
     )
+    # Set VAD threshold if available
+    if hasattr(audio_handler, 'vad_threshold'):
+        audio_handler.vad_threshold = INTERRUPT_THRESHOLD
     conversation_manager = ConversationManager(
         max_history=CONTEXT_BUFFER_SIZE,
         context_timeout=CONVERSATION_TIMEOUT
@@ -491,7 +526,7 @@ if INTERRUPTION_ENABLED:
     # Register conversation state callback for audio interruption
     def on_conversation_state_change(context: ConversationContext):
         """Handle conversation state changes"""
-        if context.current_state == ConversationState.INTERRUPTED:
+        if context.current_state == ConversationState.INTERRUPTED and audio_handler:
             audio_handler.interrupt_playback()
             print("🎤 Conversation interrupted by user")
 
@@ -513,7 +548,8 @@ def speak(text: str):
 
             def on_end(name):
                 if (
-                    conversation_manager.current_context
+                    conversation_manager
+                    and conversation_manager.current_context
                     and conversation_manager.current_context.current_state
                     != ConversationState.INTERRUPTED
                 ):
@@ -705,7 +741,7 @@ def start_web_gui():
         def chat():
             try:
                 data = request.json
-                user_message = data.get('message', '')
+                user_message = data.get('message', '') if data else ''
                 
                 # Get response from LLM
                 response = llama_chat(user_message)
