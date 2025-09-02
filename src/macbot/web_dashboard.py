@@ -8,6 +8,9 @@ import time
 import json
 import psutil
 import threading
+
+# Add src/ to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import requests
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request, Response, stream_with_context
@@ -1200,8 +1203,8 @@ def process_voice_with_whisper(base64_audio: str) -> str:
         
         try:
             # Use Whisper to transcribe
-            whisper_bin = os.path.abspath("whisper.cpp/build/bin/whisper-cli")
-            whisper_model = os.path.abspath("whisper.cpp/models/ggml-base.en.bin")
+            whisper_bin = os.path.abspath("models/whisper.cpp/build/bin/whisper-cli")
+            whisper_model = os.path.abspath("models/whisper.cpp/models/ggml-base.en.bin")
             
             if not os.path.exists(whisper_bin):
                 return "Whisper not found. Please run 'make build-whisper' first."

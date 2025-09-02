@@ -4,7 +4,7 @@
 # Model Configuration
 models:
   llm:
-    path: "llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    path: "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     context_length: 4096
     threads: -1  # Use all available cores
     server_url: "http://localhost:8080/v1/chat/completions"
@@ -12,8 +12,8 @@ models:
     max_tokens: 200
 
   stt:
-    bin: "whisper.cpp/build/bin/whisper-cli"
-    model: "whisper.cpp/models/ggml-base.en.bin"
+    bin: "models/whisper.cpp/build/bin/whisper-cli"
+    model: "models/whisper.cpp/models/ggml-base.en.bin"
     language: "en"
 
   tts:

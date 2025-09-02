@@ -8,6 +8,9 @@ import time
 import signal
 import subprocess
 import threading
+
+# Add src/ to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import psutil
 import yaml
 import requests
@@ -31,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class MacBotOrchestrator:
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml"):
         self.config_path = config_path
         self.config = self.load_config()
         self.processes: Dict[str, subprocess.Popen] = {}
@@ -85,7 +88,7 @@ class MacBotOrchestrator:
                 'gpu_layers': 999
             },
             'whisper': {
-                'model': 'whisper.cpp/models/ggml-base.en.bin',
+                'model': 'models/whisper.cpp/models/ggml-base.en.bin',
                 'language': 'en'
             },
             'tts': {

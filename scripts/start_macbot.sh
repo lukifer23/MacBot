@@ -10,7 +10,7 @@ if [ ! -d ".venv" ]; then
 fi
 
 # Check if models are downloaded
-if [ ! -f "llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf" ]; then
+if [ ! -f "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf" ]; then
     echo "❌ Qwen model not found. Please ensure the model is downloaded."
     exit 1
 fi

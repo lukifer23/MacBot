@@ -6,8 +6,8 @@ PY := python3.11
 VENV := .venv
 ACT := source $(VENV)/bin/activate
 
-WHISPER_DIR := whisper.cpp
-LLAMA_DIR   := llama.cpp
+WHISPER_DIR := models/whisper.cpp
+LLAMA_DIR   := models/llama.cpp
 
 # ---- Llama server defaults ----
 LLAMA_THREADS := $(shell sysctl -n hw.physicalcpu)
@@ -54,13 +54,13 @@ run-llama:
 	  --port $(LLAMA_PORT)
 
 run-assistant:
-	$(ACT); OMP_NUM_THREADS=$(LLAMA_THREADS) $(PY) voice_assistant.py
+	$(ACT); OMP_NUM_THREADS=$(LLAMA_THREADS) $(PY) src/macbot/voice_assistant.py
 
 run-enhanced:
-	$(ACT); OMP_NUM_THREADS=$(LLAMA_THREADS) $(PY) voice_assistant.py
+	$(ACT); OMP_NUM_THREADS=$(LLAMA_THREADS) $(PY) src/macbot/voice_assistant.py
 
 run-orchestrator:
-	$(ACT); $(PY) orchestrator.py
+	$(ACT); $(PY) src/macbot/orchestrator.py
 
 clean:
 	rm -rf $(VENV) $(WHISPER_DIR) $(LLAMA_DIR) __pycache__ */__pycache__

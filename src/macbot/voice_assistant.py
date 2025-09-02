@@ -8,8 +8,9 @@ import psutil
 import webbrowser
 from typing import Dict, List, Optional
 from pathlib import Path
-import chromadb
-from sentence_transformers import SentenceTransformer
+
+# Add src/ to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Import interruptible conversation system
 from audio_interrupt import AudioInterruptHandler
@@ -20,7 +21,7 @@ from conversation_manager import (
 )
 
 # ---- Load config ----
-CFG_PATH = os.path.abspath("config.yaml")
+CFG_PATH = os.path.abspath("config/config.yaml")
 if os.path.exists(CFG_PATH):
     with open(CFG_PATH, "r") as f:
         CFG = yaml.safe_load(f)
@@ -42,8 +43,8 @@ LLAMA_MAXTOK = int(_get("llama.max_tokens", 200))
 
 SYSTEM_PROMPT = _get("system_prompt", "You are a helpful AI assistant with access to tools. You can search the web, browse websites, and access your knowledge base. Always be concise and helpful.")
 
-WHISPER_BIN   = os.path.abspath(_get("whisper.bin", "whisper.cpp/build/bin/whisper-cli"))
-WHISPER_MODEL = os.path.abspath(_get("whisper.model", "whisper.cpp/models/ggml-base.en.bin"))
+WHISPER_BIN   = os.path.abspath(str(_get("whisper.bin", "models/whisper.cpp/build/bin/whisper-cli")))
+WHISPER_MODEL = os.path.abspath(str(_get("whisper.model", "models/whisper.cpp/models/ggml-base.en.bin")))
 WHISPER_LANG  = _get("whisper.language", "en")
 
 VOICE    = _get("tts.voice", "af_heart")

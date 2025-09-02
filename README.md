@@ -68,12 +68,12 @@ make build-llama
 
 ### 4. Configure
 
-Edit `config.yaml` to customize settings:
+Edit `config/config.yaml` to customize settings:
 
 ```yaml
 models:
   llm:
-    path: "llama.cpp/models/your-model.gguf"
+    path: "models/llama.cpp/models/your-model.gguf"
   stt:
     model: "base.en"
   tts:
@@ -90,14 +90,14 @@ tools:
 
 ```bash
 # Start all services with orchestrator
-python orchestrator.py
+python src/macbot/orchestrator.py
 
 # Or use individual commands
 make run-llama      # Start LLM server
 make run-assistant  # Start voice assistant
 
 # Or use CLI
-macbot orchestrator
+python src/macbot/cli.py orchestrator
 ```
 
 ## 🐳 Docker Deployment
@@ -112,7 +112,7 @@ docker-compose up macbot-orchestrator
 
 ## 📖 Documentation
 
-- **[ENHANCED_FEATURES.md](ENHANCED_FEATURES.md)** - Comprehensive feature guide
+- **[docs/ENHANCED_FEATURES.md](docs/ENHANCED_FEATURES.md)** - Comprehensive feature guide
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API endpoint documentation
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Detailed configuration guide
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
@@ -124,13 +124,31 @@ docker-compose up macbot-orchestrator
 MacBot/
 ├── src/macbot/              # Main package
 │   ├── cli.py              # Command-line interface
-│   └── __init__.py         # Package initialization
+│   ├── __init__.py         # Package initialization
+│   ├── voice_assistant.py  # Voice assistant with interruption
+│   ├── audio_interrupt.py  # TTS interruption handler
+│   ├── conversation_manager.py # Conversation state management
+│   ├── message_bus.py      # Real-time communication
+│   ├── orchestrator.py     # Service orchestration
+│   ├── web_dashboard.py    # Web interface
+│   └── rag_server.py      # RAG knowledge base
+├── scripts/                # Shell scripts
+│   ├── bootstrap_mac.sh   # Bootstrap script
+│   └── start_macbot.sh    # Startup script
+├── tests/                  # Test files
+│   ├── test_interruptible_conversation.py
+│   └── test_message_bus.py
+├── config/                 # Configuration files
+│   └── config.yaml        # Main configuration
 ├── docs/                   # Documentation
-├── llama.cpp/              # LLM inference engine
-├── whisper.cpp/            # Speech recognition
-├── rag_data/               # Knowledge base data
-├── rag_database/           # Vector database
-├── config.yaml             # Main configuration
+├── data/                   # Data directories
+│   ├── rag_data/          # Knowledge base data
+│   └── rag_database/      # Vector database
+├── models/                 # Model directories
+│   ├── llama.cpp/         # LLM inference engine
+│   └── whisper.cpp/       # Speech recognition
+├── logs/                   # Log files
+│   └── macbot.log         # Application logs
 ├── requirements.txt        # Python dependencies
 ├── requirements-dev.txt    # Development dependencies
 ├── pyproject.toml          # Modern Python packaging
