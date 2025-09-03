@@ -11,11 +11,12 @@
 - **🎤 Offline Voice Interface**: Complete voice pipeline with VAD, Whisper STT, and Kokoro TTS
 - **🧠 Local LLM Support**: Run large language models locally with llama.cpp
 - **🔧 Native macOS Tools**: Web search, screenshots, app launching, system monitoring
-- **🌐 Web Dashboard**: Real-time monitoring and chat interface
+- **🌐 Web Dashboard**: Real-time monitoring and chat interface with WebSocket support
 - **📚 RAG Knowledge Base**: Document ingestion and semantic search
 - **🐳 Docker Support**: Containerized deployment with docker-compose
 - **⚙️ Comprehensive Configuration**: YAML-based configuration system
 - **🎯 Interruptible Conversations**: Natural conversation flow with barge-in capability
+- **🔄 Real-Time Communication**: WebSocket-based bidirectional communication for live updates
 
 ## 🚀 Quick Start
 

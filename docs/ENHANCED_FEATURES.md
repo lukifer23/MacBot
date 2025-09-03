@@ -42,11 +42,22 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 
 ## 🌐 Web Dashboard Features
 
+### **Real-Time WebSocket Communication**
+- **Bidirectional Communication**: Flask-SocketIO enables real-time, two-way communication between web clients and the MacBot backend
+- **Live Updates**: All conversation events, system stats, and state changes are broadcast instantly to connected clients
+- **Event-Driven Architecture**: WebSocket events handle chat messages, voice recording, conversation interruption, and system monitoring
+
 ### **Real-Time Monitoring**
-- **Live Stats**: CPU, RAM, Disk, Network usage
-- **Auto-refresh**: Updates every 5 seconds
-- **Service Status**: Visual indicators for all components
-- **Endpoint URLs**: Direct links to all services
+- **Live Stats**: CPU, RAM, Disk, Network usage with 5-second auto-refresh
+- **Service Status**: Visual indicators for all components with real-time health updates
+- **Conversation Tracking**: Live conversation state, message count, and interruption monitoring
+- **Endpoint URLs**: Direct links to all services with connection status
+
+### **Interactive Controls**
+- **Voice Recording**: Start/stop voice recording with real-time feedback
+- **Conversation Management**: Interrupt active conversations, clear conversation history
+- **Manual Intervention**: Direct control over conversation flow and system state
+- **Real-Time Feedback**: Instant visual feedback for all user actions
 
 ### **Service Cards**
 - **LLM Server**: llama.cpp status and endpoint

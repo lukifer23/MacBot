@@ -64,6 +64,73 @@ MacBot provides several API endpoints for interacting with the system programmat
   }
   ```
 
+### WebSocket Real-Time API
+**WebSocket URL:** `ws://localhost:3000`
+
+The web dashboard provides real-time communication via WebSocket for live updates and interactive controls.
+
+#### Connection Events
+- `connect` - Client connects to WebSocket server
+- `disconnect` - Client disconnects from WebSocket server
+
+#### Chat Events
+- **Send:** `chat_message`
+  ```json
+  {
+    "message": "Hello MacBot",
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+  ```
+
+- **Receive:** `conversation_update`
+  ```json
+  {
+    "type": "message",
+    "data": {
+      "role": "assistant",
+      "content": "Hello! How can I help you?",
+      "timestamp": "2025-01-01T12:00:01Z"
+    }
+  }
+  ```
+
+#### Voice Control Events
+- **Send:** `start_voice_recording` - Start voice input
+- **Send:** `stop_voice_recording` - Stop voice input
+- **Receive:** `voice_status`
+  ```json
+  {
+    "status": "recording|processing|idle",
+    "message": "Voice recording started"
+  }
+  ```
+
+#### Conversation Control Events
+- **Send:** `interrupt_conversation` - Interrupt current conversation
+- **Send:** `clear_conversation` - Clear conversation history
+- **Receive:** `conversation_update`
+  ```json
+  {
+    "type": "conversation_cleared|conversation_interrupted",
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+  ```
+
+#### System Monitoring Events
+- **Receive:** `system_stats` (automatic broadcast every 5 seconds)
+  ```json
+  {
+    "cpu": 15.2,
+    "ram": 45.8,
+    "disk": 67.3,
+    "network": {
+      "bytes_sent": 1024000,
+      "bytes_recv": 2048000
+    },
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+  ```
+
 ## RAG Server API
 **Base URL:** `http://localhost:8081`
 
