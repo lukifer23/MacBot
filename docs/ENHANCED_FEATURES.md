@@ -92,7 +92,39 @@ POST /api/chat       - Chat interface
 - **Service URLs**: All endpoints displayed
 - **Status Reporting**: Real-time service status
 
-## 🚀 Getting Started
+## �️ Health Monitoring & Resilience
+
+### **Circuit Breaker Pattern**
+- **Automatic Failure Detection**: Monitors service health with configurable thresholds
+- **Intelligent Recovery**: Automatically retries failed services after timeout periods
+- **Service Isolation**: Prevents one failing service from affecting the entire system
+- **Configurable Thresholds**: Customizable failure counts and recovery timeouts
+
+### **Graceful Degradation**
+- **Degraded Mode Responses**: Provides helpful responses even when LLM is unavailable
+- **Basic Query Support**: Time, date, and help queries work without external services
+- **Service Availability Checks**: Automatically detects and adapts to service failures
+- **User-Friendly Messaging**: Clear communication about service status and limitations
+
+### **Comprehensive Health Monitoring**
+- **Multi-Service Tracking**: Monitors LLM server, RAG server, web dashboard, and system resources
+- **Real-Time Status**: Live health status updates via WebSocket and REST API
+- **Alert System**: Configurable alerts for service failures and recoveries
+- **Health Endpoints**: REST API endpoints for programmatic health checking
+
+### **Automatic Recovery Mechanisms**
+- **Service Restart**: Automatic restart of failed processes
+- **Dependency Management**: Proper startup order and dependency resolution
+- **Resource Monitoring**: System resource tracking to prevent overload
+- **Process Health Checks**: Continuous monitoring of all running processes
+
+### **Web Dashboard Health Integration**
+- **Health Status Display**: Visual indicators for all service health states
+- **Real-Time Updates**: Live health status broadcasting via WebSocket
+- **Health API Endpoint**: `/health` REST endpoint for comprehensive status
+- **Service Cards**: Individual service health cards with detailed status
+
+## �🚀 Getting Started
 
 ### **Quick Start**
 ```bash

@@ -59,7 +59,9 @@ MacBot/
 │   ├── message_bus_client.py # Message bus client
 │   ├── orchestrator.py     # Service orchestration
 │   ├── web_dashboard.py    # Web interface
-│   └── rag_server.py      # RAG knowledge base
+│   ├── health_monitor.py   # Health monitoring & resilience
+│   ├── rag_server.py      # RAG knowledge base
+│   └── config.py           # Configuration management
 ├── scripts/                # Shell scripts
 │   ├── bootstrap_mac.sh   # Bootstrap script
 │   └── start_macbot.sh    # Startup script
@@ -132,6 +134,15 @@ MacBot/
   - Vector embeddings
   - ChromaDB integration
 
+#### 5. Health Monitor (`src/macbot/health_monitor.py`)
+- **Purpose**: Service health monitoring and resilience
+- **Features**:
+  - Circuit breaker pattern implementation
+  - Service health checks with configurable intervals
+  - Automatic failure detection and recovery
+  - Graceful degradation support
+  - Alert system for service failures
+
 ### Data Flow
 
 ```
@@ -140,6 +151,8 @@ Audio Input → VAD → Whisper (STT) → LLM → TTS → Audio Output
                 Tool Calls → Native macOS Integration
                       ↓
                 RAG Search → Knowledge Base
+                      ↓
+           Health Monitor → Service Resilience
 ```
 
 ## Development Workflow

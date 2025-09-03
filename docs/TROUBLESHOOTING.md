@@ -44,6 +44,133 @@ curl http://localhost:3000/api/stats
 curl http://localhost:8081/health
 ```
 
+### 4. Health Monitoring & Resilience
+```bash
+# Check health status via API
+curl http://localhost:3000/health
+
+# Test circuit breaker status
+python -c "from src.macbot.health_monitor import get_health_monitor; hm = get_health_monitor(); print(hm.get_health_status())"
+
+# Check degraded mode
+python -c "from src.macbot.voice_assistant import get_degraded_response; print(get_degraded_response('What time is it?'))"
+```
+
+## Health Monitoring & Resilience Issues
+
+### Circuit Breaker Tripped
+
+#### Symptom
+Services show as unhealthy and circuit breaker is open.
+
+#### Solutions
+1. **Check service logs:**
+   ```bash
+   # View health monitor logs
+   tail -f logs/macbot.log | grep -i health
+   
+   # Check specific service logs
+   tail -f models/llama.cpp/server.log
+   ```
+
+2. **Manual service restart:**
+   ```bash
+   # Restart specific service
+   python orchestrator.py --restart llama_server
+   
+   # Reset circuit breaker
+   python -c "from src.macbot.health_monitor import get_health_monitor; hm = get_health_monitor(); hm.reset_circuit_breaker('llama_server')"
+   ```
+
+3. **Check network connectivity:**
+   ```bash
+   # Test service endpoints
+   curl http://localhost:8080/v1/models
+   curl http://localhost:8081/health
+   ```
+
+### Degraded Mode Not Working
+
+#### Symptom
+Services fail but system doesn't provide degraded responses.
+
+#### Solutions
+1. **Check health monitor configuration:**
+   ```yaml
+   health_monitor:
+     check_interval: 30
+     timeout: 10
+     failure_threshold: 3
+   ```
+
+2. **Verify degraded response function:**
+   ```bash
+   python -c "from src.macbot.voice_assistant import get_degraded_response; print('Degraded response test:', get_degraded_response('hello'))"
+   ```
+
+3. **Check service availability detection:**
+   ```bash
+   # Test service health checks
+   curl http://localhost:8080/health
+   curl http://localhost:8081/health
+   ```
+
+### Health Endpoint Not Responding
+
+#### Symptom
+`/health` endpoint returns errors or doesn't respond.
+
+#### Solutions
+1. **Check web dashboard status:**
+   ```bash
+   # Verify web dashboard is running
+   ps aux | grep web_dashboard
+   
+   # Check web dashboard logs
+   tail -f logs/web_dashboard.log
+   ```
+
+2. **Test health monitor import:**
+   ```bash
+   python -c "from src.macbot.health_monitor import get_health_monitor; print('Health monitor import successful')"
+   ```
+
+3. **Restart web dashboard:**
+   ```bash
+   # Kill existing process
+   pkill -f web_dashboard
+   
+   # Restart
+   python -m macbot.web_dashboard
+   ```
+
+### Automatic Recovery Not Working
+
+#### Symptom
+Services fail but don't automatically restart.
+
+#### Solutions
+1. **Check orchestrator configuration:**
+   ```yaml
+   orchestrator:
+     auto_restart: true
+     restart_delay: 5
+   ```
+
+2. **Verify process monitoring:**
+   ```bash
+   # Check running processes
+   python orchestrator.py --status
+   
+   # View orchestrator logs
+   tail -f logs/macbot.log | grep -i restart
+   ```
+
+3. **Manual process restart:**
+   ```bash
+   python orchestrator.py --restart all
+   ```
+
 ## Common Issues
 
 ### Voice Assistant Won't Start

@@ -4,6 +4,7 @@ import sounddevice as sd
 import soundfile as sf
 import requests
 import psutil
+import logging
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from .conversation_manager import (
 )
 from . import config as CFG
 from . import tools
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # No heavy optional deps needed here; RAG is handled via HTTP client.
 
@@ -66,25 +70,53 @@ class ToolCaller:
         }
 
     def web_search(self, query: str) -> str:
-        return tools.web_search(query)
+        try:
+            return tools.web_search(query)
+        except Exception as e:
+            logger.error(f"Web search failed: {e}")
+            return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
 
     def browse_website(self, url: str) -> str:
-        return tools.browse_website(url)
+        try:
+            return tools.browse_website(url)
+        except Exception as e:
+            logger.error(f"Website browsing failed: {e}")
+            return f"I couldn't open {url} right now. The website browsing service might be unavailable."
 
     def get_system_info(self) -> str:
-        return tools.get_system_info()
+        try:
+            return tools.get_system_info()
+        except Exception as e:
+            logger.error(f"System info retrieval failed: {e}")
+            return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
 
     def search_knowledge_base(self, query: str) -> str:
-        return tools.rag_search(query)
+        try:
+            return tools.rag_search(query)
+        except Exception as e:
+            logger.error(f"Knowledge base search failed: {e}")
+            return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
 
     def open_app(self, app_name: str) -> str:
-        return tools.open_app(app_name)
+        try:
+            return tools.open_app(app_name)
+        except Exception as e:
+            logger.error(f"App opening failed: {e}")
+            return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
 
     def take_screenshot(self) -> str:
-        return tools.take_screenshot()
+        try:
+            return tools.take_screenshot()
+        except Exception as e:
+            logger.error(f"Screenshot failed: {e}")
+            return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
 
     def get_weather(self) -> str:
-        return tools.get_weather()
+        try:
+            return tools.get_weather()
+        except Exception as e:
+            logger.error(f"Weather retrieval failed: {e}")
+            return "I couldn't get weather information right now. The weather service might be unavailable."
 
 # Initialize tool caller
 tool_caller = ToolCaller()
@@ -116,24 +148,45 @@ def _callback(indata, frames, time_info, status):
 
 # ---- Whisper transcription ----
 def transcribe(wav_f32: np.ndarray) -> str:
-    # write temp wav
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
-        tmp = f.name
-    # call whisper.cpp
-    # -nt = no timestamps, -l language
-    # -of writes a sidecar .txt next to the input
-    cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-of", tmp]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print("[whisper] error:", proc.stderr, file=sys.stderr)
-        return ""
+    """Transcribe audio using Whisper with graceful degradation"""
     try:
-        with open(tmp + ".txt", "r") as rf:
-            text = rf.read().strip()
-    except FileNotFoundError:
-        text = ""
-    return text
+        # write temp wav
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
+            tmp = f.name
+
+        # call whisper.cpp
+        # -nt = no timestamps, -l language
+        # -of writes a sidecar .txt next to the input
+        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-of", tmp]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        if proc.returncode != 0:
+            logger.error(f"Whisper transcription failed: {proc.stderr}")
+            return ""
+
+        try:
+            with open(tmp + ".txt", "r") as rf:
+                text = rf.read().strip()
+        except FileNotFoundError:
+            logger.error("Whisper output file not found")
+            text = ""
+
+        # Clean up temp files
+        try:
+            os.unlink(tmp)
+            os.unlink(tmp + ".txt")
+        except OSError:
+            pass
+
+        return text
+
+    except subprocess.TimeoutExpired:
+        logger.error("Whisper transcription timed out")
+        return ""
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        return ""
 
 # ---- Enhanced LLM chat with tool calling ----
 def llama_chat(user_text: str) -> str:
@@ -268,8 +321,40 @@ def llama_chat(user_text: str) -> str:
                 conversation_manager.update_response(full_response, is_complete=True)
 
             return full_response
+    except requests.exceptions.Timeout:
+        return "The language model is taking too long to respond. Please try again."
+    except requests.exceptions.ConnectionError:
+        return "I can't connect to the language model right now. Please check if the LLM server is running."
     except Exception as e:
+        logger.error(f"LLM processing error: {e}")
         return f"I'm having trouble connecting to the language model: {str(e)}"
+
+def get_degraded_response(user_text: str) -> str:
+    """Provide basic responses when services are unavailable"""
+    user_text_lower = user_text.lower()
+
+    # Basic command recognition without external services
+    if any(word in user_text_lower for word in ["hello", "hi", "hey"]):
+        return "Hello! I'm MacBot, but some of my services aren't available right now."
+
+    elif "time" in user_text_lower:
+        current_time = time.strftime("%I:%M %p")
+        return f"The current time is {current_time}."
+
+    elif "date" in user_text_lower:
+        current_date = time.strftime("%A, %B %d, %Y")
+        return f"Today is {current_date}."
+
+    elif any(word in user_text_lower for word in ["help", "what can you do"]):
+        return ("I can help with basic tasks, but some services are currently unavailable. "
+                "Try asking for the time, date, or basic information.")
+
+    elif any(word in user_text_lower for word in ["status", "system", "info"]):
+        return "System monitoring is currently unavailable, but I'm still here to help with basic questions."
+
+    else:
+        return ("I'm sorry, but some of my services are currently unavailable. "
+                "I can still help with basic questions about time, date, or general assistance.")
 
 # ---- TTS Setup ----
 # Use pyttsx3 as a more compatible TTS engine
@@ -409,7 +494,21 @@ def main():
                             if INTERRUPTION_ENABLED and conversation_manager:
                                 conversation_manager.start_conversation()
                                 conversation_manager.add_user_input(transcript)
-                            reply = llama_chat(transcript)
+
+                            # Check if LLM service is available, otherwise use degraded mode
+                            try:
+                                # Quick health check for LLM service
+                                response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=2)
+                                service_available = response.status_code == 200
+                            except:
+                                service_available = False
+
+                            if service_available:
+                                reply = llama_chat(transcript)
+                            else:
+                                logger.warning("LLM service unavailable, using degraded mode")
+                                reply = get_degraded_response(transcript)
+
                             print(f"[BOT] {reply}\n")
                             speak(reply)
                 else:
@@ -421,7 +520,21 @@ def main():
                             if INTERRUPTION_ENABLED and conversation_manager:
                                 conversation_manager.start_conversation()
                                 conversation_manager.add_user_input(transcript)
-                            reply = llama_chat(transcript)
+
+                            # Check if LLM service is available, otherwise use degraded mode
+                            try:
+                                # Quick health check for LLM service
+                                response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=2)
+                                service_available = response.status_code == 200
+                            except:
+                                service_available = False
+
+                            if service_available:
+                                reply = llama_chat(transcript)
+                            else:
+                                logger.warning("LLM service unavailable, using degraded mode")
+                                reply = get_degraded_response(transcript)
+
                             print(f"[BOT] {reply}\n")
                             speak(reply)
     except KeyboardInterrupt:

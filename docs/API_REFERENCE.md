@@ -55,6 +55,55 @@ MacBot provides several API endpoints for interacting with the system programmat
   }
   ```
 
+### Health Monitoring
+- `GET /health` - Comprehensive system health status
+  ```json
+  {
+    "overall_status": "healthy",
+    "services": {
+      "llm_server": {
+        "status": "healthy",
+        "last_check": "2025-01-01T12:00:00Z",
+        "response_time": 150,
+        "consecutive_failures": 0
+      },
+      "rag_server": {
+        "status": "healthy",
+        "last_check": "2025-01-01T12:00:00Z",
+        "response_time": 200,
+        "consecutive_failures": 0
+      },
+      "web_dashboard": {
+        "status": "healthy",
+        "last_check": "2025-01-01T12:00:00Z",
+        "response_time": 50,
+        "consecutive_failures": 0
+      },
+      "system_resources": {
+        "status": "healthy",
+        "cpu_percent": 15.2,
+        "memory_percent": 45.8,
+        "disk_percent": 50.0
+      }
+    },
+    "circuit_breakers": {
+      "llm_server": {
+        "state": "closed",
+        "failure_count": 0,
+        "last_failure_time": null,
+        "next_retry_time": null
+      },
+      "rag_server": {
+        "state": "closed",
+        "failure_count": 0,
+        "last_failure_time": null,
+        "next_retry_time": null
+      }
+    },
+    "timestamp": "2025-01-01T12:00:00Z"
+  }
+  ```
+
 ### Chat Interface
 - `POST /api/chat` - Send chat messages
   ```json

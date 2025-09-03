@@ -22,6 +22,8 @@ from flask import Flask, render_template_string, jsonify, request, Response, str
 from flask_socketio import SocketIO, emit  # type: ignore
 import logging
 
+from .health_monitor import get_health_monitor
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1245,6 +1247,21 @@ def api_voice():
     except Exception as e:
         logger.error(f"Voice API error: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for service monitoring"""
+    try:
+        health_monitor = get_health_monitor()
+        health_status = health_monitor.get_health_status()
+        return jsonify(health_status)
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({
+            'overall_status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 # WebSocket Event Handlers
 @socketio.on('connect')

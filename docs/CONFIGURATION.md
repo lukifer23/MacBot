@@ -53,6 +53,53 @@ services:
     check_interval: 10  # seconds
     auto_restart: true
 
+# Health Monitoring Configuration
+health_monitor:
+  enabled: true
+  check_interval: 30  # seconds between health checks
+  timeout: 10  # seconds to wait for service response
+  failure_threshold: 3  # consecutive failures before marking unhealthy
+  recovery_timeout: 60  # seconds to wait before retrying failed service
+  
+  services:
+    llm_server:
+      url: "http://localhost:8080/health"
+      timeout: 5
+      enabled: true
+      
+    rag_server:
+      url: "http://localhost:8081/health"
+      timeout: 5
+      enabled: true
+      
+    web_dashboard:
+      url: "http://localhost:3000/health"
+      timeout: 2
+      enabled: true
+      
+    system_resources:
+      cpu_threshold: 90  # percent
+      memory_threshold: 90  # percent
+      disk_threshold: 95  # percent
+      enabled: true
+
+  circuit_breakers:
+    llm_server:
+      failure_threshold: 5
+      recovery_timeout: 30
+      enabled: true
+      
+    rag_server:
+      failure_threshold: 5
+      recovery_timeout: 30
+      enabled: true
+
+  alerts:
+    enabled: true
+    log_level: "WARNING"
+    email_enabled: false
+    email_recipient: "admin@example.com"
+
 # Tool Configuration
 tools:
   enabled:

@@ -20,6 +20,7 @@ import logging
 
 from .message_bus import MessageBus, start_message_bus, stop_message_bus
 from .message_bus_client import MessageBusClient
+from .health_monitor import get_health_monitor
 from . import config as CFG
 
 # Configure logging
@@ -46,6 +47,9 @@ class MacBotOrchestrator:
         # Message bus integration
         self.message_bus = None
         self.bus_client = None
+        
+        # Health monitoring integration
+        self.health_monitor = get_health_monitor()
         
         # Service status tracking
         self.service_status: Dict[str, Dict] = {}
@@ -436,6 +440,10 @@ class MacBotOrchestrator:
                     logger.error(f"Failed to start {name}, stopping all services")
                     self.stop_all()
                     return False
+        
+        # Start health monitoring
+        self.health_monitor.start_monitoring()
+        logger.info("✅ Health monitoring started")
         
         # Start system monitoring
         self.running = True
