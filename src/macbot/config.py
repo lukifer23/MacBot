@@ -157,6 +157,17 @@ def get_allowed_apps() -> List[str]:
     return list(get("tools.app_launcher.allowed_apps", []))
 
 
+def tools_enabled() -> bool:
+    """Check if tools are enabled in configuration"""
+    enabled_tools = get("tools.enabled", [])
+    return len(enabled_tools) > 0
+
+
+def get_enabled_tools() -> List[str]:
+    """Get list of enabled tools"""
+    return list(get("tools.enabled", []))
+
+
 def get_web_dashboard_host_port() -> tuple[str, int]:
     host = str(get("services.web_dashboard.host", "0.0.0.0"))
     try:

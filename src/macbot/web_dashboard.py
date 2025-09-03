@@ -8,12 +8,18 @@ import time
 import json
 import psutil
 import threading
+import subprocess
+import uuid
+from collections import deque
+from datetime import datetime
+from typing import Optional
 
 # Add src/ to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import requests
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request, Response, stream_with_context
+from flask_socketio import SocketIO, emit  # type: ignore
 import logging
 
 # Configure logging
@@ -21,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 from . import config as CFG
 
 # Global state
@@ -31,6 +38,22 @@ system_stats = {
     'network': {'bytes_sent': 0, 'bytes_recv': 0},
     'timestamp': datetime.now().isoformat()
 }
+
+# Conversation state management
+conversation_state = {
+    'active': False,
+    'current_speaker': None,  # 'user' or 'assistant'
+    'last_activity': datetime.now(),
+    'message_count': 0,
+    'interruption_count': 0,
+    'conversation_id': None
+}
+
+# Conversation history (in-memory for now, could be persisted to database)
+conversation_history = deque(maxlen=100)  # Keep last 100 messages
+
+# Connected WebSocket clients
+websocket_clients = set()
 
 llm_models_endpoint = CFG.get_llm_models_endpoint()
 rag_host, rag_port = CFG.get_rag_host_port()
@@ -408,6 +431,7 @@ DASHBOARD_HTML = """
             <h1>🤖 MacBot Dashboard</h1>
             <p>Local Voice Assistant with AI Tools & Live Monitoring</p>
             <button class="refresh-btn" onclick="updateStats()">🔄 Refresh Stats</button>
+            <button class="refresh-btn" onclick="clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
         </div>
         
         <div class="main-content">
@@ -672,7 +696,11 @@ DASHBOARD_HTML = """
                 });
         }
 
-        function formatBytes(bytes) {
+        function clearConversation() {
+            if (confirm('Are you sure you want to clear the conversation history?')) {
+                socket.emit('clear_conversation');
+            }
+        }
             if (bytes === 0) return '0 B';
             const k = 1024;
             const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -689,12 +717,12 @@ DASHBOARD_HTML = """
             
             console.log('Sending message:', message); // Debug log
             
-            // Add user message
+            // Add user message to local display
             addChatMessage(message, 'user');
             input.value = '';
             
-            // Process with LLM
-            sendMessageToLLM(message);
+            // Send via WebSocket
+            socket.emit('chat_message', { message: message });
         }
         
         function addChatMessage(message, sender) {
@@ -756,10 +784,8 @@ DASHBOARD_HTML = """
                     addChatMessage('🎤 Recording... Click again to stop.', 'system');
                 }
                 
-                // Set up auto-stop on silence for conversational mode
-                if (isConversationalMode) {
-                    handleVoiceActivity();
-                }
+                // Emit WebSocket event
+                socket.emit('start_voice_recording');
                 
             } catch (error) {
                 addChatMessage('❌ Microphone access denied. Please allow microphone access.', 'system');
@@ -779,11 +805,8 @@ DASHBOARD_HTML = """
             voiceButton.classList.remove('recording');
             voiceButton.textContent = '🎤';
             
-            // Clear any pending timeouts
-            if (conversationTimeout) {
-                clearTimeout(conversationTimeout);
-                conversationTimeout = null;
-            }
+            // Emit WebSocket event
+            socket.emit('stop_voice_recording');
         }
         
         async function processVoiceInput(audioBlob) {
@@ -795,25 +818,11 @@ DASHBOARD_HTML = """
                 reader.onload = async () => {
                     const base64Audio = reader.result.split(',')[1];
                     
-                    // Send to voice processing endpoint
-                    const response = await fetch('/api/voice', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ audio: base64Audio })
-                    });
+                    // Send via WebSocket instead of HTTP API
+                    socket.emit('voice_message', { audio: base64Audio });
                     
-                    if (response.ok) {
-                        const data = await response.json();
-                        addChatMessage(data.transcription, 'user');
-                        
-                        // Process the transcribed text with LLM
-                        await sendMessageToLLM(data.transcription);
-                        
-                        // Start conversational mode for natural flow
-                        startConversationalMode();
-                    } else {
-                        addChatMessage('❌ Voice processing failed.', 'system');
-                    }
+                    // Start conversational mode for natural flow
+                    startConversationalMode();
                 };
                 reader.readAsDataURL(audioBlob);
                 
@@ -971,6 +980,41 @@ DASHBOARD_HTML = """
             console.error('JavaScript error:', e.error);
         });
         
+        // WebSocket event handlers
+        socket.on('conversation_update', function(data) {
+            console.log('Received conversation update:', data);
+            handleConversationUpdate(data);
+        });
+        
+        socket.on('voice_processed', function(data) {
+            console.log('Voice processed:', data);
+            if (data.transcription) {
+                addChatMessage(data.transcription, 'user');
+            }
+        });
+        
+        function handleConversationUpdate(data) {
+            if (data.type === 'user_message') {
+                addChatMessage(data.content, 'user');
+            } else if (data.type === 'assistant_message') {
+                addChatMessage(data.content, 'assistant');
+            } else if (data.type === 'voice_transcription') {
+                addChatMessage(data.transcription, 'user');
+            } else if (data.type === 'error_message') {
+                addChatMessage(data.content, 'system');
+            } else if (data.type === 'interruption') {
+                addChatMessage('🔇 Conversation interrupted', 'system');
+            } else if (data.type === 'voice_recording_started') {
+                addChatMessage('🎤 Voice recording started...', 'system');
+            } else if (data.type === 'voice_recording_stopped') {
+                addChatMessage('🎤 Voice recording stopped', 'system');
+            } else if (data.type === 'conversation_cleared') {
+                const chatHistory = document.getElementById('chat-history');
+                chatHistory.innerHTML = '';
+                addChatMessage('🧹 Conversation history cleared', 'system');
+            }
+        }
+        
         // Test button functionality
         console.log('Dashboard loaded, testing elements...');
         console.log('Chat input:', document.getElementById('chat-input'));
@@ -1017,7 +1061,7 @@ DASHBOARD_HTML = """
                 console.log('Setting up stop conversation button listener');
                 stopButton.addEventListener('click', function() {
                     console.log('Stop conversation button clicked!');
-                    stopConversationalMode();
+                    socket.emit('interrupt_conversation');
                 });
             }
             
@@ -1184,18 +1228,173 @@ def api_voice():
         # Process audio with Whisper
         transcription = process_voice_with_whisper(audio_data)
         
+        # Update conversation state
+        conversation_state['last_activity'] = datetime.now()
+        conversation_state['current_speaker'] = 'user'
+        conversation_state['message_count'] += 1
+        
+        # Broadcast conversation update
+        socketio.emit('conversation_update', {
+            'type': 'voice_transcription',
+            'transcription': transcription,
+            'timestamp': datetime.now().isoformat()
+        })
+        
         return jsonify({'transcription': transcription})
         
     except Exception as e:
         logger.error(f"Voice API error: {e}")
         return jsonify({'error': str(e)}), 500
 
+# WebSocket Event Handlers
+@socketio.on('connect')
+def handle_connect():
+    """Handle WebSocket connection"""
+    # In Flask-SocketIO, we can get the client ID from the socketio context
+    logger.info("Client connected")
+    websocket_clients.add(id(request))
+    
+    # Send current state to new client
+    emit('state_update', {
+        'conversation_state': conversation_state,
+        'system_stats': get_system_stats(),
+        'service_status': service_status,
+        'conversation_history': list(conversation_history)
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle WebSocket disconnection"""
+    logger.info("Client disconnected")
+    websocket_clients.discard(id(request))
+
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    """Handle chat messages from web interface"""
+    message = data.get('message', '').strip()
+    if not message:
+        return
+    
+    # Update conversation state
+    conversation_state['active'] = True
+    conversation_state['current_speaker'] = 'user'
+    conversation_state['last_activity'] = datetime.now()
+    conversation_state['message_count'] += 1
+    
+    # Add to conversation history
+    conversation_history.append({
+        'type': 'user_message',
+        'content': message,
+        'timestamp': datetime.now().isoformat(),
+        'source': 'web'
+    })
+    
+    # Broadcast user message
+    emit('conversation_update', {
+        'type': 'user_message',
+        'content': message,
+        'timestamp': datetime.now().isoformat()
+    }, broadcast=True)
+    
+    # Process with LLM
+    try:
+        response = process_with_llm(message)
+        
+        # Update conversation state
+        conversation_state['current_speaker'] = 'assistant'
+        
+        # Add assistant response to history
+        conversation_history.append({
+            'type': 'assistant_message',
+            'content': response,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'llm'
+        })
+        
+        # Broadcast assistant response
+        socketio.emit('conversation_update', {
+            'type': 'assistant_message',
+            'content': response,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Chat processing error: {e}")
+        error_msg = f"Error processing message: {str(e)}"
+        
+        conversation_history.append({
+            'type': 'error_message',
+            'content': error_msg,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        emit('conversation_update', {
+            'type': 'error_message',
+            'content': error_msg,
+            'timestamp': datetime.now().isoformat()
+        })
+
+@socketio.on('interrupt_conversation')
+def handle_interrupt_conversation():
+    """Handle manual conversation interruption from web interface"""
+    logger.info("Manual conversation interruption requested from web interface")
+    
+    conversation_state['interruption_count'] += 1
+    conversation_state['last_activity'] = datetime.now()
+    
+    # Broadcast interruption event
+    socketio.emit('conversation_update', {
+        'type': 'interruption',
+        'source': 'web_manual',
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    # TODO: Send interruption signal to voice assistant
+    # This would integrate with the message bus to interrupt ongoing TTS
+
+@socketio.on('start_voice_recording')
+def handle_start_voice_recording():
+    """Handle voice recording start from web interface"""
+    conversation_state['active'] = True
+    conversation_state['current_speaker'] = 'user'
+    
+    emit('conversation_update', {
+        'type': 'voice_recording_started',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@socketio.on('stop_voice_recording')
+def handle_stop_voice_recording():
+    """Handle voice recording stop from web interface"""
+    conversation_state['last_activity'] = datetime.now()
+    
+    emit('conversation_update', {
+        'type': 'voice_recording_stopped',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@socketio.on('clear_conversation')
+def handle_clear_conversation():
+    """Handle conversation history clearing"""
+    global conversation_history, conversation_state
+    
+    conversation_history.clear()
+    conversation_state['message_count'] = 0
+    conversation_state['interruption_count'] = 0
+    conversation_state['active'] = False
+    conversation_state['current_speaker'] = None
+    conversation_state['conversation_id'] = str(uuid.uuid4())
+    
+    emit('conversation_update', {
+        'type': 'conversation_cleared',
+        'timestamp': datetime.now().isoformat()
+    })
+
 def process_voice_with_whisper(base64_audio: str) -> str:
     """Process voice input using Whisper"""
     try:
         import base64
         import tempfile
-        import subprocess
         import os
         
         # Decode base64 audio
@@ -1218,7 +1417,7 @@ def process_voice_with_whisper(base64_audio: str) -> str:
                 return "Whisper model not found. Please run 'make build-whisper' first."
             
             # Run Whisper transcription
-            result = subprocess.run([
+            result = subprocess.run([  # type: ignore
                 whisper_bin,
                 '-m', whisper_model,
                 '-f', temp_file_path,
@@ -1305,7 +1504,7 @@ def process_with_llm(message: str) -> str:
         logger.error(f"LLM processing error: {e}")
         return f"LLM processing error: {str(e)}"
 
-def process_tools(message: str) -> str:
+def process_tools(message: str) -> Optional[str]:
     """Process message for tool usage"""
     message_lower = message.lower()
     
@@ -1323,16 +1522,14 @@ def process_tools(message: str) -> str:
                     location = "current location"
                 
                 # Use Safari to search weather
-                import subprocess
                 search_url = f"https://www.google.com/search?q=weather+{location.replace(' ', '+')}"
-                subprocess.run(['open', '-a', 'Safari', search_url], check=True)
+                subprocess.run(['open', '-a', 'Safari', search_url], check=True)  # type: ignore
                 return f"I've opened Safari and searched for weather in {location}. The results should be displayed in your browser."
             
             # General web search
             query = message_lower.replace("search", "").replace("for", "").replace("the", "").strip()
-            import subprocess
             search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            subprocess.run(['open', '-a', 'Safari', search_url], check=True)
+            subprocess.run(['open', '-a', 'Safari', search_url], check=True)  # type: ignore
             return f"I've opened Safari and searched for '{query}'. The results should be displayed in your browser."
         
         # Website browsing
@@ -1341,35 +1538,30 @@ def process_tools(message: str) -> str:
             words = message.split()
             for word in words:
                 if word.startswith(("http://", "https://", "www.")):
-                    import subprocess
-                    subprocess.run(['open', '-a', 'Safari', word], check=True)
+                    subprocess.run(['open', '-a', 'Safari', word], check=True)  # type: ignore
                     return f"I've opened {word} in Safari for you to browse."
             
             # If no URL found, try to construct one
             if "weather.com" in message_lower:
-                import subprocess
-                subprocess.run(['open', '-a', 'Safari', 'https://www.weather.com'], check=True)
+                subprocess.run(['open', '-a', 'Safari', 'https://www.weather.com'], check=True)  # type: ignore
                 return "I've opened Weather.com in Safari for you."
             elif "accuweather" in message_lower:
-                import subprocess
-                subprocess.run(['open', '-a', 'Safari', 'https://www.accuweather.com'], check=True)
+                subprocess.run(['open', '-a', 'Safari', 'https://www.accuweather.com'], check=True)  # type: ignore
                 return "I've opened AccuWeather in Safari for you."
         
         # App opening
         elif "open app" in message_lower or "launch" in message_lower:
             app_name = message_lower.replace("open app", "").replace("launch", "").strip()
-            import subprocess
-            subprocess.run(['open', '-a', app_name], check=True)
+            subprocess.run(['open', '-a', app_name], check=True)  # type: ignore
             return f"I've opened {app_name} for you."
         
         # Screenshot
         elif "screenshot" in message_lower or "take picture" in message_lower:
-            import subprocess
             import time
             timestamp = int(time.time())
             filename = f"screenshot_{timestamp}.png"
             filepath = os.path.expanduser(f"~/Desktop/{filename}")
-            subprocess.run(['screencapture', filepath], check=True)
+            subprocess.run(['screencapture', filepath], check=True)  # type: ignore
             return f"I've taken a screenshot and saved it to your Desktop as {filename}"
         
         # System info
@@ -1387,7 +1579,7 @@ def process_tools(message: str) -> str:
         logger.error(f"Tool processing error: {e}")
         return f"Tool execution failed: {str(e)}"
 
-def get_rag_context(query: str) -> str:
+def get_rag_context(query: str) -> Optional[str]:
     """Get relevant context from RAG system"""
     try:
         # Check if RAG service is running
@@ -1419,7 +1611,7 @@ def get_rag_context(query: str) -> str:
         return None
 
 def start_dashboard(host='0.0.0.0', port=3000):
-    """Start the web dashboard"""
+    """Start the web dashboard with WebSocket support"""
     logger.info(f"Starting MacBot Web Dashboard on http://{host}:{port}")
     
     # Start background monitoring
@@ -1427,16 +1619,23 @@ def start_dashboard(host='0.0.0.0', port=3000):
         while True:
             try:
                 check_service_health()
-                time.sleep(10)  # Check every 10 seconds
+                # Emit real-time updates to all connected clients
+                socketio.emit('state_update', {
+                    'system_stats': get_system_stats(),
+                    'service_status': service_status,
+                    'conversation_state': conversation_state,
+                    'conversation_history': list(conversation_history)
+                })
+                time.sleep(5)  # Update every 5 seconds
             except Exception as e:
                 logger.error(f"Background monitoring error: {e}")
-                time.sleep(30)
+                time.sleep(10)
     
     monitor_thread = threading.Thread(target=background_monitor, daemon=True)
     monitor_thread.start()
     
     try:
-        app.run(host=host, port=port, debug=False, use_reloader=False)
+        socketio.run(app, host=host, port=port, debug=False, use_reloader=False)
     except Exception as e:
         logger.error(f"Failed to start web dashboard: {e}")
         raise

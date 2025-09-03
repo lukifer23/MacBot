@@ -148,9 +148,11 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Data folders (optional - uncomment if you want to ignore)
-# rag_data/
-# rag_database/
+# Data folders (contains ChromaDB databases and embeddings)
+rag_data/
+rag_database/
+data/rag_data/
+data/rag_database/
 
 # Docker
 .dockerignore

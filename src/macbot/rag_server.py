@@ -117,14 +117,24 @@ class RAGServer:
             
             # Format results
             formatted_results = []
-            if results['documents']:
-                for i, doc_id in enumerate(results['ids'][0]):
-                    formatted_results.append({
-                        'id': doc_id,
-                        'content': results['documents'][0][i],
-                        'metadata': results['metadatas'][0][i],
-                        'score': results['distances'][0][i] if 'distances' in results else None
-                    })
+            if results and isinstance(results, dict):
+                documents = results.get('documents')
+                ids = results.get('ids')
+                metadatas = results.get('metadatas')
+                distances = results.get('distances')
+                
+                if documents and documents[0]:
+                    for i, doc_id in enumerate(ids[0] if ids and ids[0] else []):
+                        doc_content = documents[0][i] if i < len(documents[0]) else ""
+                        doc_metadata = metadatas[0][i] if metadatas and metadatas[0] and i < len(metadatas[0]) else {}
+                        doc_score = distances[0][i] if distances and distances[0] and i < len(distances[0]) else None
+                        
+                        formatted_results.append({
+                            'id': doc_id,
+                            'content': doc_content,
+                            'metadata': doc_metadata,
+                            'score': doc_score
+                        })
             
             logger.info(f"Search query '{query}' returned {len(formatted_results)} results")
             return formatted_results

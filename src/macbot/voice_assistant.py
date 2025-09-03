@@ -138,7 +138,7 @@ def transcribe(wav_f32: np.ndarray) -> str:
 # ---- Enhanced LLM chat with tool calling ----
 def llama_chat(user_text: str) -> str:
     # Check if user is requesting tool usage
-    if ENABLE_TOOLS and tool_caller:
+    if CFG.tools_enabled() and tool_caller:
         # Enhanced keyword-based tool detection
         user_text_lower = user_text.lower()
         
@@ -250,7 +250,12 @@ def llama_chat(user_text: str) -> str:
                                         audio_data = audio[0]
                                     else:
                                         audio_data = audio
-                                    audio_handler.play_audio(audio_data)
+                                    
+                                    # Ensure audio_data is a numpy array
+                                    if not isinstance(audio_data, np.ndarray):
+                                        audio_data = np.array(audio_data)
+                                    
+                                    audio_handler.play_audio(audio_data)  # type: ignore
                                 elif 'tts_engine' in globals():
                                     tts_engine.say(txt)
                                     tts_engine.runAndWait()
@@ -269,7 +274,7 @@ def llama_chat(user_text: str) -> str:
 # ---- TTS Setup ----
 # Use pyttsx3 as a more compatible TTS engine
 try:
-    import pyttsx3
+    import pyttsx3  # type: ignore
     tts_engine = pyttsx3.init()
     tts_engine.setProperty('rate', int(SPEED * 180))  # Adjust rate for pyttsx3
     HAS_KOKORO = False

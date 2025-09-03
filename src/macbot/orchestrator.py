@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class MacBotOrchestrator:
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
             config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml')
         self.config_path = config_path
