@@ -17,7 +17,6 @@ from typing import Optional
 # Add src/ to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import requests
-from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request, Response, stream_with_context
 from flask_socketio import SocketIO, emit  # type: ignore
 import logging

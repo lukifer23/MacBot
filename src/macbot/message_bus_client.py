@@ -12,6 +12,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Import message_bus with proper relative import to avoid circular imports
+try:
+    from .message_bus import message_bus
+except ImportError:
+    # Fallback for when imported as a standalone module
+    message_bus = None
+
 class MessageBusClient:
     """Client for connecting to the MacBot message bus"""
 
@@ -33,8 +40,6 @@ class MessageBusClient:
 
     def start(self):
         """Start the message bus client"""
-        from message_bus import message_bus  # Import here to avoid circular imports
-        
         self.running = True
         self.client_id = f"{self.service_type}_{int(time.time())}"
         
@@ -53,7 +58,6 @@ class MessageBusClient:
         """Stop the message bus client"""
         self.running = False
         
-        from message_bus import message_bus  # Import here to avoid circular imports
         if message_bus and self.client_id:
             message_bus.unregister_client(self.client_id)
         
@@ -65,8 +69,6 @@ class MessageBusClient:
 
     def send_message(self, message: dict):
         """Send a message through the bus"""
-        from message_bus import message_bus  # Import here to avoid circular imports
-        
         if not self.connected or not message_bus:
             logger.warning("Not connected to message bus, message not sent")
             return

@@ -1,4 +1,12 @@
-import os, queue, subprocess, json, tempfile, time, threading, sys, signal
+import os
+import queue
+import subprocess
+import json
+import tempfile
+import time
+import threading
+import sys
+import signal
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -46,6 +54,12 @@ INTERRUPT_THRESHOLD = CFG.get_interrupt_threshold()
 INTERRUPT_COOLDOWN = CFG.get_interrupt_cooldown()
 CONVERSATION_TIMEOUT = CFG.get_conversation_timeout()
 CONTEXT_BUFFER_SIZE = CFG.get_context_buffer_size()
+
+# Constants
+MAX_INPUT_LENGTH = 2000  # Maximum input length for safety
+LLM_TIMEOUT = 120  # LLM request timeout in seconds
+HEALTH_CHECK_TIMEOUT = 2  # Health check timeout in seconds
+TURNING_DELAY = 0.35  # Delay for turn detection in seconds
 
 # ---- Optional: LiveKit turn detector ----
 try:
@@ -124,13 +138,31 @@ tool_caller = ToolCaller()
 # RAG handled via external rag_server (see macbot.tools.rag_search)
 
 # ---- Simple energy VAD ----
-def is_voiced(block, thresh=VAD_THRESH):
+def is_voiced(block: np.ndarray, thresh: float = VAD_THRESH) -> bool:
     return np.sqrt(np.mean(block**2)) > thresh
+
+def check_llm_service_available() -> bool:
+    """Check if LLM service is available"""
+    try:
+        response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=HEALTH_CHECK_TIMEOUT)
+        return response.status_code == 200
+    except:
+        return False
+
+def validate_input(text: str, max_length: int = MAX_INPUT_LENGTH) -> bool:
+    """Validate user input to prevent issues"""
+    if not text or not isinstance(text, str):
+        return False
+    if len(text.strip()) == 0:
+        return False
+    if len(text) > max_length:
+        return False
+    return True
 
 # ---- Audio I/O ----
 audio_q = queue.Queue()
 
-def _callback(indata, frames, time_info, status):
+def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
     if status:
         print(status, file=sys.stderr)
     audio_q.put(indata.copy())
@@ -250,10 +282,9 @@ def llama_chat(user_text: str) -> str:
     try:
         with requests.post(
             LLAMA_SERVER,
-            headers={"Authorization": "Bearer x"},
             json=payload,
             stream=True,
-            timeout=120,
+            timeout=LLM_TIMEOUT,
         ) as r:
             r.raise_for_status()
 
@@ -486,22 +517,23 @@ def main():
                 # candidate end-of-turn
                 if HAS_TURN_DETECT:
                     # simple delay + confirm (for demo)
-                    if now - last_voice > 0.35:
+                    if now - last_voice > TURNING_DELAY:
                         transcript = transcribe(np.concatenate(seg))
                         seg.clear(); voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+                            
+                            # Validate input before processing
+                            if not validate_input(transcript):
+                                print("[BOT] Invalid input received\n")
+                                continue
+                                
                             if INTERRUPTION_ENABLED and conversation_manager:
                                 conversation_manager.start_conversation()
                                 conversation_manager.add_user_input(transcript)
 
                             # Check if LLM service is available, otherwise use degraded mode
-                            try:
-                                # Quick health check for LLM service
-                                response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=2)
-                                service_available = response.status_code == 200
-                            except:
-                                service_available = False
+                            service_available = check_llm_service_available()
 
                             if service_available:
                                 reply = llama_chat(transcript)
@@ -517,17 +549,18 @@ def main():
                         seg.clear(); voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+                            
+                            # Validate input before processing
+                            if not validate_input(transcript):
+                                print("[BOT] Invalid input received\n")
+                                continue
+                                
                             if INTERRUPTION_ENABLED and conversation_manager:
                                 conversation_manager.start_conversation()
                                 conversation_manager.add_user_input(transcript)
 
                             # Check if LLM service is available, otherwise use degraded mode
-                            try:
-                                # Quick health check for LLM service
-                                response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=2)
-                                service_available = response.status_code == 200
-                            except:
-                                service_available = False
+                            service_available = check_llm_service_available()
 
                             if service_available:
                                 reply = llama_chat(transcript)

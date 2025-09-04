@@ -267,7 +267,8 @@ class MacBotOrchestrator:
                     if response.status_code == 200:
                         logger.info("✅ llama.cpp server ready")
                         return True
-                except:
+                except (requests.exceptions.RequestException, ValueError) as e:
+                    logger.debug(f"LLM server not ready yet: {e}")
                     time.sleep(1)
             
             logger.error("❌ llama.cpp server failed to start")
@@ -297,7 +298,8 @@ class MacBotOrchestrator:
                     if response.status_code == 200:
                         logger.info("✅ Web GUI ready")
                         return True
-                except:
+                except (requests.exceptions.RequestException, ValueError) as e:
+                    logger.debug(f"Web GUI not ready yet: {e}")
                     time.sleep(1)
             
             logger.error("❌ Web GUI failed to start")
@@ -331,7 +333,8 @@ class MacBotOrchestrator:
                     if response.status_code == 200:
                         logger.info("✅ RAG service ready")
                         return True
-                except:
+                except (requests.exceptions.RequestException, ValueError) as e:
+                    logger.debug(f"RAG service not ready yet: {e}")
                     time.sleep(1)
             
             logger.error("❌ RAG service failed to start")
