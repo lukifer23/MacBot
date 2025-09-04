@@ -462,6 +462,180 @@ while true; do
 done
 ```
 
+## Code Quality & Security Issues
+
+### Import Errors After Updates
+
+#### Symptom
+Modules fail to import after Phase 5 updates with import-related errors.
+
+#### Solutions
+1. **Check Python path:**
+   ```bash
+   # Verify Python can find modules
+   python -c "import sys; print(sys.path)"
+   
+   # Add project root to path if needed
+   export PYTHONPATH="/Users/admin/Downloads/MacBot:$PYTHONPATH"
+   ```
+
+2. **Reinstall dependencies:**
+   ```bash
+   # Recreate virtual environment
+   rm -rf macbot_env/
+   python -m venv macbot_env
+   source macbot_env/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. **Check for circular imports:**
+   ```bash
+   # Test individual imports
+   python -c "from src.macbot.voice_assistant import VoiceAssistant"
+   python -c "from src.macbot.orchestrator import Orchestrator"
+   ```
+
+### Type Hint Errors
+
+#### Symptom
+Type checking fails with type annotation errors.
+
+#### Solutions
+1. **Install type checking tools:**
+   ```bash
+   pip install mypy black isort
+   ```
+
+2. **Run type checker:**
+   ```bash
+   # Check types in source directory
+   mypy src/macbot/
+   ```
+
+3. **Fix type annotations:**
+   ```python
+   # Common fixes
+   from typing import Optional, List, Dict
+   
+   def process_input(self, text: str) -> Optional[str]:
+       # Function implementation
+   ```
+
+### Input Validation Failures
+
+#### Symptom
+System rejects valid inputs or accepts invalid ones.
+
+#### Solutions
+1. **Check validation rules:**
+   ```python
+   # Test input validation
+   from src.macbot.voice_assistant import validate_input
+   
+   print(validate_input("Hello world"))  # Should return True
+   print(validate_input(""))  # Should return False
+   ```
+
+2. **Review validation constants:**
+   ```yaml
+   voice_assistant:
+     max_input_length: 1000
+     min_input_length: 1
+   ```
+
+3. **Test edge cases:**
+   ```bash
+   # Test with various inputs
+   python -c "from src.macbot.voice_assistant import validate_input; print('Test:', validate_input('A' * 2000))"
+   ```
+
+### Security Validation Errors
+
+#### Symptom
+Security checks fail or block legitimate operations.
+
+#### Solutions
+1. **Check service availability:**
+   ```bash
+   # Test LLM service
+   python -c "from src.macbot.voice_assistant import check_llm_service_available; print(check_llm_service_available())"
+   ```
+
+2. **Verify configuration:**
+   ```yaml
+   security:
+     enable_input_validation: true
+     max_request_size: 1048576  # 1MB
+   ```
+
+3. **Test sanitization:**
+   ```python
+   # Test input sanitization
+   from src.macbot.voice_assistant import sanitize_input
+   
+   clean_input = sanitize_input("<script>alert('test')</script>Hello")
+   print(clean_input)  # Should be "Hello"
+   ```
+
+### Performance Degradation
+
+#### Symptom
+System performance worsens after code quality updates.
+
+#### Solutions
+1. **Profile code execution:**
+   ```bash
+   # Install profiler
+   pip install cProfile
+   
+   # Profile main functions
+   python -m cProfile -s time src/macbot/voice_assistant.py
+   ```
+
+2. **Check for memory leaks:**
+   ```bash
+   # Monitor memory usage
+   python -c "import psutil; print(f'Memory: {psutil.virtual_memory().percent}%')"
+   ```
+
+3. **Optimize imports:**
+   ```python
+   # Use lazy imports for heavy modules
+   try:
+       import heavy_module
+   except ImportError:
+       heavy_module = None
+   ```
+
+### Configuration Validation Errors
+
+#### Symptom
+Configuration fails to load with validation errors.
+
+#### Solutions
+1. **Validate configuration file:**
+   ```bash
+   # Check YAML syntax
+   python -c "import yaml; yaml.safe_load(open('config/config.yaml'))"
+   ```
+
+2. **Check required fields:**
+   ```yaml
+   # Ensure all required sections exist
+   voice_assistant:
+     enabled: true
+   models:
+     llm:
+       model_path: "models/llama.cpp/models/..."
+   ```
+
+3. **Environment variables:**
+   ```bash
+   # Check environment setup
+   echo $MACBOT_CONFIG
+   echo $MACBOT_ENV
+   ```
+
 ## Getting Help
 
 If you can't resolve an issue:
