@@ -619,6 +619,14 @@ DASHBOARD_HTML = """
             }
         }
 
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
         function renderServiceStatus(data) {
             const llmStatus = document.getElementById('llm-status');
             if (data.llama && data.llama.status === 'running') {
@@ -701,12 +709,6 @@ DASHBOARD_HTML = """
             if (confirm('Are you sure you want to clear the conversation history?')) {
                 socket.emit('clear_conversation');
             }
-        }
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
         
         // handleKeyPress function removed - now handled by event listener
@@ -1153,6 +1155,11 @@ def dashboard():
     """Main dashboard page"""
     check_service_health()
     return render_template_string(DASHBOARD_HTML, services=service_status)
+
+@app.route('/favicon.ico')
+def favicon():
+    """Serve favicon - return empty response to avoid 404"""
+    return '', 204
 
 @app.route('/api/stats')
 def api_stats():
