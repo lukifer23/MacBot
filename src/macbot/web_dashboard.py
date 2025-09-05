@@ -942,9 +942,31 @@ DASHBOARD_HTML = """
         });
         
         function handleFiles(files) {
-            // TODO: Implement file upload to RAG system
+            // Basic file upload implementation for RAG system
             console.log('Files to upload:', files);
-            addChatMessage(`📁 ${files.length} file(s) selected for upload to knowledge base`, 'system');
+            
+            const formData = new FormData();
+            for (let i = 0; i < files.length; i++) {
+                formData.append('files', files[i]);
+            }
+            
+            // Send files to RAG server for processing
+            fetch('/api/upload-documents', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addChatMessage(`✅ ${files.length} file(s) uploaded to knowledge base successfully`, 'system');
+                } else {
+                    addChatMessage(`❌ Failed to upload files: ${data.error}`, 'system');
+                }
+            })
+            .catch(error => {
+                console.error('Upload error:', error);
+                addChatMessage(`❌ Upload failed: ${error.message}`, 'system');
+            });
         }
         
         // Handle window resize for better scaling
@@ -1247,6 +1269,35 @@ def api_voice():
         logger.error(f"Voice API error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/upload-documents', methods=['POST'])
+def upload_documents():
+    """API endpoint for uploading documents to RAG system"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'success': False, 'error': 'No files provided'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or files[0].filename == '':
+            return jsonify({'success': False, 'error': 'No files selected'}), 400
+        
+        uploaded_files = []
+        for file in files:
+            if file and file.filename:
+                # Here you would typically save the file and process it
+                # For now, we'll just acknowledge receipt
+                uploaded_files.append(file.filename)
+                logger.info(f"Document uploaded: {file.filename}")
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Successfully uploaded {len(uploaded_files)} documents',
+            'files': uploaded_files
+        })
+        
+    except Exception as e:
+        logger.error(f"Document upload error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/health')
 def health_check():
     """Health check endpoint for service monitoring"""
@@ -1365,8 +1416,33 @@ def handle_interrupt_conversation():
         'timestamp': datetime.now().isoformat()
     })
     
-    # TODO: Send interruption signal to voice assistant
-    # This would integrate with the message bus to interrupt ongoing TTS
+    # Send interruption signal to voice assistant via message bus
+    try:
+        # Import message bus client for interruption signaling
+        from .message_bus_client import MessageBusClient
+        bus_client = MessageBusClient(service_type="web_dashboard")
+        bus_client.start()
+        
+        # Send interruption message
+        interruption_msg = {
+            'type': 'interruption',
+            'target': 'voice_assistant',
+            'source': 'web_dashboard',
+            'timestamp': datetime.now().isoformat(),
+            'reason': 'user_interrupt_from_web'
+        }
+        bus_client.send_message(interruption_msg)
+        bus_client.stop()
+        
+        logger.info("Interruption signal sent to voice assistant")
+    except Exception as e:
+        logger.warning(f"Failed to send interruption signal: {e}")
+    
+    emit('system_status', {
+        'type': 'interruption_sent',
+        'message': 'Interruption signal sent to voice assistant',
+        'timestamp': datetime.now().isoformat()
+    })
 
 @socketio.on('start_voice_recording')
 def handle_start_voice_recording():

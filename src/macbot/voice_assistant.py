@@ -60,6 +60,8 @@ MAX_INPUT_LENGTH = 2000  # Maximum input length for safety
 LLM_TIMEOUT = 120  # LLM request timeout in seconds
 HEALTH_CHECK_TIMEOUT = 2  # Health check timeout in seconds
 TURNING_DELAY = 0.35  # Delay for turn detection in seconds
+TTS_SAMPLE_RATE = 24000  # TTS audio sample rate
+TTS_RATE_MULTIPLIER = 180  # TTS rate multiplier for pyttsx3
 
 # ---- Optional: LiveKit turn detector ----
 try:
@@ -146,7 +148,8 @@ def check_llm_service_available() -> bool:
     try:
         response = requests.get(LLAMA_SERVER.replace("/v1/chat/completions", "/health"), timeout=HEALTH_CHECK_TIMEOUT)
         return response.status_code == 200
-    except:
+    except Exception as e:
+        logger.warning(f"LLM service health check failed: {e}")
         return False
 
 def validate_input(text: str, max_length: int = MAX_INPUT_LENGTH) -> bool:
@@ -392,7 +395,7 @@ def get_degraded_response(user_text: str) -> str:
 try:
     import pyttsx3  # type: ignore
     tts_engine = pyttsx3.init()
-    tts_engine.setProperty('rate', int(SPEED * 180))  # Adjust rate for pyttsx3
+    tts_engine.setProperty('rate', int(SPEED * TTS_RATE_MULTIPLIER))  # Adjust rate for pyttsx3
     HAS_KOKORO = False
     print("✅ Using pyttsx3 for TTS")
 except ImportError:
@@ -410,7 +413,7 @@ except ImportError:
 # ---- Interruptible Conversation System ----
 if INTERRUPTION_ENABLED:
     audio_handler = AudioInterruptHandler(
-        sample_rate=24000
+        sample_rate=TTS_SAMPLE_RATE
     )
     # Set VAD threshold if available
     if hasattr(audio_handler, 'vad_threshold'):
@@ -493,7 +496,7 @@ def main():
     print("   • 'system info' - System status")
     print("🌐 Tip: Start the web dashboard via 'macbot-dashboard' for UI.")
 
-    sd.play(np.zeros(1200), samplerate=24000, blocking=True)
+    sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
 
     stream = sd.InputStream(channels=1, samplerate=SAMPLE_RATE, dtype='float32', blocksize=int(SAMPLE_RATE*BLOCK_DUR), callback=_callback)
     stream.start()
