@@ -58,6 +58,7 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 - **Conversation Management**: Interrupt active conversations, clear conversation history
 - **Manual Intervention**: Direct control over conversation flow and system state
 - **Real-Time Feedback**: Instant visual feedback for all user actions
+- **Document Upload**: Upload documents to RAG knowledge base for enhanced search capabilities
 
 ### **Service Cards**
 - **LLM Server**: llama.cpp status and endpoint
@@ -73,9 +74,10 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 
 ### **API Endpoints**
 ```
-GET  /api/stats      - System statistics
-GET  /api/services   - Service health status
-POST /api/chat       - Chat interface
+GET  /api/stats           - System statistics
+GET  /api/services        - Service health status
+POST /api/chat            - Chat interface
+POST /api/upload-documents - Upload documents to RAG system
 ```
 
 ## 🎯 Central Orchestrator

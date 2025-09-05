@@ -113,6 +113,23 @@ MacBot provides several API endpoints for interacting with the system programmat
   }
   ```
 
+### Document Management
+- `POST /api/upload-documents` - Upload documents to RAG knowledge base
+  ```json
+  // FormData with files
+  Content-Type: multipart/form-data
+  
+  files: [file1.pdf, file2.txt, ...]
+  ```
+  **Response:**
+  ```json
+  {
+    "success": true,
+    "message": "Successfully uploaded 2 documents",
+    "files": ["document1.pdf", "document2.txt"]
+  }
+  ```
+
 ### WebSocket Real-Time API
 **WebSocket URL:** `ws://localhost:3000`
 
