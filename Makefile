@@ -60,7 +60,10 @@ run-enhanced:
 	$(ACT); OMP_NUM_THREADS=$(LLAMA_THREADS) $(PY) src/macbot/voice_assistant.py
 
 run-orchestrator:
-	$(ACT); $(PY) src/macbot/orchestrator.py
+        $(ACT); $(PY) src/macbot/orchestrator.py
+
+test:
+        $(ACT); pytest
 
 clean:
-	rm -rf $(VENV) $(WHISPER_DIR) $(LLAMA_DIR) __pycache__ */__pycache__
+        rm -rf $(VENV) $(WHISPER_DIR) $(LLAMA_DIR) __pycache__ */__pycache__

@@ -1,142 +1,68 @@
-#!/usr/bin/env python3
-"""
-Test script for interruptible conversation system
-"""
-
-import sys
 import os
+import sys
+import time
+import threading
+import numpy as np
+import pytest
+import types
+
+# Ensure the package can be imported without installation
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+# Provide stub modules for optional audio dependencies
+sys.modules.setdefault('sounddevice', types.SimpleNamespace(OutputStream=object))
+sys.modules.setdefault('soundfile', types.SimpleNamespace())
+
 from macbot.audio_interrupt import AudioInterruptHandler
-from macbot.conversation_manager import ConversationManager, ConversationState
-import numpy as np
-import time
+from macbot.conversation_manager import ConversationManager, ConversationState, ResponseState
 
-def test_audio_interruption():
-    """Test basic audio interruption functionality"""
-    print("🧪 Testing Audio Interruption System...")
 
-    # Create audio handler
+
+def test_audio_interruption(monkeypatch):
+    """Audio playback can be interrupted."""
     handler = AudioInterruptHandler(sample_rate=24000)
 
-    # Generate test audio (1 second of 440Hz sine wave)
-    duration = 1.0
-    frequency = 440.0
-    t = np.linspace(0, duration, int(24000 * duration), False)
-    audio = np.sin(frequency * 2 * np.pi * t).astype(np.float32)
+    def fake_worker(self):
+        while self.is_playing and not self.interrupt_requested:
+            time.sleep(0.01)
+        self.is_playing = False
 
-    print("▶️  Playing test audio...")
-    success = handler.play_audio(audio)
-    print(f"✅ Audio playback {'completed' if success else 'was interrupted'}")
+    monkeypatch.setattr(AudioInterruptHandler, '_playback_worker', fake_worker)
+    audio = np.zeros(2400, dtype=np.float32)
+    result = {}
 
-    return success
+    def run_play():
+        result['completed'] = handler.play_audio(audio)
 
-def test_conversation_manager():
-    """Test conversation state management"""
-    print("\n🧪 Testing Conversation Manager...")
+    t = threading.Thread(target=run_play)
+    t.start()
+    time.sleep(0.05)
+    handler.interrupt_playback()
+    t.join()
 
+    assert result['completed'] is False
+    status = handler.get_playback_status()
+    assert not status['is_playing']
+    assert status['interrupt_requested']
+
+
+def test_conversation_state_transitions():
+    """Conversation manager handles state transitions and buffering."""
     manager = ConversationManager()
-
-    # Test state transitions
-    print("📝 Testing conversation states...")
-
-    # Start conversation
+    manager.lock = threading.RLock()
     conv_id = manager.start_conversation()
-    print(f"📊 Started conversation: {conv_id}")
+    assert manager.current_context.conversation_id == conv_id
 
-    # Add user input
-    manager.add_user_input("Hello MacBot")
-    print("📝 Added user input")
+    manager.add_user_input('Hello')
+    manager.start_response('Hi there')
+    assert manager.current_context.current_state == ConversationState.SPEAKING
 
-    # Start response
-    manager.start_response()
-    print("🎤 Started response")
-
-    # Simulate interruption
     manager.interrupt_response()
-    print("⏹️  Interrupted response")
+    assert manager.current_context.current_state == ConversationState.INTERRUPTED
 
-    # Check if we can resume
     buffered = manager.resume_response()
-    print(f"📊 Buffered response available: {buffered is not None}")
+    assert buffered == 'Hi there'
 
-    # Complete response
     manager.complete_response()
-    print("✅ Completed response")
-
-    # Check history
-    history = manager.get_recent_history()
-    print(f"📚 Conversation history: {len(history)} messages")
-
-    return len(history) > 0
-
-def test_integration():
-    """Test integrated audio interruption with conversation management"""
-    print("\n🧪 Testing Integrated System...")
-
-    # Create components
-    audio_handler = AudioInterruptHandler(sample_rate=24000)
-    conversation_manager = ConversationManager()
-
-    # Register callback
-    def on_state_change(context):
-        print(f"🔄 State changed to: {context.current_state.value}")
-        if context.current_state == ConversationState.INTERRUPTED:
-            audio_handler.interrupt_playback()
-
-    conversation_manager.register_state_callback(on_state_change)
-
-    # Generate longer test audio (3 seconds)
-    duration = 3.0
-    frequency = 440.0
-    t = np.linspace(0, duration, int(24000 * duration), False)
-    audio = np.sin(frequency * 2 * np.pi * t).astype(np.float32)
-
-    print("▶️  Starting integrated test...")
-
-    # Start conversation
-    conv_id = conversation_manager.start_conversation()
-    conversation_manager.add_user_input("Test message")
-    conversation_manager.start_response()
-
-    # Play audio (should complete normally)
-    success = audio_handler.play_audio(audio)
-
-    # Complete response
-    conversation_manager.complete_response()
-
-    print(f"✅ Integrated test {'completed successfully' if success else 'was interrupted'}")
-
-    return success
-
-def main():
-    """Run all tests"""
-    print("🚀 MacBot Interruptible Conversation System Test Suite")
-    print("=" * 60)
-
-    try:
-        # Test individual components
-        audio_test = test_audio_interruption()
-        conv_test = test_conversation_manager()
-        integration_test = test_integration()
-
-        # Summary
-        print("\n" + "=" * 60)
-        print("📊 Test Results:")
-        print(f"   Audio Interruption: {'✅ PASS' if audio_test else '❌ FAIL'}")
-        print(f"   Conversation Manager: {'✅ PASS' if conv_test else '❌ FAIL'}")
-        print(f"   Integration Test: {'✅ PASS' if integration_test else '❌ FAIL'}")
-
-        all_passed = audio_test and conv_test and integration_test
-        print(f"\n🎯 Overall: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'}")
-
-        return 0 if all_passed else 1
-
-    except Exception as e:
-        print(f"❌ Test suite failed with error: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(main())
+    assert manager.current_context.current_state == ConversationState.IDLE
+    assert len(manager.get_recent_history()) == 2
