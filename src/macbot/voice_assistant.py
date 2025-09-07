@@ -516,36 +516,58 @@ else:
 def speak(text: str):
     """Speak text using interruptible TTS system"""
     if INTERRUPTION_ENABLED and audio_handler and conversation_manager:
-        try:
-            conversation_manager.start_response(text)
-
-            # Use pyttsx3 for TTS with interruption capability
-            def on_start(name):
-                pass
-
-            def on_end(name):
-                if (
-                    conversation_manager
-                    and conversation_manager.current_context
-                    and conversation_manager.current_context.current_state
-                    != ConversationState.INTERRUPTED
-                ):
-                    conversation_manager.complete_response()
-
-            tts_engine.connect('started-utterance', on_start)
-            tts_engine.connect('finished-utterance', on_end)
-
-            tts_engine.say(text)
-            tts_engine.runAndWait()
-
-        except Exception as e:
-            print(f"Interruptible TTS Error: {e}")
-            # Fallback to original blocking method
+        def tts_worker(full_text: str):
             try:
-                tts_engine.say(text)
-                tts_engine.runAndWait()
-            except Exception as e2:
-                print(f"Fallback TTS also failed: {e2}")
+                conversation_manager.start_response(full_text)
+
+                # Generate TTS audio into a temporary wav file
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    tmp_path = f.name
+                try:
+                    tts_engine.save_to_file(full_text, tmp_path)
+                    tts_engine.runAndWait()
+                    audio, sr = sf.read(tmp_path, dtype="float32")
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+                chunk_size = int(sr * 0.25)  # 250ms chunks
+                total_samples = len(audio)
+                idx = 0
+
+                while idx < total_samples:
+                    if (
+                        conversation_manager.current_context
+                        and conversation_manager.current_context.current_state
+                        == ConversationState.INTERRUPTED
+                    ):
+                        # Buffer remaining text for resume
+                        remaining_ratio = idx / total_samples
+                        remaining_index = int(len(full_text) * remaining_ratio)
+                        with conversation_manager.lock:
+                            ctx = conversation_manager.current_context
+                            if ctx:
+                                ctx.buffered_response = full_text[remaining_index:]
+                                ctx.ai_response = full_text[:remaining_index]
+                        return
+
+                    chunk = audio[idx : idx + chunk_size]
+                    audio_handler.play_audio(chunk)
+                    idx += len(chunk)
+
+                    spoken_chars = int(len(full_text) * idx / total_samples)
+                    conversation_manager.update_response(full_text[:spoken_chars])
+
+                conversation_manager.update_response(full_text)
+                conversation_manager.complete_response()
+
+            except Exception as e:
+                logger.error(f"Interruptible TTS Error: {e}")
+
+        threading.Thread(target=tts_worker, args=(text,), daemon=True).start()
+
     else:
         # Original blocking TTS when interruption is disabled
         try:
