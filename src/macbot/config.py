@@ -65,6 +65,14 @@ def get_llm_max_tokens() -> int:
         return 200
 
 
+def get_llm_context_length() -> int:
+    val = get("models.llm.context_length", 4096)
+    try:
+        return int(val)
+    except Exception:
+        return 4096
+
+
 def get_system_prompt() -> str:
     return str(get("prompts.system", "You are MacBot, a helpful AI assistant running locally on macOS."))
 

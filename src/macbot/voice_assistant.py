@@ -21,6 +21,7 @@ from .conversation_manager import (
     ConversationManager,
     ConversationContext,
     ConversationState,
+    ResponseState,
 )
 from . import config as CFG
 from . import tools
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 LLAMA_SERVER = CFG.get_llm_server_url()
 LLAMA_TEMP   = CFG.get_llm_temperature()
 LLAMA_MAXTOK = CFG.get_llm_max_tokens()
+LLAMA_CONTEXT = CFG.get_llm_context_length()
 
 SYSTEM_PROMPT = CFG.get_system_prompt()
 
@@ -62,6 +64,9 @@ HEALTH_CHECK_TIMEOUT = 2  # Health check timeout in seconds
 TURNING_DELAY = 0.35  # Delay for turn detection in seconds
 TTS_SAMPLE_RATE = 24000  # TTS audio sample rate
 TTS_RATE_MULTIPLIER = 180  # TTS rate multiplier for pyttsx3
+
+# Test mode to avoid heavy initializations during unit tests
+TEST_MODE = os.environ.get("MACBOT_TEST_MODE") == "1"
 
 # ---- Optional: LiveKit turn detector ----
 try:
@@ -223,6 +228,49 @@ def transcribe(wav_f32: np.ndarray) -> str:
         logger.error(f"Transcription error: {e}")
         return ""
 
+def _estimate_tokens(text: str) -> int:
+    """Rudimentary token estimation based on character length."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def build_chat_messages(
+    user_text: str,
+    manager: Optional[ConversationManager],
+    system_prompt: str = SYSTEM_PROMPT,
+    max_context_tokens: int = LLAMA_CONTEXT,
+    max_response_tokens: int = LLAMA_MAXTOK,
+) -> List[Dict[str, str]]:
+    """Construct chat messages with conversation history and token limits."""
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    if manager:
+        history = manager.get_recent_history(limit=manager.max_history if hasattr(manager, "max_history") else 10)
+        for msg in history:
+            role = "assistant" if msg.get("sender") == "assistant" else "user"
+            messages.append({"role": role, "content": msg.get("content", "")})
+
+        ctx = manager.current_context
+        if ctx:
+            if ctx.response_state in (ResponseState.INTERRUPTED, ResponseState.BUFFERED) and ctx.buffered_response:
+                messages.append({"role": "assistant", "content": ctx.buffered_response})
+            elif ctx.response_state == ResponseState.STREAMING and ctx.ai_response:
+                messages.append({"role": "assistant", "content": ctx.ai_response})
+
+    messages.append({"role": "user", "content": user_text})
+
+    limit = max_context_tokens - max_response_tokens
+
+    def total_tokens(msgs: List[Dict[str, str]]) -> int:
+        return sum(_estimate_tokens(m.get("content", "")) for m in msgs)
+
+    while len(messages) > 2 and total_tokens(messages) > limit:
+        messages.pop(1)
+
+    return messages
+
+
 # ---- Enhanced LLM chat with tool calling ----
 def llama_chat(user_text: str) -> str:
     # Check if user is requesting tool usage
@@ -271,15 +319,13 @@ def llama_chat(user_text: str) -> str:
             return result
     
     # Regular chat if no tools needed
+    messages = build_chat_messages(user_text, conversation_manager)
     payload = {
         "model": "local",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_text}
-        ],
+        "messages": messages,
         "temperature": LLAMA_TEMP,
         "max_tokens": LLAMA_MAXTOK,
-        "stream": True
+        "stream": True,
     }
 
     try:
@@ -391,27 +437,32 @@ def get_degraded_response(user_text: str) -> str:
                 "I can still help with basic questions about time, date, or general assistance.")
 
 # ---- TTS Setup ----
-# Use pyttsx3 as a more compatible TTS engine
-try:
-    import pyttsx3  # type: ignore
-    tts_engine = pyttsx3.init()
-    tts_engine.setProperty('rate', int(SPEED * TTS_RATE_MULTIPLIER))  # Adjust rate for pyttsx3
-    HAS_KOKORO = False
-    print("✅ Using pyttsx3 for TTS")
-except ImportError:
-    print("⚠️  pyttsx3 not available, trying kokoro...")
+if not TEST_MODE:
+    # Use pyttsx3 as a more compatible TTS engine
     try:
-        from kokoro import KPipeline
-        tts = KPipeline(lang_code='a')  # American English
-        HAS_KOKORO = True
-        print("✅ Using Kokoro for TTS")
-    except ImportError:
-        print("❌ No TTS engine available")
+        import pyttsx3  # type: ignore
+        tts_engine = pyttsx3.init()
+        tts_engine.setProperty('rate', int(SPEED * TTS_RATE_MULTIPLIER))  # Adjust rate for pyttsx3
         HAS_KOKORO = False
-        tts = None
+        print("✅ Using pyttsx3 for TTS")
+    except ImportError:
+        print("⚠️  pyttsx3 not available, trying kokoro...")
+        try:
+            from kokoro import KPipeline
+            tts = KPipeline(lang_code='a')  # American English
+            HAS_KOKORO = True
+            print("✅ Using Kokoro for TTS")
+        except ImportError:
+            print("❌ No TTS engine available")
+            HAS_KOKORO = False
+            tts = None
+else:
+    tts_engine = None
+    HAS_KOKORO = False
+    tts = None
 
 # ---- Interruptible Conversation System ----
-if INTERRUPTION_ENABLED:
+if not TEST_MODE and INTERRUPTION_ENABLED:
     audio_handler = AudioInterruptHandler(
         sample_rate=TTS_SAMPLE_RATE
     )
@@ -429,7 +480,7 @@ if INTERRUPTION_ENABLED:
         if context.current_state == ConversationState.INTERRUPTED and audio_handler:
             audio_handler.interrupt_playback()
             try:
-                if 'tts_engine' in globals():
+                if 'tts_engine' in globals() and tts_engine:
                     tts_engine.stop()
             except Exception:
                 pass
@@ -437,7 +488,7 @@ if INTERRUPTION_ENABLED:
 
     conversation_manager.register_state_callback(on_conversation_state_change)
 else:
-    # Fallback for when interruption is disabled
+    # Fallback for when interruption is disabled or in test mode
     audio_handler = None
     conversation_manager = None
 
