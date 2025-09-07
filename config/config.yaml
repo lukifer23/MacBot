@@ -60,6 +60,9 @@ services:
     host: "localhost"
     collection_name: "macbot_docs"
     data_dir: "rag_data"
+    api_tokens:
+      - "change-me"
+    rate_limit_per_minute: 60
 
   orchestrator:
     check_interval: 10  # seconds

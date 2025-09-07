@@ -202,3 +202,16 @@ def get_llm_models_endpoint() -> str:
         base = "http://localhost:8080"
     return f"{base}/v1/models"
 
+
+def get_rag_api_tokens() -> List[str]:
+    """Return list of allowed RAG API tokens"""
+    return list(get("services.rag_server.api_tokens", []))
+
+
+def get_rag_rate_limit_per_minute() -> int:
+    """Return per-token request limit per minute for RAG API"""
+    try:
+        return int(get("services.rag_server.rate_limit_per_minute", 60))
+    except Exception:
+        return 60
+

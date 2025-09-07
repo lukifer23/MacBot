@@ -176,6 +176,28 @@ prompts:
 - **Port**: Port for the RAG service
 - **Host**: Bind address
 - **Collection Name**: Name for the vector database collection
+- **API Tokens**: List of allowed tokens for `/api/*` routes
+- **Rate Limit Per Minute**: Requests allowed per token each minute
+
+#### API Authentication
+Configure tokens to secure the RAG API:
+
+```yaml
+services:
+  rag_server:
+    api_tokens:
+      - "my-secret-token"
+    rate_limit_per_minute: 60
+```
+
+Clients must include the token in an `Authorization` header:
+
+```
+Authorization: Bearer my-secret-token
+```
+
+Requests missing or using invalid tokens receive `401 Unauthorized`. Exceeding
+the rate limit returns `429 Too Many Requests`.
 
 ### Orchestrator
 - **Check Interval**: How often to check service health (seconds)
