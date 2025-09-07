@@ -72,73 +72,6 @@ except Exception as e:
     print(f"[warn] turn-detector unavailable ({e}); falling back to VAD-only endpointing")
     HAS_TURN_DETECT = False
 
-# ---- Tool calling system ----
-class ToolCaller:
-    def __init__(self):
-        self.tools = {
-            "web_search": tools.web_search,
-            "browse_website": tools.browse_website,
-            "get_system_info": tools.get_system_info,
-            "search_knowledge_base": lambda q: tools.rag_search(q),
-            "open_app": tools.open_app,
-            "take_screenshot": tools.take_screenshot,
-            "get_weather": lambda: tools.get_weather(),
-        }
-
-    def web_search(self, query: str) -> str:
-        try:
-            return tools.web_search(query)
-        except Exception as e:
-            logger.error(f"Web search failed: {e}")
-            return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
-
-    def browse_website(self, url: str) -> str:
-        try:
-            return tools.browse_website(url)
-        except Exception as e:
-            logger.error(f"Website browsing failed: {e}")
-            return f"I couldn't open {url} right now. The website browsing service might be unavailable."
-
-    def get_system_info(self) -> str:
-        try:
-            return tools.get_system_info()
-        except Exception as e:
-            logger.error(f"System info retrieval failed: {e}")
-            return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
-
-    def search_knowledge_base(self, query: str) -> str:
-        try:
-            return tools.rag_search(query)
-        except Exception as e:
-            logger.error(f"Knowledge base search failed: {e}")
-            return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
-
-    def open_app(self, app_name: str) -> str:
-        try:
-            return tools.open_app(app_name)
-        except Exception as e:
-            logger.error(f"App opening failed: {e}")
-            return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
-
-    def take_screenshot(self) -> str:
-        try:
-            return tools.take_screenshot()
-        except Exception as e:
-            logger.error(f"Screenshot failed: {e}")
-            return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
-
-    def get_weather(self) -> str:
-        try:
-            return tools.get_weather()
-        except Exception as e:
-            logger.error(f"Weather retrieval failed: {e}")
-            return "I couldn't get weather information right now. The weather service might be unavailable."
-
-# Initialize tool caller
-tool_caller = ToolCaller()
-
-# RAG handled via external rag_server (see macbot.tools.rag_search)
-
 # ---- Simple energy VAD ----
 def is_voiced(block: np.ndarray, thresh: float = VAD_THRESH) -> bool:
     return np.sqrt(np.mean(block**2)) > thresh
@@ -223,138 +156,45 @@ def transcribe(wav_f32: np.ndarray) -> str:
         logger.error(f"Transcription error: {e}")
         return ""
 
-# ---- Enhanced LLM chat with tool calling ----
+# ---- LLM chat with function calling ----
 def llama_chat(user_text: str) -> str:
-    # Check if user is requesting tool usage
-    if CFG.tools_enabled() and tool_caller:
-        # Enhanced keyword-based tool detection
-        user_text_lower = user_text.lower()
-        
-        # Web search
-        if "search" in user_text_lower and ("web" in user_text_lower or "for" in user_text_lower):
-            query = user_text_lower.replace("search", "").replace("for", "").replace("web", "").strip()
-            result = tool_caller.web_search(query)
-            return f"I searched for '{query}'. {result}"
-        
-        # Website browsing
-        elif "browse" in user_text_lower or "website" in user_text_lower or "open website" in user_text_lower:
-            words = user_text.split()
-            for word in words:
-                if word.startswith(("http://", "https://", "www.")):
-                    result = tool_caller.browse_website(word)
-                    return f"I browsed {word}. {result}"
-        
-        # App opening
-        elif "open" in user_text_lower and "app" in user_text_lower:
-            app_name = user_text_lower.replace("open", "").replace("app", "").strip()
-            result = tool_caller.open_app(app_name)
-            return result
-        
-        # Screenshot
-        elif "screenshot" in user_text_lower or "take picture" in user_text_lower:
-            result = tool_caller.take_screenshot()
-            return result
-        
-        # Weather
-        elif "weather" in user_text_lower:
-            result = tool_caller.get_weather()
-            return result
-        
-        # System info
-        elif "system" in user_text_lower and "info" in user_text_lower:
-            result = tool_caller.get_system_info()
-            return f"Here's your system information: {result}"
-        
-        # RAG search
-        elif any(keyword in user_text_lower for keyword in ["knowledge", "document", "file", "kb", "search kb", "search knowledge"]):
-            result = tool_caller.search_knowledge_base(user_text)
-            return result
-    
-    # Regular chat if no tools needed
+    """Chat with the LLM, delegating tool use via function calling."""
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
     payload = {
         "model": "local",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_text}
-        ],
+        "messages": messages,
         "temperature": LLAMA_TEMP,
         "max_tokens": LLAMA_MAXTOK,
-        "stream": True
     }
 
+    if CFG.tools_enabled():
+        payload["tools"] = tools.get_tool_schema()
+
     try:
-        with requests.post(
-            LLAMA_SERVER,
-            json=payload,
-            stream=True,
-            timeout=LLM_TIMEOUT,
-        ) as r:
-            r.raise_for_status()
+        r = requests.post(LLAMA_SERVER, json=payload, timeout=LLM_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        msg = data["choices"][0]["message"]
 
-            full_response = ""
-            spoken_len = 0
+        # If the model decided to call a tool, execute it
+        tool_calls = msg.get("tool_calls") or []
+        if tool_calls:
+            call = tool_calls[0]
+            name = call.get("function", {}).get("name", "")
+            args_str = call.get("function", {}).get("arguments", "{}")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except Exception:
+                args = {}
+            return tools.execute_tool(name, **args)
 
-            if INTERRUPTION_ENABLED and conversation_manager:
-                conversation_manager.start_response()
-
-            for line in r.iter_lines(decode_unicode=True):
-                if audio_handler and audio_handler.interrupt_requested:
-                    if INTERRUPTION_ENABLED and conversation_manager:
-                        conversation_manager.interrupt_response()
-                    break
-
-                if not line:
-                    continue
-
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data.strip() == "[DONE]":
-                        break
-
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content", "")
-                    except Exception:
-                        delta = ""
-
-                    if not delta:
-                        continue
-
-                    full_response += delta
-
-                    if INTERRUPTION_ENABLED and conversation_manager:
-                        conversation_manager.update_response(full_response)
-
-                    new_text = full_response[spoken_len:]
-                    spoken_len = len(full_response)
-
-                    if new_text.strip():
-                        def _speak_chunk(txt=new_text):
-                            try:
-                                if HAS_KOKORO and tts is not None and audio_handler:
-                                    audio = tts(txt)
-                                    if isinstance(audio, tuple):
-                                        audio_data = audio[0]
-                                    else:
-                                        audio_data = audio
-                                    
-                                    # Ensure audio_data is a numpy array
-                                    if not isinstance(audio_data, np.ndarray):
-                                        audio_data = np.array(audio_data)
-                                    
-                                    audio_handler.play_audio(audio_data)  # type: ignore
-                                elif 'tts_engine' in globals():
-                                    tts_engine.say(txt)
-                                    tts_engine.runAndWait()
-                            except Exception as e:
-                                print(f"TTS Error: {e}")
-
-                        threading.Thread(target=_speak_chunk, daemon=True).start()
-
-            if INTERRUPTION_ENABLED and conversation_manager and not (audio_handler and audio_handler.interrupt_requested):
-                conversation_manager.update_response(full_response, is_complete=True)
-
-            return full_response
+        # Otherwise return the model's content
+        return msg.get("content", "")
     except requests.exceptions.Timeout:
         return "The language model is taking too long to respond. Please try again."
     except requests.exceptions.ConnectionError:

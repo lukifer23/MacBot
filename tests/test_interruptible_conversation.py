@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""
-Test script for interruptible conversation system
-"""
+"""Test script for interruptible conversation system."""
 
 import sys
 import os
+import pytest
+
+pytest.skip("requires audio hardware", allow_module_level=True)
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from macbot.audio_interrupt import AudioInterruptHandler
