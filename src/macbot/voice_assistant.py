@@ -63,6 +63,34 @@ TURNING_DELAY = 0.35  # Delay for turn detection in seconds
 TTS_SAMPLE_RATE = 24000  # TTS audio sample rate
 TTS_RATE_MULTIPLIER = 180  # TTS rate multiplier for pyttsx3
 
+# Optional Python bindings for whisper.cpp / whisper
+try:
+    import whispercpp
+
+    try:
+        _WHISPER_CTX = whispercpp.Whisper.from_pretrained("base.en")
+        _WHISPER_IMPL = "whispercpp"
+    except Exception as _werr:  # pragma: no cover - best effort
+        logger.warning(f"Failed to init whispercpp: {_werr}")
+        _WHISPER_CTX = None
+        _WHISPER_IMPL = "cli"
+except Exception as _e:  # pragma: no cover - best effort
+    logger.warning(f"whispercpp not available: {_e}")
+    try:
+        import whisper as _openai_whisper  # type: ignore
+
+        try:
+            _WHISPER_CTX = _openai_whisper.load_model("base")
+            _WHISPER_IMPL = "whisper"
+        except Exception as _owerr:  # pragma: no cover - best effort
+            logger.warning(f"Failed to load openai whisper: {_owerr}")
+            _WHISPER_CTX = None
+            _WHISPER_IMPL = "cli"
+    except Exception as _ie:  # pragma: no cover
+        logger.warning(f"whisper library not available: {_ie}")
+        _WHISPER_CTX = None
+        _WHISPER_IMPL = "cli"
+
 # ---- Optional: LiveKit turn detector ----
 try:
     from livekit.plugins.turn_detector.english import EnglishModel
@@ -182,46 +210,86 @@ def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             conversation_manager.interrupt_response()
 
 # ---- Whisper transcription ----
-def transcribe(wav_f32: np.ndarray) -> str:
-    """Transcribe audio using Whisper with graceful degradation"""
+def _transcribe_cli(wav_f32: np.ndarray) -> str:
+    """Fallback transcription via whisper.cpp CLI using temp files."""
     try:
-        # write temp wav
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
             tmp = f.name
 
-        # call whisper.cpp
-        # -nt = no timestamps, -l language
-        # -of writes a sidecar .txt next to the input
-        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-of", tmp]
+        cmd = [
+            WHISPER_BIN,
+            "-m",
+            WHISPER_MODEL,
+            "-f",
+            tmp,
+            "-l",
+            WHISPER_LANG,
+            "-nt",
+            "-of",
+            tmp,
+        ]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
         if proc.returncode != 0:
             logger.error(f"Whisper transcription failed: {proc.stderr}")
             return ""
-
         try:
             with open(tmp + ".txt", "r") as rf:
                 text = rf.read().strip()
         except FileNotFoundError:
             logger.error("Whisper output file not found")
             text = ""
-
-        # Clean up temp files
-        try:
-            os.unlink(tmp)
-            os.unlink(tmp + ".txt")
-        except OSError:
-            pass
-
+        finally:
+            try:
+                os.unlink(tmp)
+                os.unlink(tmp + ".txt")
+            except OSError:
+                pass
         return text
-
     except subprocess.TimeoutExpired:
         logger.error("Whisper transcription timed out")
         return ""
-    except Exception as e:
+    except Exception as e:  # pragma: no cover
         logger.error(f"Transcription error: {e}")
         return ""
+
+
+def transcribe(wav_f32: np.ndarray) -> str:
+    """Transcribe audio using in-memory pipeline with graceful degradation."""
+    if _WHISPER_IMPL == "whispercpp" and _WHISPER_CTX is not None:
+        try:
+            return _WHISPER_CTX.transcribe(wav_f32).strip()
+        except Exception as e:  # pragma: no cover
+            logger.error(f"whispercpp transcription failed: {e}")
+    elif _WHISPER_IMPL == "whisper" and _WHISPER_CTX is not None:
+        try:
+            result = _WHISPER_CTX.transcribe(wav_f32, language=WHISPER_LANG)
+            return result.get("text", "").strip()
+        except Exception as e:  # pragma: no cover
+            logger.error(f"whisper transcription failed: {e}")
+    # Fallback to CLI
+    return _transcribe_cli(wav_f32)
+
+
+class StreamingTranscriber:
+    """Maintain streaming state for real-time transcription."""
+
+    def __init__(self) -> None:
+        self._buffer: np.ndarray = np.array([], dtype=np.float32)
+        self._last_text: str = ""
+
+    def add_chunk(self, chunk: np.ndarray) -> str:
+        self._buffer = np.concatenate([self._buffer, chunk])
+        text = transcribe(self._buffer)
+        delta = text[len(self._last_text) :]
+        self._last_text = text
+        return delta.strip()
+
+    def flush(self) -> str:
+        text = self._last_text.strip()
+        self._buffer = np.array([], dtype=np.float32)
+        self._last_text = ""
+        return text
 
 # ---- Enhanced LLM chat with tool calling ----
 def llama_chat(user_text: str) -> str:
@@ -391,24 +459,28 @@ def get_degraded_response(user_text: str) -> str:
                 "I can still help with basic questions about time, date, or general assistance.")
 
 # ---- TTS Setup ----
-# Use pyttsx3 as a more compatible TTS engine
-try:
-    import pyttsx3  # type: ignore
-    tts_engine = pyttsx3.init()
-    tts_engine.setProperty('rate', int(SPEED * TTS_RATE_MULTIPLIER))  # Adjust rate for pyttsx3
+# Use pyttsx3 as a more compatible TTS engine. Allow disabling via env for headless tasks.
+if os.environ.get("MACBOT_DISABLE_TTS") == "1":
+    tts_engine = None
     HAS_KOKORO = False
-    print("✅ Using pyttsx3 for TTS")
-except ImportError:
-    print("⚠️  pyttsx3 not available, trying kokoro...")
+else:  # pragma: no cover - optional runtime feature
     try:
-        from kokoro import KPipeline
-        tts = KPipeline(lang_code='a')  # American English
-        HAS_KOKORO = True
-        print("✅ Using Kokoro for TTS")
-    except ImportError:
-        print("❌ No TTS engine available")
+        import pyttsx3  # type: ignore
+        tts_engine = pyttsx3.init()
+        tts_engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))  # Adjust rate for pyttsx3
         HAS_KOKORO = False
-        tts = None
+        print("✅ Using pyttsx3 for TTS")
+    except ImportError:
+        print("⚠️  pyttsx3 not available, trying kokoro...")
+        try:
+            from kokoro import KPipeline
+            tts = KPipeline(lang_code="a")  # American English
+            HAS_KOKORO = True
+            print("✅ Using Kokoro for TTS")
+        except ImportError:
+            print("❌ No TTS engine available")
+            HAS_KOKORO = False
+            tts = None
 
 # ---- Interruptible Conversation System ----
 if INTERRUPTION_ENABLED:
@@ -498,11 +570,17 @@ def main():
 
     sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
 
-    stream = sd.InputStream(channels=1, samplerate=SAMPLE_RATE, dtype='float32', blocksize=int(SAMPLE_RATE*BLOCK_DUR), callback=_callback)
+    stream = sd.InputStream(
+        channels=1,
+        samplerate=SAMPLE_RATE,
+        dtype="float32",
+        blocksize=int(SAMPLE_RATE * BLOCK_DUR),
+        callback=_callback,
+    )
     stream.start()
 
     voiced = False
-    seg = []
+    stream_tr = StreamingTranscriber()
     last_voice = time.time()
 
     try:
@@ -515,14 +593,16 @@ def main():
             if v:
                 voiced = True
                 last_voice = now
-                seg.append(block)
+                delta = stream_tr.add_chunk(block)
+                if delta:
+                    print(delta, end="", flush=True)
             elif voiced:
                 # candidate end-of-turn
                 if HAS_TURN_DETECT:
                     # simple delay + confirm (for demo)
                     if now - last_voice > TURNING_DELAY:
-                        transcript = transcribe(np.concatenate(seg))
-                        seg.clear(); voiced = False
+                        transcript = stream_tr.flush()
+                        voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
                             
@@ -548,8 +628,8 @@ def main():
                             speak(reply)
                 else:
                     if now - last_voice > SILENCE_HANG:
-                        transcript = transcribe(np.concatenate(seg))
-                        seg.clear(); voiced = False
+                        transcript = stream_tr.flush()
+                        voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
                             
