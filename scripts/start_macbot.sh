@@ -32,28 +32,28 @@ read -p "Enter your choice (1-6): " choice
 case $choice in
     1)
         echo "🎤 Starting Enhanced Voice Assistant..."
-        source .venv/bin/activate
+        source macbot_env/bin/activate
         make run-enhanced
         ;;
     2)
         echo "🌐 Starting Web GUI + Voice Assistant..."
-        source .venv/bin/activate
+        source macbot_env/bin/activate
         make run-enhanced
         ;;
     3)
         echo "🎯 Starting Full Orchestrator..."
-        source .venv/bin/activate
+        source macbot_env/bin/activate
         make run-orchestrator
         ;;
     4)
         echo "📊 Checking system status..."
-        source .venv/bin/activate
-        python orchestrator.py --status
+        source macbot_env/bin/activate
+        python -m src.macbot.orchestrator --status
         ;;
     5)
         echo "🛑 Stopping all services..."
-        source .venv/bin/activate
-        python orchestrator.py --stop
+        source macbot_env/bin/activate
+        python -m src.macbot.orchestrator --stop
         ;;
     6)
         echo "🌐 Opening web dashboard..."

@@ -48,6 +48,23 @@ def get(path: str, default: Any = None) -> Any:
 def get_llm_server_url() -> str:
     return str(get("models.llm.server_url", "http://localhost:8080/v1/chat/completions"))
 
+def get_llm_model_path() -> str:
+    return os.path.abspath(str(get("models.llm.path", "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf")))
+
+def get_llm_context_length() -> int:
+    val = get("models.llm.context_length", 4096)
+    try:
+        return int(val)
+    except Exception:
+        return 4096
+
+def get_llm_threads() -> int:
+    val = get("models.llm.threads", -1)
+    try:
+        return int(val)
+    except Exception:
+        return -1
+
 
 def get_llm_temperature() -> float:
     val = get("models.llm.temperature", 0.4)

@@ -246,10 +246,26 @@ class MacBotOrchestrator:
     def start_llama_server(self) -> bool:
         """Start the llama.cpp server"""
         try:
+            # Get model path and parameters from config
+            model_path = CFG.get_llm_model_path()
+            if not os.path.exists(model_path):
+                logger.error(f"LLM model not found at: {model_path}")
+                return False
+            
+            # Build command to start llama-server directly
             cmd = [
-                'make', 'run-llama'
+                os.path.join(os.getcwd(), 'models', 'llama.cpp', 'build', 'bin', 'llama-server'),
+                '-m', model_path,
+                '-c', str(CFG.get_llm_context_length()),
+                '-t', str(CFG.get_llm_threads()),
+                '-ngl', '999',  # offload max layers to Metal
+                '--port', '8080',
+                '--host', '127.0.0.1'
             ]
+            
             logger.info("Starting llama.cpp server...")
+            logger.info(f"Command: {' '.join(cmd)}")
+            
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -259,11 +275,9 @@ class MacBotOrchestrator:
             self.processes['llama'] = process
             
             # Wait for server to be ready
-            for _ in range(30):  # 30 second timeout
+            for _ in range(60):  # 60 second timeout for model loading
                 try:
-                    # llama.cpp doesn't have a health endpoint, check if it's listening
-                    from . import config as _cfg
-                    response = requests.get(_cfg.get_llm_models_endpoint(), timeout=1)
+                    response = requests.get('http://localhost:8080/v1/models', timeout=2)
                     if response.status_code == 200:
                         logger.info("✅ llama.cpp server ready")
                         return True
@@ -281,26 +295,46 @@ class MacBotOrchestrator:
     def start_web_gui(self) -> bool:
         """Start the web GUI dashboard"""
         try:
-            cmd = ['python', '-m', 'macbot.web_dashboard']
+            # Use virtual environment if available
+            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
+            if os.path.exists(venv_python):
+                cmd = [venv_python, '-m', 'macbot.web_dashboard']
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
+            else:
+                cmd = ['python', '-m', 'macbot.web_dashboard']
+                env = None
             
             logger.info("Starting web GUI...")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
             )
             self.processes['web_gui'] = process
             
             # Wait for web GUI to be ready
-            for _ in range(15):  # 15 second timeout
+            for _ in range(30):  # 30 second timeout (increased for dependencies)
                 try:
-                    response = requests.get(f"http://localhost:{self.config['web_gui']['port']}", timeout=1)
+                    host, port = CFG.get_web_dashboard_host_port()
+                    response = requests.get(f"http://{host}:{port}", timeout=1)
                     if response.status_code == 200:
                         logger.info("✅ Web GUI ready")
                         return True
                 except (requests.exceptions.RequestException, ValueError) as e:
                     logger.debug(f"Web GUI not ready yet: {e}")
                     time.sleep(1)
+            
+            # Check if process is still running and log any errors
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                logger.error(f"Web GUI process exited with code {process.returncode}")
+                if stderr:
+                    logger.error(f"Web GUI stderr: {stderr.decode()}")
+                if stdout:
+                    logger.info(f"Web GUI stdout: {stdout.decode()}")
             
             logger.error("❌ Web GUI failed to start")
             return False
@@ -311,22 +345,28 @@ class MacBotOrchestrator:
     
     def start_rag_service(self) -> bool:
         """Start the RAG service"""
-        if not self.config['rag']['enabled']:
-            logger.info("RAG service disabled in config")
-            return True
-            
         try:
-            cmd = ['python', '-m', 'macbot.rag_server']
+            # Use virtual environment if available
+            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
+            if os.path.exists(venv_python):
+                cmd = [venv_python, '-m', 'macbot.rag_server']
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
+            else:
+                cmd = ['python', '-m', 'macbot.rag_server']
+                env = None
             logger.info("Starting RAG service...")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
             )
             self.processes['rag'] = process
             
             # Wait for RAG service to be ready
-            for _ in range(15):  # 15 second timeout
+            for _ in range(30):  # 30 second timeout (increased for model loading)
                 try:
                     host, port = CFG.get_rag_host_port()
                     response = requests.get(f"http://{host}:{port}/health", timeout=1)
@@ -347,12 +387,22 @@ class MacBotOrchestrator:
     def start_voice_assistant(self) -> bool:
         """Start the enhanced voice assistant"""
         try:
-            cmd = ['python', '-m', 'macbot.voice_assistant']
+            # Use virtual environment if available
+            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
+            if os.path.exists(venv_python):
+                cmd = [venv_python, '-m', 'macbot.voice_assistant']
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
+            else:
+                cmd = ['python', '-m', 'macbot.voice_assistant']
+                env = None
             logger.info("Starting enhanced voice assistant...")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
             )
             self.processes['voice_assistant'] = process
             logger.info("✅ Voice assistant started")

@@ -2,8 +2,8 @@
 SHELL := /bin/bash
 
 # ---- Paths ----
-PY := python3.11
-VENV := .venv
+PY := python3
+VENV := macbot_env
 ACT := source $(VENV)/bin/activate
 
 WHISPER_DIR := models/whisper.cpp
@@ -38,7 +38,7 @@ build-whisper:
 
 build-llama:
 	@if [ ! -d $(LLAMA_DIR) ]; then git clone https://github.com/ggml-org/llama.cpp $(LLAMA_DIR); fi
-	cmake -S $(LLAMA_DIR) -B $(LLAMA_DIR)/build -DLLAMA_METAL=ON
+	cmake -S $(LLAMA_DIR) -B $(LLAMA_DIR)/build -DLLAMA_METAL=OFF
 	cmake --build $(LLAMA_DIR)/build -j
 	@mkdir -p $(LLAMA_DIR)/models
 	@echo "Place a GGUF model in $(LLAMA_DIR)/models and set LLAMA_MODEL in Makefile if needed."

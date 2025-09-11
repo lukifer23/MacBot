@@ -217,18 +217,10 @@ def _transcribe_cli(wav_f32: np.ndarray) -> str:
             sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
             tmp = f.name
 
-        cmd = [
-            WHISPER_BIN,
-            "-m",
-            WHISPER_MODEL,
-            "-f",
-            tmp,
-            "-l",
-            WHISPER_LANG,
-            "-nt",
-            "-of",
-            tmp,
-        ]
+        # call whisper.cpp
+        # -nt = no timestamps, -l language
+        # -otxt = output to text file
+        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-otxt", "-of", tmp]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             logger.error(f"Whisper transcription failed: {proc.stderr}")
