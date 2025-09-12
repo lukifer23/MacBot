@@ -32,13 +32,15 @@ deps:
 
 build-whisper:
 	@if [ ! -d $(WHISPER_DIR) ]; then git clone https://github.com/ggml-org/whisper.cpp $(WHISPER_DIR); fi
-	cmake -S $(WHISPER_DIR) -B $(WHISPER_DIR)/build -DWHISPER_COREML=0
+	# Enable CoreML on Apple Silicon for lower latency
+	cmake -S $(WHISPER_DIR) -B $(WHISPER_DIR)/build -DWHISPER_COREML=1
 	cmake --build $(WHISPER_DIR)/build -j
 	@cd $(WHISPER_DIR) && bash ./models/download-ggml-model.sh base.en
 
 build-llama:
 	@if [ ! -d $(LLAMA_DIR) ]; then git clone https://github.com/ggml-org/llama.cpp $(LLAMA_DIR); fi
-	cmake -S $(LLAMA_DIR) -B $(LLAMA_DIR)/build -DLLAMA_METAL=OFF
+	# Build with Metal for GPU offload on Apple Silicon
+	cmake -S $(LLAMA_DIR) -B $(LLAMA_DIR)/build -DLLAMA_METAL=ON
 	cmake --build $(LLAMA_DIR)/build -j
 	@mkdir -p $(LLAMA_DIR)/models
 	@echo "Place a GGUF model in $(LLAMA_DIR)/models and set LLAMA_MODEL in Makefile if needed."

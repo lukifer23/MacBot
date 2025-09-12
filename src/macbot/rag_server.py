@@ -266,7 +266,7 @@ def _check_auth_and_rate_limit() -> Optional[Tuple[Dict[str, str], int]]:
         else:
             token = request.args.get('token') or request.headers.get('X-API-Token', '')
         if token not in API_TOKENS:
-            return jsonify({'error': 'Unauthorized'}), 401
+            return jsonify({'success': False, 'error': 'Unauthorized', 'code': 'unauthorized'}), 401
 
         now = time.time()
         with _rate_lock:
@@ -275,7 +275,7 @@ def _check_auth_and_rate_limit() -> Optional[Tuple[Dict[str, str], int]]:
                 count = 0
                 start = now
             if count >= RATE_LIMIT_PER_MINUTE:
-                return jsonify({'error': 'Too many requests'}), 429
+                return jsonify({'success': False, 'error': 'Too many requests', 'code': 'rate_limited'}), 429
             _request_counts[token] = (count + 1, start)
 
 # Flask routes
@@ -379,14 +379,14 @@ def api_search():
         query = data.get('query', '')
         
         if not query:
-            return jsonify({'error': 'Query is required'}), 400
+            return jsonify({'success': False, 'error': 'Query is required', 'code': 'validation_error'}), 400
         
         results = rag_server.search(query, top_k=5)
         return jsonify({'query': query, 'results': results})
         
     except Exception as e:
         logger.error(f"Search API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/documents', methods=['GET'])
 def api_documents():
@@ -396,7 +396,7 @@ def api_documents():
         return jsonify({'documents': docs})
     except Exception as e:
         logger.error(f"Documents API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/documents', methods=['POST'])
 def api_add_document():
@@ -409,14 +409,14 @@ def api_add_document():
         metadata = data.get('metadata', {})
         
         if not content:
-            return jsonify({'error': 'Content is required'}), 400
+            return jsonify({'success': False, 'error': 'Content is required', 'code': 'validation_error'}), 400
         
         doc_id = rag_server.add_document(content, title, doc_type, metadata)
         return jsonify({'id': doc_id, 'message': 'Document added successfully'})
         
     except Exception as e:
         logger.error(f"Add document API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/documents/<doc_id>', methods=['GET'])
 def api_get_document(doc_id):
@@ -426,10 +426,10 @@ def api_get_document(doc_id):
         if doc:
             return jsonify(doc)
         else:
-            return jsonify({'error': 'Document not found'}), 404
+            return jsonify({'success': False, 'error': 'Document not found', 'code': 'not_found'}), 404
     except Exception as e:
         logger.error(f"Get document API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/documents/<doc_id>', methods=['DELETE'])
 def api_delete_document(doc_id):
@@ -439,10 +439,10 @@ def api_delete_document(doc_id):
         if success:
             return jsonify({'message': 'Document deleted successfully'})
         else:
-            return jsonify({'error': 'Document not found'}), 404
+            return jsonify({'success': False, 'error': 'Document not found', 'code': 'not_found'}), 404
     except Exception as e:
         logger.error(f"Delete document API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/stats')
 def api_stats():
@@ -452,7 +452,7 @@ def api_stats():
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Stats API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 def start_rag_server(host='0.0.0.0', port=8001):
     """Start the RAG server"""

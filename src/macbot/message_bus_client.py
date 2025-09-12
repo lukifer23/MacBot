@@ -16,12 +16,19 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-try:
-    # Synchronous websockets API (preferred for simplicity and tests)
+# Try sync API first; fallback to async API if unavailable
+_HAS_WEBSOCKETS_SYNC = False
+_HAS_WEBSOCKETS_ASYNC = False
+try:  # websockets >= 11 provides sync API
     from websockets.sync.client import connect as ws_connect  # type: ignore
-    _HAS_WEBSOCKETS = True
-except Exception:  # pragma: no cover - optional dep at runtime
-    _HAS_WEBSOCKETS = False
+    _HAS_WEBSOCKETS_SYNC = True
+except Exception:
+    try:
+        import websockets  # type: ignore
+        import asyncio
+        _HAS_WEBSOCKETS_ASYNC = True
+    except Exception:
+        pass
 
 from .message_bus import message_bus  # in-process fallback
 from .logging_utils import setup_logger
@@ -64,7 +71,9 @@ class MessageBusClient:
         self.connected = False
 
         # Mode/state
-        self._ws = None  # type: ignore
+        self._ws = None  # sync ws
+        self._ws_async = None  # async ws
+        self._loop = None  # asyncio loop for async ws
         self._use_ws = False
         self._inproc_queue = None  # type: ignore
 
@@ -97,6 +106,13 @@ class MessageBusClient:
                 except Exception:
                     pass
                 self._ws = None
+            if self._ws_async is not None and self._loop is not None:
+                try:
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(self._ws_async.close(), self._loop)
+                except Exception:
+                    pass
+                self._ws_async = None
         finally:
             pass
         # Unregister from in-proc bus if used
@@ -150,6 +166,14 @@ class MessageBusClient:
                     self._ws.send(payload)
             except Exception as e:
                 logger.warning(f"WebSocket send failed: {e}")
+        elif self._use_ws and self._ws_async is not None and self._loop is not None:
+            try:
+                import asyncio
+                payload = json.dumps(enriched)
+                with self._send_lock:
+                    asyncio.run_coroutine_threadsafe(self._ws_async.send(payload), self._loop)
+            except Exception as e:
+                logger.warning(f"Async WebSocket send failed: {e}")
         else:
             try:
                 # in-proc broadcast
@@ -163,7 +187,7 @@ class MessageBusClient:
         first_connect = True
         while self.running:
             # Try WS first if available
-            if _HAS_WEBSOCKETS:
+            if _HAS_WEBSOCKETS_SYNC:
                 try:
                     url = f"ws://{self.host}:{self.port}"
                     logger.info(f"Connecting to message bus WS {url}")
@@ -204,6 +228,69 @@ class MessageBusClient:
                     logger.debug(f"WS connect failed or closed: {e}")
                     self.connected = False
                     self._use_ws = False
+
+            # Async websockets fallback
+            if not self._use_ws and _HAS_WEBSOCKETS_ASYNC:
+                try:
+                    import asyncio
+                    import websockets  # type: ignore
+
+                    def runner():
+                        self._loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(self._loop)
+
+                        async def connect_and_listen():
+                            url = f"ws://{self.host}:{self.port}"
+                            try:
+                                async with websockets.connect(url, open_timeout=self.heartbeat_timeout) as ws:
+                                    self._ws_async = ws
+                                    self._use_ws = True
+                                    self.connected = True
+                                    nonlocal_first = {'first': True}
+                                    if not first_connect and self.on_reconnect:
+                                        try:
+                                            self.on_reconnect()
+                                        except Exception:
+                                            pass
+                                    nonlocal_first['first'] = False
+                                    while self.running:
+                                        try:
+                                            raw = await ws.recv()
+                                        except Exception:
+                                            break
+                                        try:
+                                            msg = json.loads(raw)
+                                        except Exception:
+                                            continue
+                                        self._dispatch(msg)
+                            finally:
+                                self.connected = False
+                                try:
+                                    if self.on_disconnect:
+                                        self.on_disconnect()
+                                except Exception:
+                                    pass
+
+                        try:
+                            self._loop.run_until_complete(connect_and_listen())
+                        finally:
+                            try:
+                                self._loop.stop()
+                            except Exception:
+                                pass
+
+                    t = threading.Thread(target=runner, daemon=True)
+                    t.start()
+                    # Give it a moment to connect or fail
+                    time.sleep(min(0.2, self.heartbeat_timeout))
+                    if self.connected:
+                        first_connect = False
+                        backoff = self.reconnect_initial
+                    else:
+                        # failed fast; continue to fallback
+                        pass
+                except Exception as e:
+                    logger.debug(f"Async WS connect failed: {e}")
 
             # If not using WS, try in-proc bus (same-process only)
             if not self._use_ws and self.running:

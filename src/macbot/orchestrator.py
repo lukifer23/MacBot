@@ -24,6 +24,7 @@ from .logging_utils import setup_logger
 from .message_bus import MessageBus, start_message_bus, stop_message_bus
 from .message_bus_client import MessageBusClient
 from .health_monitor import get_health_monitor
+from .message_bus_server import start_message_bus_server
 from . import config as CFG
 
 # Configure logging (unified)
@@ -42,6 +43,7 @@ class MacBotOrchestrator:
         # Message bus integration
         self.message_bus = None
         self.bus_client = None
+        self.ws_bus_server = None
         
         # Health monitoring integration
         self.health_monitor = get_health_monitor()
@@ -118,7 +120,7 @@ class MacBotOrchestrator:
     def start_message_bus(self) -> bool:
         """Start the message bus system"""
         try:
-            logger.info("Starting message bus...")
+            logger.info("Starting in-process message bus...")
             
             # Start message bus server
             self.message_bus = start_message_bus(
@@ -149,9 +151,22 @@ class MacBotOrchestrator:
             else:
                 logger.error("❌ Message bus connection failed")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Failed to start message bus: {e}")
+            return False
+
+    def start_ws_message_bus(self) -> bool:
+        """Start the WebSocket message bus server (cross-process)."""
+        try:
+            host = CFG.get('communication.message_bus.host', '127.0.0.1')
+            port = int(CFG.get('communication.message_bus.port', 8082))
+            logger.info(f"Starting WS message bus on ws://{host}:{port} ...")
+            self.ws_bus_server = start_message_bus_server(host=host, port=port)
+            logger.info("✅ WS message bus started")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to start WS message bus: {e}")
             return False
     
     def stop_message_bus(self):
@@ -160,11 +175,18 @@ class MacBotOrchestrator:
             if self.bus_client:
                 self.bus_client.stop()
                 self.bus_client = None
-            
+
             if self.message_bus:
                 stop_message_bus()
                 self.message_bus = None
-            
+
+            if self.ws_bus_server:
+                try:
+                    self.ws_bus_server.stop()
+                except Exception:
+                    pass
+                self.ws_bus_server = None
+
             logger.info("✅ Message bus stopped")
             return True
         except Exception as e:
@@ -470,6 +492,7 @@ class MacBotOrchestrator:
         
         # Start services in order
         services = [
+            ('ws_bus', self.start_ws_message_bus),
             ('llama', self.start_llama_server),
             ('web_gui', self.start_web_gui),
             ('rag', self.start_rag_service),

@@ -78,6 +78,30 @@ service_status = {
     'web_gui': {'status': 'running', 'port': wd_port, 'endpoint': f'http://{wd_host}:{wd_port}'}
 }
 
+# API response helpers (non-breaking): include normalized fields while preserving legacy keys
+def _api_ok(payload: dict | None = None, message: str = "OK", extra: dict | None = None, status: int = 200):
+    resp = {
+        'success': True,
+        'message': message,
+    }
+    if payload is not None:
+        resp['data'] = payload
+    if extra:
+        resp.update(extra)
+    return jsonify(resp), status
+
+def _api_error(message: str, code: str = 'bad_request', status: int = 400, details: dict | None = None, extra: dict | None = None):
+    resp = {
+        'success': False,
+        'error': message,
+        'code': code,
+    }
+    if details:
+        resp['details'] = details
+    if extra:
+        resp.update(extra)
+    return jsonify(resp), status
+
 # HTML template for the dashboard
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -1545,16 +1569,16 @@ def api_chat():
         logger.info(f"Chat API called with message: {message}")
 
         if not message:
-            return jsonify({'error': 'Message is required'}), 400
+            return jsonify({'success': False, 'error': 'Message is required', 'code': 'validation_error'}), 400
 
         # Use unified processing path used by WebSocket handler
         response = _handle_chat_message_and_broadcast(message)
         print(f"🟢 WEB DASHBOARD: Chat API response: '{response}'")
-        return jsonify({'response': response})
+        return jsonify({'success': True, 'message': 'ok', 'data': {'response': response}, 'response': response})
     except Exception as e:
         print(f"🔴 WEB DASHBOARD: Chat API error: {e}")
         logger.error(f"Chat API error: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Internal server error', 'code': 'internal_error'}), 500
 
 @app.route('/api/llm', methods=['POST'])
 def api_llm():
@@ -1564,14 +1588,14 @@ def api_llm():
         message = data.get('message', '')
         
         if not message:
-            return jsonify({'error': 'Message is required'}), 400
+            return jsonify({'success': False, 'error': 'Message is required', 'code': 'validation_error'}), 400
         
         response = process_with_llm(message)
-        return jsonify({'response': response})
+        return jsonify({'success': True, 'message': 'ok', 'data': {'response': response}, 'response': response})
         
     except Exception as e:
         logger.error(f"LLM API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/mic-check', methods=['POST'])
 def api_mic_check():
@@ -1582,7 +1606,7 @@ def api_mic_check():
         return (jsonify(r.json()), r.status_code)
     except Exception as e:
         logger.warning(f"Mic check proxy failed: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
 
 @app.route('/api/assistant-event', methods=['POST'])
 def api_assistant_event():
@@ -1595,7 +1619,7 @@ def api_assistant_event():
         message = str(data.get('message', '')).strip()
 
         if not event_type:
-            return jsonify({'error': 'type is required'}), 400
+            return jsonify({'success': False, 'error': 'type is required', 'code': 'validation_error'}), 400
 
         # Broadcast to clients
         payload = {'type': event_type, 'timestamp': datetime.now().isoformat()}
@@ -1606,10 +1630,10 @@ def api_assistant_event():
         except Exception as e:
             logger.warning(f"Failed to emit assistant_state: {e}")
 
-        return jsonify({'status': 'ok'})
+        return jsonify({'success': True, 'status': 'ok'})
     except Exception as e:
         logger.error(f"Assistant event error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/voice', methods=['POST'])
 def api_voice():
@@ -1619,7 +1643,7 @@ def api_voice():
         audio_data = data.get('audio', '')
         
         if not audio_data:
-            return jsonify({'error': 'Audio data is required'}), 400
+            return jsonify({'success': False, 'error': 'Audio data is required', 'code': 'validation_error'}), 400
         
         # Process audio with Whisper
         transcription = process_voice_with_whisper(audio_data)
@@ -1636,11 +1660,11 @@ def api_voice():
             'timestamp': datetime.now().isoformat()
         })
         
-        return jsonify({'transcription': transcription})
+        return jsonify({'success': True, 'message': 'ok', 'data': {'transcription': transcription}, 'transcription': transcription})
         
     except Exception as e:
         logger.error(f"Voice API error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
@@ -1752,7 +1776,7 @@ def upload_documents():
 
     except Exception as e:
         logger.error(f"Document upload error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/health')
 def health_check():
@@ -1934,10 +1958,10 @@ def api_interrupt():
     """HTTP fallback to request conversation interruption"""
     try:
         handle_interrupt_conversation()
-        return jsonify({'status': 'ok'}), 200
+        return jsonify({'success': True, 'status': 'ok'}), 200
     except Exception as e:
         logger.error(f"HTTP interrupt error: {e}")
-        return jsonify({'status': 'error', 'error': str(e)}), 500
+        return jsonify({'success': False, 'status': 'error', 'error': str(e), 'code': 'internal_error'}), 500
 
 @socketio.on('start_voice_recording')
 def handle_start_voice_recording():

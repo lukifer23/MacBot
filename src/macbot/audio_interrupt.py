@@ -63,6 +63,13 @@ class AudioInterruptHandler:
         Returns:
             bool: True if playback completed, False if interrupted
         """
+        # Test/CI friendly bypass: avoid CoreAudio access during tests
+        try:
+            if os.environ.get("MACBOT_NO_AUDIO", "0") == "1":
+                logger.info("MACBOT_NO_AUDIO=1 set; skipping audio playback")
+                return True
+        except Exception:
+            pass
         if self.interrupt_requested:
             logger.info("Playback skipped due to pending interrupt")
             # Reset the flag for future calls
@@ -86,8 +93,12 @@ class AudioInterruptHandler:
         )
         self.playback_thread.start()
 
-        # Wait for playback to complete or be interrupted
-        self.playback_thread.join()
+        # Wait for playback to complete or be interrupted (bounded join)
+        self.playback_thread.join(timeout=10.0)
+        if self.playback_thread.is_alive():
+            logger.warning("Audio playback thread did not terminate in time; forcing stop")
+            self.interrupt_requested = True
+            self._stop_current_playback()
 
         # Clean up callbacks
         if on_interrupt and on_interrupt in self.interrupt_callbacks:
