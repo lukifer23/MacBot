@@ -510,23 +510,20 @@ class TTSManager:
         self.say_available = False
         self._speak_lock = threading.Lock()
         self._initialized = False  # lazy init to avoid crashes on import
+        self._reload_sec = CFG.get_piper_reload_sec()
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
             return
 
-        # Probe availability flags without loading heavy models
-        try:
-            import shutil as _sh
-            self.say_available = _sh.which('say') is not None
-        except Exception:
-            self.say_available = False
+        # Only Piper is supported now; no other engines to probe
+        self.say_available = False
 
     def init_engine(self):
         if self._initialized:
             return
         self._initialized = True
-        # Prefer Piper at runtime; fall back gracefully
+        # Piper-only engine
         try:
             from . import config as _C
             voice_path = _C.get_piper_voice_path()
@@ -540,41 +537,9 @@ class TTSManager:
             else:
                 raise ImportError(f"Piper voice model not found at {voice_path}")
         except Exception as e:
-            print(f"⚠️ Piper init failed: {e}")
-            try:
-                from kokoro import KPipeline
-                self.engine = KPipeline(lang_code="a")
-                self.engine_type = "kokoro"
-                self.kokoro_available = True
-                print("✅ Kokoro ready")
-            except Exception as e2:
-                print(f"⚠️ Kokoro init failed: {e2}")
-                try:
-                    import pyttsx3
-                    self.engine = pyttsx3.init()
-                    self.engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))
-                    self.engine_type = "pyttsx3"
-                    self.pyttsx3_available = True
-                    try:
-                        voices = self.engine.getProperty('voices') or []
-                        self.voices = [v.id for v in voices if hasattr(v, 'id')] or [v.name for v in voices if hasattr(v, 'name')]
-                        if VOICE:
-                            chosen = None
-                            for v in voices:
-                                vid = getattr(v, 'id', '')
-                                vnm = getattr(v, 'name', '')
-                                if VOICE.lower() in str(vid).lower() or VOICE.lower() in str(vnm).lower():
-                                    chosen = vid or vnm
-                                    break
-                            if chosen:
-                                self.engine.setProperty('voice', chosen)
-                    except Exception:
-                        pass
-                    print("✅ pyttsx3 ready")
-                except Exception as e3:
-                    print(f"❌ No TTS engine available: {e3}")
-                    self.engine = None
-                    self.engine_type = None
+            print(f"❌ Piper init failed: {e}")
+            self.engine = None
+            self.engine_type = None
 
         # Setup interrupt audio handler if possible
         if INTERRUPTION_ENABLED and self.engine is not None and self.audio_handler is None:
@@ -588,12 +553,21 @@ class TTSManager:
             if hasattr(self.audio_handler, 'vad_threshold'):
                 self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
 
-        # Detect macOS 'say' availability as a last-resort fallback
+        # Start a lightweight heartbeat to reinit Piper if not loaded
+        def _hb():
+            while True:
+                try:
+                    if self.engine is None:
+                        self._initialized = False
+                        self.init_engine()
+                except Exception:
+                    pass
+                time.sleep(max(5, self._reload_sec))
+
         try:
-            import shutil as _sh
-            self.say_available = _sh.which('say') is not None
+            threading.Thread(target=_hb, daemon=True).start()
         except Exception:
-            self.say_available = False
+            pass
 
     def _ensure_rate(self, audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
         try:
@@ -665,46 +639,10 @@ class TTSManager:
                         _notify_dashboard_state('speaking_ended')
                     return True
 
-            elif self.engine_type == "kokoro":
-                audio = self.engine(text)
-                # engine may return (audio, sr) or audio
-                if isinstance(audio, tuple):
-                    audio_data = np.array(audio[0], dtype=np.float32)
-                    src_sr = int(audio[1]) if len(audio) > 1 else TTS_SAMPLE_RATE
-                else:
-                    audio_data = np.array(audio, dtype=np.float32)
-                    src_sr = TTS_SAMPLE_RATE
-                if self.audio_handler and interruptible:
-                    audio_data = self._ensure_rate(audio_data, src_sr, TTS_SAMPLE_RATE)
-                    ok = self.audio_handler.play_audio(audio_data)
-                    if notify:
-                        _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
-                    return ok
-                else:
-                    import sounddevice as sd
-                    sd.play(audio_data, samplerate=src_sr)
-                    sd.wait()
-                    if notify:
-                        _notify_dashboard_state('speaking_ended')
-                    return True
-
-            elif self.engine_type == "pyttsx3":
-                # Use non-interruptible pyttsx3
-                self.engine.say(text)
-                self.engine.runAndWait()
-                return True
-
             else:
-                # Final OS fallback using 'say' if available
-                try:
-                    import subprocess as _sp
-                    _sp.Popen(['say', str(text)])
-                    if notify:
-                        _notify_dashboard_state('speaking_ended')
-                    return True
-                except Exception:
-                    print(f"⚠️ Unsupported TTS engine: {self.engine_type}")
-                    return True
+                # Piper not available; nothing to do
+                print("⚠️ Piper engine not loaded; skipping speech")
+                return True
 
         except Exception as e:
             print(f"TTS Error: {e}")
@@ -891,6 +829,19 @@ def main():
                 # Update audio handler if exists
                 if tts_manager and tts_manager.audio_handler:
                     tts_manager.audio_handler.output_device = dev
+                # Persist to config file
+                try:
+                    import yaml
+                    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml'))
+                    data = {}
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path) as f:
+                            data = yaml.safe_load(f) or {}
+                    data.setdefault('voice_assistant', {}).setdefault('audio', {})['output_device'] = dev
+                    with open(cfg_path, 'w') as f:
+                        yaml.safe_dump(data, f)
+                except Exception as e:
+                    logger.warning(f"Failed to persist output device: {e}")
                 return jsonify({'ok': True, 'default': sd.default.device})
             except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
@@ -905,25 +856,9 @@ def main():
                 except Exception:
                     convo = None
 
-                # Determine planned/active TTS engine without forcing heavy init
-                planned_engine = tts_manager.engine_type
-                if not planned_engine:
-                    try:
-                        from . import config as _C
-                        if os.path.exists(_C.get_piper_voice_path()):
-                            planned_engine = 'piper'
-                        else:
-                            try:
-                                import kokoro  # type: ignore
-                                planned_engine = 'kokoro'
-                            except Exception:
-                                try:
-                                    import pyttsx3  # type: ignore
-                                    planned_engine = 'pyttsx3'
-                                except Exception:
-                                    planned_engine = None
-                    except Exception:
-                        planned_engine = None
+                # Piper-only reporting
+                planned_engine = 'piper' if os.path.exists(CFG.get_piper_voice_path()) else None
+                engine_loaded = (tts_manager.engine_type == 'piper' and tts_manager.engine is not None)
 
                 return jsonify({
                     'stt': {
@@ -936,9 +871,8 @@ def main():
                         'voice': VOICE,
                         'speed': SPEED,
                         'voices': getattr(tts_manager, 'voices', []),
-                        'kokoro_available': getattr(tts_manager, 'kokoro_available', False),
-                        'pyttsx3_available': getattr(tts_manager, 'pyttsx3_available', False),
-                        'say_available': getattr(tts_manager, 'say_available', False)
+                        'engine_loaded': engine_loaded,
+                        'voice_path': CFG.get_piper_voice_path()
                     },
                     'interruption': {
                         'enabled': INTERRUPTION_ENABLED,
@@ -953,7 +887,7 @@ def main():
                         'vad_threshold': VAD_THRESH,
                         'devices_default': (sd.default.device if sd else None)
                     },
-                'conversation': convo
+                    'conversation': convo
                 })
             except Exception as e:
                 logger.error(f"Control info error: {e}")

@@ -121,6 +121,12 @@ def get_piper_sample_rate() -> int:
     except Exception:
         return 22050
 
+def get_piper_reload_sec() -> int:
+    try:
+        return int(get("models.tts.piper.reload_sec", 30))
+    except Exception:
+        return 30
+
 
 def get_audio_sample_rate() -> int:
     try:
