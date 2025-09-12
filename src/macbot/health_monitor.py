@@ -16,10 +16,10 @@ from enum import Enum
 # Add src/ to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from . import config as CFG
+from .logging_utils import setup_logger
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Unified logging
+logger = setup_logger("macbot.health_monitor", "logs/health_monitor.log")
 
 class ServiceStatus(Enum):
     HEALTHY = "healthy"

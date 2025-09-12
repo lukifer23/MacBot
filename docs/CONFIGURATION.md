@@ -288,8 +288,9 @@ voice_assistant:
 
 ## Configuration Reload
 
-Changes to `config.yaml` require restarting the services to take effect. Use the orchestrator to restart all services:
+Changes to `config.yaml` require restarting services to take effect. Use the orchestrator to stop then start services:
 
 ```bash
-python -m macbot.orchestrator --restart
+python -m macbot.orchestrator --stop
+python -m macbot.orchestrator
 ```

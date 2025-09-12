@@ -107,10 +107,11 @@ The TTS (Text-to-Speech) system has been completely refactored for reliability:
 - **Proper State Management**: Clean interrupt handling without race conditions
 - **Resource Cleanup**: Automatic cleanup of audio handlers and TTS engines
 
-### Message Bus Architecture Fix
-- **Queue-Based Communication**: Converted from WebSocket to in-memory queues
-- **Cross-Service Integration**: Voice assistant now receives web dashboard signals
-- **Thread-Safe Operations**: Proper synchronization for concurrent message handling
+### Message Bus Architecture
+- **WebSocket Communication (primary)**: Cross-process, resilient client with auto-reconnect
+- **In-Process Fallback**: Lightweight queue bus remains available for same-process usage
+- **Cross-Service Integration**: Voice assistant and orchestrator can exchange events via WS
+- **Thread-Safe Operations**: Safe handler dispatch and send locking
 
 ### Conversation State Synchronization
 - **Audio Handler Integration**: Fixed interrupt flag reset issues

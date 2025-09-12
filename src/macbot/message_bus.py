@@ -10,7 +10,9 @@ import time
 from typing import Dict, List, Callable, Any, Optional
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+from .logging_utils import setup_logger
+
+logger = setup_logger("macbot.message_bus", "logs/message_bus.log")
 
 class MessageBus:
     """Simplified message bus for real-time service communication"""

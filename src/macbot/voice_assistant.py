@@ -478,7 +478,12 @@ class TTSManager:
 
             # Initialize audio handler for interruption
             if INTERRUPTION_ENABLED:
-                self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE)
+                # Use shared audio handler to avoid duplicate streams
+                try:
+                    from .audio_interrupt import get_audio_handler
+                    self.audio_handler = get_audio_handler()
+                except Exception:
+                    self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE)
                 if hasattr(self.audio_handler, 'vad_threshold'):
                     self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
 

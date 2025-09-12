@@ -7,7 +7,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 ## Current Status: Phase 6 - CRITICAL FIXES ✅ COMPLETED
 
 ### Phase 1 Achievements:
-- ✅ **Message Bus System**: Implemented queue-based real-time communication
+- ✅ **Message Bus System**: Implemented cross-process WebSocket communication with in-proc fallback
 - ✅ **Service Registration**: Automatic service discovery and health monitoring  
 - ✅ **Orchestrator Integration**: Message bus client with full integration
 - ✅ **Thread-Safe Communication**: Concurrent message processing without conflicts
@@ -46,7 +46,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - ✅ **Maintainability**: Comprehensive documentation, consistent patterns, modular design
 
 ### Phase 6 - Critical Architecture Fixes ✅ COMPLETED:
-- ✅ **Message Bus Architecture Fix**: Resolved WebSocket vs queue communication mismatch
+- ✅ **Message Bus Architecture Fix**: Implemented resilient WS client, retained in-proc fallback for dev
 - ✅ **TTS Interruption Logic Overhaul**: Unified TTSManager with proper Kokoro/pyttsx3 fallback
 - ✅ **Code Duplicates Removal**: Eliminated duplicate functions and imports across modules
 - ✅ **Health Monitor Circuit Breaker Fix**: Corrected datetime comparison logic for recovery
@@ -89,7 +89,7 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 - All documentation files - UPDATED: Added Phase 5 achievements and code quality improvements
 
 ### Phase 6 Files Created/Modified:
-- `src/macbot/message_bus_client.py` - REWRITTEN: Converted from WebSocket to queue-based communication
+- `src/macbot/message_bus_client.py` - REWRITTEN: Robust WebSocket client with auto-reconnect + fallback
 - `src/macbot/voice_assistant.py` - OVERHAULED: Added TTSManager, message bus integration, fixed interruption logic
 - `src/macbot/audio_interrupt.py` - ENHANCED: Fixed interrupt flag reset, improved state synchronization
 - `src/macbot/health_monitor.py` - FIXED: Corrected circuit breaker datetime comparison logic
@@ -142,14 +142,14 @@ MacBot has solid foundational architecture but suffers from critical issues in i
 #### 1.1 Implement Message Bus System ✅ DONE
 **Objective:** Enable real-time communication between all services
 **Implementation:**
-- ✅ Queue-based communication system (simplified from WebSocket)
+- ✅ WebSocket communication for cross-process; in-proc queue fallback for single process
 - ✅ Service registration and discovery
 - ✅ Message routing and queuing
 
 **Files Created:**
-- `message_bus.py` - Core message bus with queue-based communication
-- `message_bus_client.py` - Client library for service integration
-- `test_message_bus.py` - Comprehensive test suite
+- `message_bus.py` - In-proc fallback message bus (queues)
+- `message_bus_client.py` - WS client library with fallback
+- `tests/test_message_bus.py` - Network resilience test suite
 
 **Benefits Achieved:**
 - ✅ Real-time state synchronization

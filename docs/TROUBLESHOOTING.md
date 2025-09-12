@@ -26,10 +26,7 @@ This guide helps you diagnose and resolve common issues with MacBot. Start with 
 ### 1. Check Service Status
 ```bash
 # Check all services
-python orchestrator.py --status
-
-# Check specific service
-python orchestrator.py --status --service llama_server
+python src/macbot/orchestrator.py --status
 ```
 
 ### 2. View Logs
@@ -85,11 +82,9 @@ Services show as unhealthy and circuit breaker is open.
 
 2. **Manual service restart:**
    ```bash
-   # Restart specific service
-   python orchestrator.py --restart llama_server
-   
-   # Reset circuit breaker
-   python -c "from src.macbot.health_monitor import get_health_monitor; hm = get_health_monitor(); hm.reset_circuit_breaker('llama_server')"
+# Manually stop then start services from orchestrator
+python src/macbot/orchestrator.py --stop
+python src/macbot/orchestrator.py
    ```
 
 3. **Check network connectivity:**
