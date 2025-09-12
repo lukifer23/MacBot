@@ -467,6 +467,8 @@ class TTSManager:
         self.voices = []  # available voice names/ids for the active engine
         self.kokoro_available = False
         self.pyttsx3_available = False
+        self.piper_available = False
+        self.say_available = False
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
@@ -490,35 +492,64 @@ class TTSManager:
                     self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
 
         except ImportError:
-            print("⚠️ Kokoro not available, trying pyttsx3...")
+            print("⚠️ Kokoro not available, trying alternative TTS engines...")
+
+            # Try Piper TTS
             try:
-                import pyttsx3
-                self.engine = pyttsx3.init()
-                self.engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))
-                self.engine_type = "pyttsx3"
-                self.pyttsx3_available = True
-                # Select voice if configured
+                import piper
+                # Try to load a Piper voice
                 try:
-                    voices = self.engine.getProperty('voices') or []
-                    self.voices = [v.id for v in voices if hasattr(v, 'id')] or [v.name for v in voices if hasattr(v, 'name')]
-                    if VOICE:
-                        # Choose first matching id or name containing VOICE
-                        chosen = None
-                        for v in voices:
-                            vid = getattr(v, 'id', '')
-                            vnm = getattr(v, 'name', '')
-                            if VOICE.lower() in str(vid).lower() or VOICE.lower() in str(vnm).lower():
-                                chosen = vid or vnm
-                                break
-                        if chosen:
-                            self.engine.setProperty('voice', chosen)
-                except Exception:
-                    pass
-                print("✅ Using pyttsx3 for TTS (non-interruptible)")
+                    from piper import PiperVoice
+                    # Load a default English voice - you can customize this
+                    voice_path = "piper_voices/en_US-lessac-medium/model.onnx"
+                    if os.path.exists(voice_path):
+                        self.engine = PiperVoice.load(voice_path)
+                        self.engine_type = "piper"
+                        self.piper_available = True
+                        print("✅ Using Piper TTS (non-interruptible)")
+                    else:
+                        raise ImportError("Piper voice model not found")
+                except Exception as e:
+                    print(f"⚠️ Piper voice loading failed: {e}, falling back to pyttsx3...")
+                    raise ImportError("Piper TTS setup failed")
+
             except ImportError:
-                print("❌ No TTS engine available")
-                self.engine = None
-                self.engine_type = None
+                print("⚠️ Piper TTS not available, trying pyttsx3...")
+                try:
+                    import pyttsx3
+                    self.engine = pyttsx3.init()
+                    self.engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))
+                    self.engine_type = "pyttsx3"
+                    self.pyttsx3_available = True
+                    # Select voice if configured
+                    try:
+                        voices = self.engine.getProperty('voices') or []
+                        self.voices = [v.id for v in voices if hasattr(v, 'id')] or [v.name for v in voices if hasattr(v, 'name')]
+                        if VOICE:
+                            # Choose first matching id or name containing VOICE
+                            chosen = None
+                            for v in voices:
+                                vid = getattr(v, 'id', '')
+                                vnm = getattr(v, 'name', '')
+                                if VOICE.lower() in str(vid).lower() or VOICE.lower() in str(vnm).lower():
+                                    chosen = vid or vnm
+                                    break
+                            if chosen:
+                                self.engine.setProperty('voice', chosen)
+                    except Exception:
+                        pass
+                    print("✅ Using pyttsx3 for TTS (non-interruptible)")
+                except ImportError:
+                    print("❌ No TTS engine available")
+                    self.engine = None
+                    self.engine_type = None
+
+        # Detect macOS 'say' availability as a last-resort fallback
+        try:
+            import shutil as _sh
+            self.say_available = _sh.which('say') is not None
+        except Exception:
+            self.say_available = False
 
     def speak(self, text: str, interruptible: bool = False) -> bool:
         """Speak text using the configured TTS engine
@@ -547,6 +578,43 @@ class TTSManager:
                     audio_data = np.array(audio_data)
 
                 return self.audio_handler.play_audio(audio_data)
+
+            elif self.engine_type == "piper":
+                # Use Piper TTS (non-interruptible)
+                try:
+                    from piper import SynthesisConfig
+
+                    # Create synthesis config
+                    config = SynthesisConfig()
+                    config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0  # Adjust speed
+                    config.noise_scale = 0.667
+                    config.noise_w = 0.8
+                    config.phoneme_silence_sec = 0.1
+
+                    # Generate audio chunks
+                    audio_chunks = self.engine.synthesize(text, config)
+
+                    # Collect all audio data from chunks
+                    all_audio_data = []
+                    for chunk in audio_chunks:
+                        all_audio_data.extend(chunk.audio_float_array)
+
+                    if all_audio_data:
+                        # Convert to numpy array
+                        audio_array = np.array(all_audio_data, dtype=np.float32)
+
+                        # Play audio (non-interruptible for now)
+                        import sounddevice as sd
+                        sd.play(audio_array, samplerate=22050)  # Piper uses 22050 Hz
+                        sd.wait()
+                        return True
+                    else:
+                        print("⚠️ No audio data generated")
+                        return False
+
+                except Exception as e:
+                    print(f"Piper TTS error: {e}")
+                    return False
 
             elif self.engine_type == "pyttsx3":
                 # Use non-interruptible pyttsx3
@@ -743,7 +811,8 @@ def main():
                         'speed': SPEED,
                         'voices': getattr(tts_manager, 'voices', []),
                         'kokoro_available': getattr(tts_manager, 'kokoro_available', False),
-                        'pyttsx3_available': getattr(tts_manager, 'pyttsx3_available', False)
+                        'pyttsx3_available': getattr(tts_manager, 'pyttsx3_available', False),
+                        'say_available': getattr(tts_manager, 'say_available', False)
                     },
                     'interruption': {
                         'enabled': INTERRUPTION_ENABLED,

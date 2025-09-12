@@ -505,9 +505,6 @@ DASHBOARD_HTML = """
             <label style="margin-left: 10px; font-size: 0.9em;">
               <input type="checkbox" id="speak-toggle" checked /> Speak replies
             </label>
-            <label style="margin-left: 10px; font-size: 0.9em;">
-              <input type="checkbox" id="speak-toggle" checked /> Speak replies
-            </label>
             <div id="status-banner" class="status-banner status-info" style="display:none; margin-left:10px;">Ready</div>
         </div>
         
@@ -565,8 +562,8 @@ DASHBOARD_HTML = """
                     <div class="service-card">
                         <h3>🌐 Web Dashboard</h3>
                         <div class="service-status" id="web-status">Status: <span class="status-dot">🟡</span> Checking...</div>
-                        <div class="service-info">Port: 3000</div>
-                        <div class="service-url">http://localhost:3000</div>
+                        <div class="service-info">Port: {{ services['web_gui']['port'] }}</div>
+                        <div class="service-url">http://{{ wd_host }}:{{ wd_port }}</div>
                     </div>
                 </div>
             </div>
@@ -1502,7 +1499,7 @@ def dashboard():
     """Main dashboard page"""
     print("🌐 WEB DASHBOARD: Serving main dashboard page")
     check_service_health()
-    return render_template_string(DASHBOARD_HTML, services=service_status)
+    return render_template_string(DASHBOARD_HTML, services=service_status, wd_host=wd_host, wd_port=wd_port)
 
 @app.route('/favicon.ico')
 def favicon():
@@ -2085,19 +2082,39 @@ def handle_clear_conversation():
     })
 
 def process_voice_with_whisper(base64_audio: str) -> str:
-    """Process voice input. Accepts browser-recorded audio (WebM/Opus or similar),
-    converts to 16kHz mono WAV via ffmpeg, and transcribes with Whisper CLI if available
-    (falls back to Python whisper if installed)."""
+    """Process voice input.
+    - Accepts either a raw base64 string or a full DataURL (e.g. data:audio/webm;...;base64,XXXX)
+    - Detects container type for better ffmpeg compatibility
+    - Converts to 16kHz mono WAV and transcribes with whisper.cpp CLI when available,
+      otherwise falls back to python-whisper if installed.
+    """
     import base64
     import tempfile
     import os
 
     try:
-        # Decode incoming base64
-        audio_bytes = base64.b64decode(base64_audio.split(',')[1] if ',' in base64_audio else base64_audio)
+        # Determine if this is a DataURL and extract mime + payload
+        src_suffix = '.webm'
+        payload = base64_audio
+        if ',' in base64_audio and base64_audio.strip().startswith('data:'):
+            header, payload = base64_audio.split(',', 1)
+            # Try to recognize container extension from header
+            if 'audio/ogg' in header:
+                src_suffix = '.ogg'
+            elif 'audio/mp4' in header or 'audio/m4a' in header:
+                src_suffix = '.mp4'
+            elif 'audio/mpeg' in header or 'audio/mp3' in header:
+                src_suffix = '.mp3'
+            elif 'audio/wav' in header or 'audio/x-wav' in header:
+                src_suffix = '.wav'
+            else:
+                src_suffix = '.webm'
 
-        # Write raw container to a temp file (assume webm if unknown)
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as src_file:
+        # Decode incoming base64 payload
+        audio_bytes = base64.b64decode(payload)
+
+        # Write raw container to a temp file
+        with tempfile.NamedTemporaryFile(suffix=src_suffix, delete=False) as src_file:
             src_file.write(audio_bytes)
             src_path = src_file.name
 

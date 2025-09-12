@@ -144,6 +144,22 @@
     if (convBtn) convBtn.addEventListener('click', () => { setMode('conversational'); addChatMessage('Conversational mode enabled', 'system'); });
     if (endBtn) endBtn.addEventListener('click', endConversation);
     if (selfCheckBtn) selfCheckBtn.addEventListener('click', runSelfCheck);
+    // Spacebar PTT (only when focus is not in a text input/textarea)
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      if (state.mode === 'ptt' && e.code === 'Space' && !e.repeat && tag !== 'input' && tag !== 'textarea') {
+        e.preventDefault();
+        if (!state.isRecording) onVoiceToggle();
+      }
+    });
+    document.addEventListener('keyup', (e) => {
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      if (state.mode === 'ptt' && e.code === 'Space' && tag !== 'input' && tag !== 'textarea') {
+        e.preventDefault();
+        if (state.isRecording) onVoiceToggle();
+      }
+    });
+
     // default
     setMode('ptt');
   }
@@ -190,7 +206,17 @@
         }
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
         state.audioChunks = [];
-        state.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        // Choose a compatible container across browsers
+        let mime = '';
+        const candidates = ['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4','audio/webm','audio/ogg'];
+        if (window.MediaRecorder && typeof MediaRecorder.isTypeSupported === 'function') {
+          for (const c of candidates) { if (MediaRecorder.isTypeSupported(c)) { mime = c; break; } }
+        }
+        try {
+          state.mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+        } catch (_) {
+          state.mediaRecorder = new MediaRecorder(stream);
+        }
         state.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) state.audioChunks.push(e.data); };
         state.mediaRecorder.onstop = async () => {
           const blob = new Blob(state.audioChunks, { type: 'audio/webm' });
@@ -220,9 +246,9 @@
 
   async function processVoiceBlob(blob) {
     try {
-      const b64 = await blobToBase64(blob);
+      const b64 = await blobToBase64(blob); // full DataURL
       const r = await fetch('/api/voice', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio: b64.split(',')[1] || b64 })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio: b64 })
       });
       if (!r.ok) {
         addChatMessage('❌ Voice processing failed', 'system'); setStatus('Ready','info'); return;
