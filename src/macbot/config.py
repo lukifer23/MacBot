@@ -109,6 +109,18 @@ def get_tts_speed() -> float:
     except Exception:
         return 1.0
 
+def get_piper_voice_path() -> str:
+    """Filesystem path to Piper ONNX voice model.
+    Default points to en_US lessac medium if present in repo structure.
+    """
+    return os.path.abspath(str(get("models.tts.piper.voice_path", "piper_voices/en_US-lessac-medium/model.onnx")))
+
+def get_piper_sample_rate() -> int:
+    try:
+        return int(get("models.tts.piper.sample_rate", 22050))
+    except Exception:
+        return 22050
+
 
 def get_audio_sample_rate() -> int:
     try:

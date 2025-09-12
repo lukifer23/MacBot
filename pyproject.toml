@@ -39,7 +39,8 @@ dependencies = [
     "flask>=2.0.0",
     "chromadb>=0.4.0",
     "sentence-transformers>=2.2.0",
-    "kokoro>=0.9.4",
+    # Prefer Piper at runtime; keep Kokoro optional to avoid packaging issues on 3.13+
+    "kokoro>=0.9.4; python_version < \"3.13\"",
     "livekit-agents[turn-detector]>=1.2.0",
     "websockets>=10.0",
     "python-socketio>=5.0.0",

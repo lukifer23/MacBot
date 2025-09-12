@@ -302,6 +302,8 @@ class StreamingTranscriber:
         return text
 
 # ---- Enhanced LLM chat with tool calling ----
+TTS_STREAMED = False  # set true when llama_chat performs streaming TTS
+
 def llama_chat(user_text: str) -> str:
     # Check if user is requesting tool usage
     if CFG.tools_enabled() and tool_caller:
@@ -361,6 +363,10 @@ def llama_chat(user_text: str) -> str:
     }
 
     try:
+        global TTS_STREAMED
+        TTS_STREAMED = False
+        # Inform UI that assistant will start speaking (streamed)
+        _notify_dashboard_state('speaking_started')
         with requests.post(
             LLAMA_SERVER,
             json=payload,
@@ -370,7 +376,7 @@ def llama_chat(user_text: str) -> str:
             r.raise_for_status()
 
             full_response = ""
-            spoken_len = 0
+            tts_buf = ""
 
             if INTERRUPTION_ENABLED and conversation_manager:
                 conversation_manager.start_response()
@@ -403,22 +409,34 @@ def llama_chat(user_text: str) -> str:
                     if INTERRUPTION_ENABLED and conversation_manager:
                         conversation_manager.update_response(full_response)
 
-                    new_text = full_response[spoken_len:]
-                    spoken_len = len(full_response)
+                    # Buffer and flush at sentence boundaries or size threshold for smoother TTS
+                    tts_buf += delta
+                    flush_now = any(p in delta for p in [".", "?", "!", "\n"]) or len(tts_buf) > 220
+                    if flush_now and tts_buf.strip():
+                        to_say = tts_buf.strip()
+                        tts_buf = ""
+                        TTS_STREAMED = True
+                        threading.Thread(target=lambda: tts_manager.speak(to_say, interruptible=True, notify=False), daemon=True).start()
 
-                    if new_text.strip():
-                        # Use the unified TTS manager for streaming speech
-                        def _speak_chunk(txt=new_text):
-                            try:
-                                tts_manager.speak(txt, interruptible=True)
-                            except Exception as e:
-                                print(f"TTS Error: {e}")
-
-                        threading.Thread(target=_speak_chunk, daemon=True).start()
+            if tts_buf.strip():
+                TTS_STREAMED = True
+                threading.Thread(target=lambda: tts_manager.speak(tts_buf.strip(), interruptible=True, notify=False), daemon=True).start()
 
             if INTERRUPTION_ENABLED and conversation_manager and not (tts_manager.audio_handler and tts_manager.audio_handler.interrupt_requested):
                 conversation_manager.update_response(full_response, is_complete=True)
+                try:
+                    conversation_manager.complete_response()
+                except Exception:
+                    pass
 
+            # Signal end/interrupted after last chunk queued
+            try:
+                if tts_manager.audio_handler and tts_manager.audio_handler.interrupt_requested:
+                    _notify_dashboard_state('speaking_interrupted')
+                else:
+                    _notify_dashboard_state('speaking_ended')
+            except Exception:
+                _notify_dashboard_state('speaking_ended')
             return full_response
     except requests.exceptions.Timeout:
         return "The language model is taking too long to respond. Please try again."
@@ -469,64 +487,45 @@ class TTSManager:
         self.pyttsx3_available = False
         self.piper_available = False
         self.say_available = False
+        self._speak_lock = threading.Lock()
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
             return
 
-        # Try Kokoro first (supports interruption)
+        # Prefer Piper (more reliable packaging); then Kokoro; then pyttsx3; then macOS 'say'
         try:
-            from kokoro import KPipeline
-            self.engine = KPipeline(lang_code="a")  # American English
-            self.engine_type = "kokoro"
-            self.kokoro_available = True
-            print("✅ Using Kokoro for TTS (interruptible)")
-
-            if INTERRUPTION_ENABLED:
-                try:
-                    from .audio_interrupt import get_audio_handler
-                    self.audio_handler = get_audio_handler()
-                except Exception:
-                    self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE)
-                if hasattr(self.audio_handler, 'vad_threshold'):
-                    self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
-
-        except ImportError:
-            print("⚠️ Kokoro not available, trying alternative TTS engines...")
-
-            # Try Piper TTS
+            import piper  # noqa: F401
+            from piper import PiperVoice
+            from . import config as _C
+            voice_path = _C.get_piper_voice_path()
+            if os.path.exists(voice_path):
+                self.engine = PiperVoice.load(voice_path)
+                self.engine_type = "piper"
+                self.piper_available = True
+                print(f"✅ Using Piper TTS ({voice_path})")
+            else:
+                raise ImportError(f"Piper voice model not found at {voice_path}")
+        except Exception as e:
+            print(f"⚠️ Piper unavailable: {e}. Trying Kokoro...")
             try:
-                import piper
-                # Try to load a Piper voice
-                try:
-                    from piper import PiperVoice
-                    # Load a default English voice - you can customize this
-                    voice_path = "piper_voices/en_US-lessac-medium/model.onnx"
-                    if os.path.exists(voice_path):
-                        self.engine = PiperVoice.load(voice_path)
-                        self.engine_type = "piper"
-                        self.piper_available = True
-                        print("✅ Using Piper TTS (non-interruptible)")
-                    else:
-                        raise ImportError("Piper voice model not found")
-                except Exception as e:
-                    print(f"⚠️ Piper voice loading failed: {e}, falling back to pyttsx3...")
-                    raise ImportError("Piper TTS setup failed")
-
-            except ImportError:
-                print("⚠️ Piper TTS not available, trying pyttsx3...")
+                from kokoro import KPipeline
+                self.engine = KPipeline(lang_code="a")
+                self.engine_type = "kokoro"
+                self.kokoro_available = True
+                print("✅ Using Kokoro for TTS (interruptible)")
+            except Exception as e2:
+                print(f"⚠️ Kokoro unavailable: {e2}. Trying pyttsx3...")
                 try:
                     import pyttsx3
                     self.engine = pyttsx3.init()
                     self.engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))
                     self.engine_type = "pyttsx3"
                     self.pyttsx3_available = True
-                    # Select voice if configured
                     try:
                         voices = self.engine.getProperty('voices') or []
                         self.voices = [v.id for v in voices if hasattr(v, 'id')] or [v.name for v in voices if hasattr(v, 'name')]
                         if VOICE:
-                            # Choose first matching id or name containing VOICE
                             chosen = None
                             for v in voices:
                                 vid = getattr(v, 'id', '')
@@ -539,10 +538,20 @@ class TTSManager:
                     except Exception:
                         pass
                     print("✅ Using pyttsx3 for TTS (non-interruptible)")
-                except ImportError:
-                    print("❌ No TTS engine available")
+                except Exception as e3:
+                    print(f"❌ No TTS engine available: {e3}")
                     self.engine = None
                     self.engine_type = None
+
+        # Setup interrupt audio handler if possible
+        if INTERRUPTION_ENABLED and self.engine is not None:
+            try:
+                from .audio_interrupt import get_audio_handler
+                self.audio_handler = get_audio_handler()
+            except Exception:
+                self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE)
+            if hasattr(self.audio_handler, 'vad_threshold'):
+                self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
 
         # Detect macOS 'say' availability as a last-resort fallback
         try:
@@ -551,7 +560,20 @@ class TTSManager:
         except Exception:
             self.say_available = False
 
-    def speak(self, text: str, interruptible: bool = False) -> bool:
+    def _ensure_rate(self, audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+        try:
+            if src_sr == dst_sr:
+                return audio.astype(np.float32)
+            import numpy as _np
+            x = _np.arange(len(audio), dtype=_np.float32)
+            new_len = max(1, int(len(audio) * (dst_sr / float(src_sr))))
+            new_x = _np.linspace(0, max(1, len(audio) - 1), new_len)
+            res = _np.interp(new_x, x, audio.astype(_np.float32)).astype(_np.float32)
+            return res
+        except Exception:
+            return audio.astype(np.float32)
+
+    def speak(self, text: str, interruptible: bool = False, notify: bool = True) -> bool:
         """Speak text using the configured TTS engine
 
         Args:
@@ -565,56 +587,67 @@ class TTSManager:
             return True
 
         try:
-            if self.engine_type == "kokoro" and self.audio_handler and interruptible:
-                # Use interruptible TTS with Kokoro
-                audio = self.engine(text)
-                if isinstance(audio, tuple):
-                    audio_data = audio[0]
+            if notify:
+                _notify_dashboard_state('speaking_started')
+
+            if self.engine_type == "piper":
+                # Piper TTS; synthesize to numpy and play via interruptible audio handler when possible
+                from piper import SynthesisConfig
+                sr = CFG.get_piper_sample_rate()
+                config = SynthesisConfig()
+                # approximate speed; Piper length_scale inversely controls rate
+                config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0
+                config.noise_scale = 0.667
+                config.noise_w = 0.8
+                config.phoneme_silence_sec = 0.1
+                audio_chunks = self.engine.synthesize(text, config)
+                all_audio = []
+                for ch in audio_chunks:
+                    try:
+                        all_audio.extend(ch.audio_float_array)
+                    except Exception:
+                        pass
+                if not all_audio:
+                    if notify:
+                        _notify_dashboard_state('speaking_ended')
+                    return True
+                audio_arr = np.array(all_audio, dtype=np.float32)
+                if self.audio_handler and interruptible:
+                    audio_arr = self._ensure_rate(audio_arr, sr, TTS_SAMPLE_RATE)
+                    ok = self.audio_handler.play_audio(audio_arr)
+                    if notify:
+                        _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
+                    return ok
                 else:
-                    audio_data = audio
+                    import sounddevice as sd
+                    sd.play(audio_arr, samplerate=sr)
+                    sd.wait()
+                    if notify:
+                        _notify_dashboard_state('speaking_ended')
+                    return True
 
-                # Ensure numpy array
-                if not isinstance(audio_data, np.ndarray):
-                    audio_data = np.array(audio_data)
-
-                return self.audio_handler.play_audio(audio_data)
-
-            elif self.engine_type == "piper":
-                # Use Piper TTS (non-interruptible)
-                try:
-                    from piper import SynthesisConfig
-
-                    # Create synthesis config
-                    config = SynthesisConfig()
-                    config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0  # Adjust speed
-                    config.noise_scale = 0.667
-                    config.noise_w = 0.8
-                    config.phoneme_silence_sec = 0.1
-
-                    # Generate audio chunks
-                    audio_chunks = self.engine.synthesize(text, config)
-
-                    # Collect all audio data from chunks
-                    all_audio_data = []
-                    for chunk in audio_chunks:
-                        all_audio_data.extend(chunk.audio_float_array)
-
-                    if all_audio_data:
-                        # Convert to numpy array
-                        audio_array = np.array(all_audio_data, dtype=np.float32)
-
-                        # Play audio (non-interruptible for now)
-                        import sounddevice as sd
-                        sd.play(audio_array, samplerate=22050)  # Piper uses 22050 Hz
-                        sd.wait()
-                        return True
-                    else:
-                        print("⚠️ No audio data generated")
-                        return False
-
-                except Exception as e:
-                    print(f"Piper TTS error: {e}")
-                    return False
+            elif self.engine_type == "kokoro":
+                audio = self.engine(text)
+                # engine may return (audio, sr) or audio
+                if isinstance(audio, tuple):
+                    audio_data = np.array(audio[0], dtype=np.float32)
+                    src_sr = int(audio[1]) if len(audio) > 1 else TTS_SAMPLE_RATE
+                else:
+                    audio_data = np.array(audio, dtype=np.float32)
+                    src_sr = TTS_SAMPLE_RATE
+                if self.audio_handler and interruptible:
+                    audio_data = self._ensure_rate(audio_data, src_sr, TTS_SAMPLE_RATE)
+                    ok = self.audio_handler.play_audio(audio_data)
+                    if notify:
+                        _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
+                    return ok
+                else:
+                    import sounddevice as sd
+                    sd.play(audio_data, samplerate=src_sr)
+                    sd.wait()
+                    if notify:
+                        _notify_dashboard_state('speaking_ended')
+                    return True
 
             elif self.engine_type == "pyttsx3":
                 # Use non-interruptible pyttsx3
@@ -627,6 +660,8 @@ class TTSManager:
                 try:
                     import subprocess as _sp
                     _sp.Popen(['say', str(text)])
+                    if notify:
+                        _notify_dashboard_state('speaking_ended')
                     return True
                 except Exception:
                     print(f"⚠️ Unsupported TTS engine: {self.engine_type}")
@@ -678,7 +713,7 @@ def speak(text: str):
 
         # Use interruptible TTS
         _notify_dashboard_state('speaking_started')
-        completed = tts_manager.speak(text, interruptible=True)
+        completed = tts_manager.speak(text, interruptible=True, notify=False)
 
         if completed:
             conversation_manager.update_response(text, is_complete=True)
@@ -694,7 +729,7 @@ def speak(text: str):
     else:
         # Use non-interruptible TTS
         _notify_dashboard_state('speaking_started')
-        tts_manager.speak(text, interruptible=False)
+        tts_manager.speak(text, interruptible=False, notify=False)
         _notify_dashboard_state('speaking_ended')
 
 """Web GUI removed from voice_assistant; use web_dashboard service instead."""
@@ -911,7 +946,10 @@ def main():
 
                             print(f"[BOT] {reply}\n")
                             logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
-                            speak(reply)
+                            # Avoid duplicate speech if streaming TTS already occurred
+                            global TTS_STREAMED
+                            if not TTS_STREAMED:
+                                speak(reply)
                 else:
                     if now - last_voice > SILENCE_HANG:
                         transcript = stream_tr.flush()
@@ -941,7 +979,9 @@ def main():
 
                             print(f"[BOT] {reply}\n")
                             logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
-                            speak(reply)
+                            global TTS_STREAMED
+                            if not TTS_STREAMED:
+                                speak(reply)
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
