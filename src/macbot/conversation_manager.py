@@ -117,11 +117,12 @@ class ConversationManager:
                 )
                 logger.info(f"Started new conversation: {conversation_id}")
 
-            self._notify_state_change()
-            return conversation_id
+        self._notify_state_change()
+        return conversation_id
 
     def update_state(self, new_state: ConversationState, metadata: Optional[Dict[str, Any]] = None):
         """Update conversation state"""
+        should_notify = False
         with self.lock:
             if self.current_context:
                 old_state = self.current_context.current_state
@@ -134,14 +135,17 @@ class ConversationManager:
                     self.current_context.metadata.update(metadata)
 
                 logger.info(f"State changed: {old_state.value} -> {new_state.value}")
-                self._notify_state_change()
+                should_notify = True
+
+        if should_notify:
+            self._notify_state_change()
 
     def add_user_input(self, text: str, metadata: Optional[Dict[str, Any]] = None):
         """Add user input to conversation"""
-        with self.lock:
-            if not self.current_context:
-                self.start_conversation()
+        if not self.current_context:
+            self.start_conversation()
 
+        with self.lock:
             if self.current_context:
                 self.current_context.user_input = text
                 self.current_context.turn_count += 1
@@ -153,22 +157,25 @@ class ConversationManager:
                     sender="user",
                     content=text,
                     message_type="text",
-                    metadata=metadata or {}
+                    metadata=metadata or {},
                 )
                 self._add_to_history(message)
 
-                self.update_state(ConversationState.PROCESSING)
-                logger.info(f"User input added: {text[:50]}...")
+        self.update_state(ConversationState.PROCESSING)
+        logger.info(f"User input added: {text[:50]}...")
 
     def start_response(self, response_text: str = ""):
         """Start AI response"""
+        should_update = False
         with self.lock:
             if self.current_context:
                 self.current_context.ai_response = response_text
                 self.current_context.response_state = ResponseState.STREAMING
                 self.current_context.last_activity = time.time()
+                should_update = True
 
-                self.update_state(ConversationState.SPEAKING)
+        if should_update:
+            self.update_state(ConversationState.SPEAKING)
 
     def update_response(self, new_text: str, is_complete: bool = False):
         """Update AI response (for streaming)"""
@@ -183,6 +190,7 @@ class ConversationManager:
 
     def interrupt_response(self):
         """Handle response interruption"""
+        should_update = False
         with self.lock:
             if self.current_context:
                 # Buffer the current response for potential resumption
@@ -190,12 +198,15 @@ class ConversationManager:
                     self.current_context.buffered_response = self.current_context.ai_response
                     self.current_context.response_state = ResponseState.INTERRUPTED
                     self.current_context.interrupted_at = time.time()
+                should_update = True
 
-                self.update_state(ConversationState.INTERRUPTED)
-                logger.info("Response interrupted and buffered")
+        if should_update:
+            self.update_state(ConversationState.INTERRUPTED)
+            logger.info("Response interrupted and buffered")
 
     def resume_response(self) -> Optional[str]:
         """Resume interrupted response"""
+        should_update = False
         with self.lock:
             if (self.current_context and
                 self.current_context.response_state == ResponseState.INTERRUPTED and
@@ -205,15 +216,20 @@ class ConversationManager:
                 self.current_context.buffered_response = ""
                 self.current_context.response_state = ResponseState.STREAMING
                 self.current_context.interrupted_at = None
+                should_update = True
+            else:
+                buffered_text = None
 
-                self.update_state(ConversationState.SPEAKING)
-                logger.info("Resumed buffered response")
-                return buffered_text
+        if should_update:
+            self.update_state(ConversationState.SPEAKING)
+            logger.info("Resumed buffered response")
+            return buffered_text
 
-            return None
+        return None
 
     def complete_response(self):
         """Mark response as completed"""
+        should_update = False
         with self.lock:
             if self.current_context:
                 self.current_context.response_state = ResponseState.COMPLETED
@@ -222,8 +238,10 @@ class ConversationManager:
                 # Add to history
                 if self.current_context.ai_response:
                     self._add_response_to_history(self.current_context.ai_response)
+                should_update = True
 
-                self.update_state(ConversationState.IDLE)
+        if should_update:
+            self.update_state(ConversationState.IDLE)
 
     def _add_response_to_history(self, response_text: str):
         """Add AI response to conversation history"""
@@ -271,11 +289,15 @@ class ConversationManager:
 
     def clear_conversation(self):
         """Clear current conversation context"""
+        should_update = False
         with self.lock:
             if self.current_context:
                 logger.info(f"Clearing conversation: {self.current_context.conversation_id}")
                 self.current_context = None
-                self.update_state(ConversationState.IDLE)
+                should_update = True
+
+        if should_update:
+            self.update_state(ConversationState.IDLE)
 
     def register_state_callback(self, callback: Callable):
         """Register callback for state changes"""
@@ -283,10 +305,14 @@ class ConversationManager:
 
     def _notify_state_change(self):
         """Notify registered callbacks of state change"""
-        if self.current_context:
-            for callback in self.state_change_callbacks:
+        with self.lock:
+            context = self.current_context
+            callbacks = list(self.state_change_callbacks)
+
+        if context:
+            for callback in callbacks:
                 try:
-                    callback(self.current_context)
+                    callback(context)
                 except Exception as e:
                     logger.error(f"State change callback error: {e}")
 
