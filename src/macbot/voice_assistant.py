@@ -1037,4 +1037,23 @@ def main():
                 logger.warning(f"Error stopping message bus client: {e}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Log any uncaught exceptions for diagnosis rather than hard-crashing
+        def _hook(exctype, value, tb):
+            try:
+                import traceback
+                logger.error("Uncaught exception in voice assistant:\n" + ''.join(traceback.format_exception(exctype, value, tb)))
+            except Exception:
+                pass
+        try:
+            sys.excepthook = _hook
+        except Exception:
+            pass
+        main()
+    except Exception as e:
+        try:
+            import traceback
+            logger.error("Fatal error in voice assistant:\n" + ''.join(traceback.format_exc()))
+        except Exception:
+            pass
+        raise
