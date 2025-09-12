@@ -177,6 +177,55 @@ Services fail but don't automatically restart.
 
 ## Common Issues
 
+### Assistant answers itself (loop) during TTS
+
+Symptoms:
+- Assistant keeps responding to its own audio; “No speech detected” messages appear repeatedly.
+
+Fixes:
+- Ensure `voice_assistant.audio.mic_mute_while_tts: true` in `config/config.yaml` (default).
+- Check that the dashboard is receiving `assistant_state` events (yellow banner shows “Assistant is speaking…”); the browser mic pauses automatically during these events.
+- Verify that `No speech detected` is not being forwarded: the dashboard filters this and server does not broadcast it anymore.
+
+### Voice dropdown empty or CORS error
+
+Symptoms:
+- Console shows: `Access to fetch at 'http://localhost:8123/voices' has been blocked by CORS policy`.
+
+Fixes:
+- Use the dashboard at `http://localhost:3000` or `http://127.0.0.1:3000` (allowed origins by default).
+- Control server should have CORS enabled; if customized, update `src/macbot/voice_assistant.py` CORS origins.
+
+### TTS speaks but no audio heard
+
+Checklist:
+1. Select the correct output device:
+   ```bash
+   curl -s http://localhost:8123/devices | jq
+   curl -s -X POST http://localhost:8123/set-output -H 'Content-Type: application/json' -d '{"device": 5}'
+   ```
+2. Confirm Piper status:
+   ```bash
+   curl -s http://localhost:8123/info | jq .tts
+   ```
+   Ensure `engine: "piper"` and `engine_loaded: true`.
+3. Test speak directly:
+   ```bash
+   curl -s -X POST http://localhost:8123/speak -H 'Content-Type: application/json' -d '{"text":"Hello"}'
+   ```
+
+### Model Status card shows blank STT/TTS
+
+Fixes:
+- Wait a few seconds for orchestrator `/metrics` to include VA `/info`.
+- Force refresh metrics: `curl -s http://localhost:8090/metrics | jq` and `curl -s http://localhost:8123/info | jq`.
+### Browser voice “EBML header parsing failed”
+
+Cause:
+- Recorder blob was empty or corrupted for that attempt. It does not impact TTS.
+
+Fix:
+- Retry; the recorder auto-detects MIME (`webm/ogg/mp4`) and usually recovers.
 ### Voice Assistant Won't Start
 
 #### Symptom

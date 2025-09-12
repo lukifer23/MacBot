@@ -54,9 +54,11 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 - **Endpoint URLs**: Direct links to all services with connection status
 
 ### **Interactive Controls**
-- **Voice Recording**: Start/stop voice recording with real-time feedback
+- **Voice Recording**: Start/stop voice recording with real-time feedback (Spacebar for PTT)
+- **Auto Mic Pause**: Browser mic pauses automatically when the assistant is speaking
 - **Conversation Management**: Interrupt active conversations, clear conversation history
-- **Manual Intervention**: Direct control over conversation flow and system state
+- **Voice Settings**: Select, preview and apply Piper voices from `piper_voices/*/model.onnx`
+- **Output Device**: Choose audio output device via control API; persisted to config
 - **Real-Time Feedback**: Instant visual feedback for all user actions
 - **Document Upload**: Upload documents to RAG knowledge base for enhanced search capabilities
 
@@ -65,6 +67,7 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 - **Voice Assistant**: Process status and interface info
 - **RAG System**: Knowledge base availability
 - **Web Dashboard**: Self-monitoring status
+- **Model Status**: Includes STT impl/model and TTS engine/voice/loaded status
 
 ### **Chat Interface**
 - **Text Input**: Type messages directly

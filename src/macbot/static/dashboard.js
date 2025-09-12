@@ -14,6 +14,7 @@
     source: null,
     raf: null,
     services: {},
+    voices: [],
   };
 
   const byId = (id) => document.getElementById(id);
@@ -91,6 +92,24 @@
   }
   window.renderServiceStatus = renderServiceStatus;
 
+  async function loadVoices() {
+    try {
+      const r = await fetch('http://localhost:8123/voices');
+      const j = await r.json();
+      if (!j.ok) return;
+      state.voices = j.voices || [];
+      const sel = byId('voice-select');
+      if (!sel) return;
+      sel.innerHTML = '';
+      state.voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.path; opt.textContent = v.name;
+        if (j.current && j.current === v.path) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    } catch (_) {}
+  }
+
   function formatBytes(bytes) {
     if (!bytes) return '0 B';
     const k = 1024; const sizes = ['B','KB','MB','GB'];
@@ -146,6 +165,18 @@
     if (convBtn) convBtn.addEventListener('click', () => { setMode('conversational'); addChatMessage('Conversational mode enabled', 'system'); });
     if (endBtn) endBtn.addEventListener('click', endConversation);
     if (selfCheckBtn) selfCheckBtn.addEventListener('click', runSelfCheck);
+    const prevBtn = byId('preview-voice-btn');
+    const applyBtn = byId('apply-voice-btn');
+    if (prevBtn) prevBtn.addEventListener('click', async ()=>{
+      const sel = byId('voice-select'); if (!sel || !sel.value) return;
+      try { await fetch('http://localhost:8123/preview-voice', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text: 'Hey there, how can I help?' })}); } catch(_){}
+    });
+    if (applyBtn) applyBtn.addEventListener('click', async ()=>{
+      const sel = byId('voice-select'); if (!sel || !sel.value) return;
+      try { await fetch('http://localhost:8123/set-voice', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ voice_path: sel.value })});
+        setTimeout(updateMetrics, 500);
+      } catch(_){}
+    });
     // Spacebar PTT (only when focus is not in a text input/textarea)
     document.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
@@ -202,6 +233,7 @@
   }
 
   async function onVoiceToggle() {
+    if (state.speakingNow) { addChatMessage('🔇 Assistant is speaking; mic paused.', 'system'); return; }
     if (!state.isRecording) {
       try {
         if (!isSecureOrigin()) {
@@ -259,7 +291,7 @@
       }
       const data = await r.json();
       const text = (data && (data.transcription || (data.data && data.data.transcription))) || '';
-      if (!text) { addChatMessage('❌ No speech detected', 'system'); setStatus('Ready','info'); return; }
+      if (!text || text.trim().toLowerCase() === 'no speech detected') { addChatMessage('🔇 No speech detected', 'system'); setStatus('Ready','info'); return; }
       addChatMessage(text, 'user');
       setStatus('Assistant is thinking...', 'speaking');
       if (state.socket && state.socket.connected) state.socket.emit('chat_message', { message: text });
@@ -401,6 +433,15 @@
           addChatMessage(data.content, 'system'); setStatus('Ready','info');
         }
       });
+      state.socket.on('assistant_state', (data) => {
+        if (!data || !data.type) return;
+        if (data.type === 'speaking_started') {
+          state.speakingNow = true;
+          if (state.isRecording) { try { state.mediaRecorder && state.mediaRecorder.stop(); } catch(_){} }
+        } else if (data.type === 'speaking_ended' || data.type === 'speaking_interrupted') {
+          setTimeout(()=>{ state.speakingNow = false; }, 250);
+        }
+      });
     } catch (e) { console.warn('WS init failed', e); }
   }
 
@@ -446,6 +487,7 @@
     setInterval(updateStats, 5000);
     setInterval(updateServiceStatus, 5000);
     setInterval(updateMetrics, 10000);
+    loadVoices();
   }
   function isSecureOrigin() {
     // Browsers allow mic on https or on localhost/127.0.0.1
@@ -480,11 +522,7 @@
     if (elLlm) elLlm.textContent = 'LLM: ' + (llm.model || 'unknown');
     if (elCtx) elCtx.textContent = 'Context: ' + (llm.context ?? '—') + ' • Threads: ' + (llm.threads ?? '—') + ' • GPU layers: ' + (llm.gpu_layers ?? '—');
     if (elMem) elMem.textContent = 'Memory: ' + ((llm.rss_mb != null) ? (llm.rss_mb + ' MB RSS') : '—');
-    if (elStt) {
-      const s = va.stt || {}; elStt.textContent = 'STT: ' + [s.impl, s.model].filter(Boolean).join(' • ');
-    }
-    if (elTts) {
-      const t = va.tts || {}; elTts.textContent = 'TTS: ' + [t.engine, t.voice].filter(Boolean).join(' • ');
-    }
+    if (elStt) { const s = va.stt || {}; elStt.textContent = 'STT: ' + [s.impl, s.model].filter(Boolean).join(' • '); }
+    if (elTts) { const t = va.tts || {}; elTts.textContent = 'TTS: ' + [t.engine, t.voice, t.engine_loaded ? 'loaded' : ''].filter(Boolean).join(' • '); }
   }
 })();

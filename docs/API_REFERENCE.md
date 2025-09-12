@@ -3,12 +3,10 @@
 ## Overview
 MacBot provides several API endpoints for interacting with the system programmatically. All services run locally on your machine.
 
-## Recent Updates (TTS & STT Enhancements)
-- ✅ **Piper Neural TTS**: Superior voice quality with 178 WPM performance
-- ✅ **Whisper Large v3 Turbo**: Best-in-class STT with Metal acceleration (~0.2s latency)
-- ✅ **Advanced TTS Integration**: Kokoro framework ready, Piper primary engine
-- ✅ **Enhanced Voice Assistant**: Comprehensive voice control and monitoring
-- ✅ **Performance Optimization**: Metal GPU acceleration for Apple Silicon
+## Recent Updates (TTS & STT)
+- ✅ Piper-only neural TTS with voice preview/apply endpoints
+- ✅ Anti-feedback: mic can be auto-muted during TTS
+- ✅ Model Status includes STT/TTS info via orchestrator `/metrics`
 
 ## LLM Server (llama.cpp)
 **Base URL:** `http://localhost:8080`
@@ -60,17 +58,16 @@ MacBot provides several API endpoints for interacting with the system programmat
   ```json
   {
     "stt": {
-      "impl": "whisper",
-      "model": "models/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin",
+      "impl": "whisper|whispercpp",
+      "model": "models/whisper.cpp/models/ggml-base.en.bin",
       "language": "en"
     },
     "tts": {
       "engine": "piper",
       "voice": "en_US-lessac-medium",
-      "speed": 1.0,
-      "voices": [],
-      "kokoro_available": false,
-      "pyttsx3_available": true
+      "voice_path": "piper_voices/en_US-lessac-medium/model.onnx",
+      "engine_loaded": true,
+      "speed": 1.0
     },
     "interruption": {
       "enabled": true,
@@ -82,10 +79,27 @@ MacBot provides several API endpoints for interacting with the system programmat
     "audio": {
       "sample_rate": 16000,
       "block_sec": 0.03,
-      "vad_threshold": 0.005
+      "vad_threshold": 0.01,
+      "devices_default": [4, 5]
     },
     "conversation": null
   }
+  ```
+
+### New Voice & Device Endpoints
+- `GET /devices` → List CoreAudio devices and current defaults
+- `POST /set-output` → Set output device (index or name)
+  ```json
+  { "device": 5 }
+  ```
+- `GET /voices` → Discover voices from `piper_voices/*/model.onnx`
+- `POST /set-voice` → Apply a Piper voice and persist to config
+  ```json
+  { "voice_path": "piper_voices/en_US-lessac-medium/model.onnx" }
+  ```
+- `POST /preview-voice` → Speak a short sample without changing config
+  ```json
+  { "text": "Hey there, how can I help?" }
   ```
 
 ## Web Dashboard API
@@ -237,7 +251,10 @@ The web dashboard provides real-time communication via WebSocket for live update
 #### Voice Control Events
 - **Send:** `start_voice_recording` - Start voice input
 - **Send:** `stop_voice_recording` - Stop voice input
-- **Receive:** `voice_status`
+- **Receive:** `assistant_state` - `speaking_started|speaking_ended|speaking_interrupted`
+- **Receive:** `conversation_update` - voice_transcription|assistant_message|user_message
+
+Note: When `speaking_started` is received, the dashboard pauses browser mic to prevent feedback.
   ```json
   {
     "status": "recording|processing|idle",

@@ -176,6 +176,13 @@ def get_audio_input_device():
     val = get("voice_assistant.audio.input_device", None)
     return val
 
+def mic_mute_while_tts() -> bool:
+    """When true, ignore mic input while assistant is speaking to avoid feedback loops."""
+    try:
+        return bool(get("voice_assistant.audio.mic_mute_while_tts", True))
+    except Exception:
+        return True
+
 
 def get_interrupt_cooldown() -> float:
     try:

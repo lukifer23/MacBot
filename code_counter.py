@@ -88,6 +88,14 @@ def count_project_code(project_root):
                             total_lines += lines
                             total_code_lines += code_lines
 
+                            # Store file info for breakdown
+                            ext = Path(filepath).suffix.lower()
+                            if ext not in file_counts:
+                                file_counts[ext] = {'files': 0, 'lines': 0, 'code_lines': 0}
+                            file_counts[ext]['files'] += 1
+                            file_counts[ext]['lines'] += lines
+                            file_counts[ext]['code_lines'] += code_lines
+
     # Count root-level files
     for pattern in include_root_files:
         for filepath in Path(project_root).glob(pattern):

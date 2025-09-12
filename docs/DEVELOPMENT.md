@@ -10,7 +10,7 @@ This guide covers setting up a development environment, contributing to MacBot, 
 # Install system dependencies
 xcode-select --install
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install cmake ffmpeg portaudio python@3.13 git git-lfs
+brew install cmake ffmpeg portaudio python@3.11 git git-lfs
 
 # Clone the repository
 git clone https://github.com/lukifer23/MacBot.git
@@ -23,13 +23,13 @@ git submodule update --init --recursive
 ### Python Environment
 ```bash
 # Create virtual environment
-python3.13 -m venv macbot_env
+python3.11 -m venv macbot_env
 source macbot_env/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Install TTS engines (recommended)
+# Install Piper TTS (recommended)
 pip install piper-tts
 # Download Piper voice models
 mkdir -p piper_voices/en_US-lessac-medium
@@ -108,13 +108,10 @@ MacBot/
 
 ## Recent Architecture Changes (Phase 6)
 
-### TTS System Overhaul
-The TTS (Text-to-Speech) system has been completely refactored for reliability:
-
-- **TTSManager Class**: Unified interface for Kokoro and pyttsx3 engines
-- **Automatic Fallback**: Kokoro (interruptible) → pyttsx3 (non-interruptible)
-- **Proper State Management**: Clean interrupt handling without race conditions
-- **Resource Cleanup**: Automatic cleanup of audio handlers and TTS engines
+### TTS System (Piper only)
+- Piper is the sole TTS engine. Voices are discovered from `piper_voices/*/model.onnx`.
+- Control API allows preview/apply of voices and selecting output devices.
+- Mic can be automatically muted during TTS to avoid feedback.
 
 ### Message Bus Architecture
 - **WebSocket Communication (primary)**: Cross-process, resilient client with auto-reconnect
@@ -150,7 +147,7 @@ The TTS (Text-to-Speech) system has been completely refactored for reliability:
   - Voice activity detection
   - Speech-to-text (Whisper)
   - LLM processing (llama.cpp)
-  - Text-to-speech (Kokoro)
+  - Text-to-speech (Piper)
   - Tool integration
 
 #### 3. Web Dashboard (`src/macbot/web_dashboard.py`)
@@ -501,3 +498,23 @@ Include:
 - Expected vs actual behavior
 - Log excerpts
 - Configuration used
+## Local TTS/Audio Quick Checks
+
+```bash
+source macbot_env/bin/activate
+
+# Speak via VA control API
+curl -s -X POST http://localhost:8123/speak \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Hello, this is a test"}'
+
+# List Piper voices and apply one
+curl -s http://localhost:8123/voices | jq
+curl -s -X POST http://localhost:8123/set-voice \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_path":"piper_voices/en_US-lessac-medium/model.onnx"}'
+
+# Choose output device
+curl -s http://localhost:8123/devices | jq
+curl -s -X POST http://localhost:8123/set-output -H 'Content-Type: application/json' -d '{"device":5}'
+```

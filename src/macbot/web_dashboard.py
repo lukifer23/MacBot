@@ -362,6 +362,16 @@ DASHBOARD_HTML = """
             box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
             margin-top: 20px;
         }
+        .voice-settings { 
+            background: #ffffff; 
+            padding: 12px; 
+            border-radius: 8px; 
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+            margin-bottom: 16px; 
+        }
+        .voice-settings h3 { margin-bottom: 8px; font-size: 1em; }
+        .voice-settings-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .voice-select { padding:8px; border:1px solid #ddd; border-radius:6px; min-width:260px; }
         .document-section h3 { 
             color: #1d1d1f; 
             margin-bottom: 15px; 
@@ -624,9 +634,17 @@ DASHBOARD_HTML = """
                 </div>
             </div>
         </div>
-        
+
         <!-- Bottom: Document Input/RAG -->
         <div class="document-section">
+            <div class="voice-settings">
+                <h3>🎙️ Voice Settings</h3>
+                <div class="voice-settings-controls">
+                    <select id="voice-select" class="voice-select"></select>
+                    <button class="browse-btn" id="preview-voice-btn">Preview</button>
+                    <button class="browse-btn" id="apply-voice-btn" style="background:#34c759;">Apply</button>
+                </div>
+            </div>
             <h3>📄 Document Input & RAG</h3>
             <div class="drag-drop-area" id="drag-drop-area">
                 <div class="drag-drop-content">
@@ -1726,12 +1744,13 @@ def api_voice():
         conversation_state['current_speaker'] = 'user'
         conversation_state['message_count'] += 1
         
-        # Broadcast conversation update
-        socketio.emit('conversation_update', {
-            'type': 'voice_transcription',
-            'transcription': transcription,
-            'timestamp': datetime.now().isoformat()
-        })
+        # Broadcast conversation update only if we have speech-like content
+        if transcription and transcription.strip().lower() != 'no speech detected':
+            socketio.emit('conversation_update', {
+                'type': 'voice_transcription',
+                'transcription': transcription,
+                'timestamp': datetime.now().isoformat()
+            })
         
         return jsonify({'success': True, 'message': 'ok', 'data': {'transcription': transcription}, 'transcription': transcription})
         

@@ -220,6 +220,12 @@ audio_q = queue.Queue()
 def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
     if status:
         print(status, file=sys.stderr)
+    # Optionally ignore mic while TTS is speaking to avoid feedback loops
+    try:
+        if CFG.mic_mute_while_tts() and tts_manager and tts_manager.audio_handler and getattr(tts_manager.audio_handler, 'is_playing', False):
+            return
+    except Exception:
+        pass
     audio_q.put(indata.copy())
 
     if (
@@ -599,7 +605,8 @@ class TTSManager:
             if not self._initialized:
                 self.init_engine()
             if not self.engine:
-                return True
+                print("TTS Warning: Piper engine not loaded; cannot speak")
+                return False
             if notify:
                 _notify_dashboard_state('speaking_started')
 
@@ -623,7 +630,7 @@ class TTSManager:
                 if not all_audio:
                     if notify:
                         _notify_dashboard_state('speaking_ended')
-                    return True
+                    return False
                 audio_arr = np.array(all_audio, dtype=np.float32)
                 if self.audio_handler and interruptible:
                     audio_arr = self._ensure_rate(audio_arr, sr, TTS_SAMPLE_RATE)
@@ -632,17 +639,21 @@ class TTSManager:
                         _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
                     return ok
                 else:
-                    import sounddevice as sd
-                    sd.play(audio_arr, samplerate=sr)
-                    sd.wait()
-                    if notify:
-                        _notify_dashboard_state('speaking_ended')
-                    return True
+                    try:
+                        import sounddevice as sd
+                        sd.play(audio_arr, samplerate=sr)
+                        sd.wait()
+                        if notify:
+                            _notify_dashboard_state('speaking_ended')
+                        return True
+                    except Exception as e:
+                        print(f"TTS playback error: {e}")
+                        return False
 
             else:
                 # Piper not available; nothing to do
                 print("⚠️ Piper engine not loaded; skipping speech")
-                return True
+                return False
 
         except Exception as e:
             print(f"TTS Error: {e}")
@@ -753,6 +764,11 @@ def main():
     try:
         from flask import Flask, jsonify, request
         control_app = Flask("macbot_voice_control")
+        try:
+            from flask_cors import CORS
+            CORS(control_app, origins=["http://127.0.0.1:3000", "http://localhost:3000"])  # UI access
+        except Exception:
+            pass
 
         @control_app.route('/health')
         def _control_health():
@@ -782,6 +798,14 @@ def main():
                 text = str(data.get('text', '')).strip()
                 if not text:
                     return jsonify({'ok': False, 'error': 'text required'}), 400
+                # ensure TTS is ready
+                if tts_manager.engine is None or tts_manager.engine_type != 'piper':
+                    try:
+                        tts_manager.init_engine()
+                    except Exception:
+                        pass
+                if tts_manager.engine is None:
+                    return jsonify({'ok': False, 'error': 'TTS engine not loaded'}), 503
                 # speak asynchronously so HTTP doesn't block on long TTS
                 threading.Thread(target=speak, args=(text,), daemon=True).start()
                 return jsonify({'ok': True})
@@ -846,6 +870,65 @@ def main():
             except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
 
+        @control_app.route('/voices')
+        def _control_voices():
+            """List available Piper voices by scanning piper_voices/*/model.onnx"""
+            try:
+                base = os.path.abspath(os.path.join(os.getcwd(), 'piper_voices'))
+                voices = []
+                if os.path.isdir(base):
+                    for root, dirs, files in os.walk(base):
+                        if 'model.onnx' in files:
+                            vp = os.path.join(root, 'model.onnx')
+                            name = os.path.basename(root)
+                            voices.append({'name': name, 'path': vp})
+                cur = CFG.get_piper_voice_path()
+                return jsonify({'ok': True, 'voices': voices, 'current': cur})
+            except Exception as e:
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/set-voice', methods=['POST'])
+        def _control_set_voice():
+            try:
+                data = request.get_json() or {}
+                vp = str(data.get('voice_path') or '').strip()
+                if not vp or not os.path.exists(vp):
+                    return jsonify({'ok': False, 'error': 'voice_path invalid'}), 400
+                # persist
+                try:
+                    import yaml
+                    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml'))
+                    y = {}
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path) as f:
+                            y = yaml.safe_load(f) or {}
+                    y.setdefault('models', {}).setdefault('tts', {}).setdefault('piper', {})['voice_path'] = vp
+                    with open(cfg_path, 'w') as f:
+                        yaml.safe_dump(y, f)
+                except Exception as e:
+                    logger.warning(f"Failed to persist voice_path: {e}")
+                # force reload
+                try:
+                    tts_manager.engine = None
+                    tts_manager.engine_type = None
+                    tts_manager._initialized = False
+                    tts_manager.init_engine()
+                except Exception:
+                    pass
+                return jsonify({'ok': True, 'voice_path': vp})
+            except Exception as e:
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/preview-voice', methods=['POST'])
+        def _control_preview_voice():
+            try:
+                data = request.get_json() or {}
+                text = str(data.get('text') or 'Hey there, how can I help?')
+                threading.Thread(target=lambda: tts_manager.speak(text, interruptible=False, notify=False), daemon=True).start()
+                return jsonify({'ok': True})
+            except Exception as e:
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
         @control_app.route('/info')
         def _control_info():
             try:
@@ -903,6 +986,12 @@ def main():
         logger.info(f"Voice assistant control server on http://{VA_HOST}:{VA_PORT}")
     except Exception as e:
         logger.warning(f"Voice assistant control server not started: {e}")
+
+    # Proactively init Piper so /info and /speak reflect ready state
+    try:
+        tts_manager.init_engine()
+    except Exception as e:
+        logger.warning(f"Piper init deferred: {e}")
 
     # Initialize audio input; run in text-only mode if unavailable
     stream = None

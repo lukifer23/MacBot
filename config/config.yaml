@@ -1,123 +1,101 @@
-# MacBot Configuration File
-# This file controls all aspects of MacBot's behavior
-
-# Model Configuration
+logging:
+  file: macbot.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
 models:
   llm:
-    path: "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     context_length: 8192
-    threads: -1  # Use all available cores
-    server_url: "http://localhost:8080/v1/chat/completions"
-    temperature: 0.4
     max_tokens: 200
-
+    path: models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+    server_url: http://localhost:8080/v1/chat/completions
+    temperature: 0.4
+    threads: -1
   stt:
-    bin: "models/whisper.cpp/build/bin/whisper-cli"
-    model: "models/whisper.cpp/models/ggml-base.en.bin"
-    language: "en"
-
+    bin: models/whisper.cpp/build/bin/whisper-cli
+    language: en
+    model: models/whisper.cpp/models/ggml-base.en.bin
   tts:
-    voice: "en_US-lessac-medium"  # Piper TTS voice model
+    piper:
+      voice_path: /Users/admin/Downloads/MacBot/piper_voices/en_US-lessac-medium/model.onnx
     speed: 1.0
-
-# Voice Assistant Settings
-voice_assistant:
-  microphone_device: 0
-  speaker_device: 0
-  sample_rate: 16000
-  block_sec: 0.03
-  vad_threshold: 0.005
-  silence_hang: 0.6
-  wake_word: "hey macbot"
-  
-  # Interruptible Conversation Settings
-  interruption:
-    enabled: true
-    interrupt_threshold: 0.01  # VAD threshold for interruption detection
-    interrupt_cooldown: 0.5    # Minimum time between interruptions (seconds)
-    conversation_timeout: 30   # Maximum conversation segment length (seconds)
-    context_buffer_size: 10    # Number of recent conversation segments to keep
-
-# System Prompts
+    voice: en_US-lessac-medium
+performance:
+  cpu_limit_percent: 80
+  max_concurrent_requests: 3
+  memory_limit_mb: 4096
 prompts:
-  system: |
-    You are MacBot, a helpful AI assistant running locally on macOS.
+  system: 'You are MacBot, a helpful AI assistant running locally on macOS.
+
     You have access to various tools and can help with tasks on this computer.
+
     Always be concise and helpful in your responses.
 
-  tool_use: |
-    When using tools, be concise and provide clear instructions.
-    Explain what you're doing and why.
+    '
+  tool_use: 'When using tools, be concise and provide clear instructions.
 
-# Service Configuration
+    Explain what you''re doing and why.
+
+    '
 services:
-  web_dashboard:
-    port: 3000
-    host: "0.0.0.0"
-
-  rag_server:
-    port: 8001
-    host: "localhost"
-    collection_name: "macbot_docs"
-    data_dir: "rag_data"
-    api_tokens:
-      - "change-me"
-    rate_limit_per_minute: 60
-
   orchestrator:
-    check_interval: 10  # seconds
     auto_restart: true
-
-# Tool Configuration
+    check_interval: 10
+  rag_server:
+    api_tokens:
+    - change-me
+    collection_name: macbot_docs
+    data_dir: rag_data
+    host: localhost
+    port: 8001
+    rate_limit_per_minute: 60
+  web_dashboard:
+    host: 0.0.0.0
+    port: 3000
 tools:
-  enabled:
-    - web_search
-    - screenshot
-    - app_launcher
-    - system_monitor
-    - weather
-    - rag_search
-
-  web_search:
-    default_engine: "google"
-    timeout: 10
-
-  screenshot:
-    save_path: "~/Desktop"
-    format: "png"
-
   app_launcher:
     allowed_apps:
-      - Safari
-      - Terminal
-      - Finder
-      - Mail
-      - Messages
-      - FaceTime
-      - Photos
-      - Music
-      - Calendar
-      - Notes
-      - Calculator
-
-  system_monitor:
-    update_interval: 5
-
-  weather:
-    default_location: ""
-
+    - Safari
+    - Terminal
+    - Finder
+    - Mail
+    - Messages
+    - FaceTime
+    - Photos
+    - Music
+    - Calendar
+    - Notes
+    - Calculator
+  enabled:
+  - web_search
+  - screenshot
+  - app_launcher
+  - system_monitor
+  - weather
+  - rag_search
   rag_search:
     max_results: 5
     similarity_threshold: 0.7
-
-# Logging Configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "macbot.log"
-
-# Performance Tuning
-performance:
-  max_concurrent_requests: 3
-  memory_limit_mb: 4096
-  cpu_limit_percent: 80
+  screenshot:
+    format: png
+    save_path: ~/Desktop
+  system_monitor:
+    update_interval: 5
+  weather:
+    default_location: ''
+  web_search:
+    default_engine: google
+    timeout: 10
+voice_assistant:
+  block_sec: 0.03
+  interruption:
+    context_buffer_size: 10
+    conversation_timeout: 30
+    enabled: true
+    interrupt_cooldown: 0.5
+    interrupt_threshold: 0.01
+  microphone_device: 0
+  sample_rate: 16000
+  silence_hang: 0.6
+  speaker_device: 0
+  vad_threshold: 0.005
+  wake_word: hey macbot

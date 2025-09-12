@@ -1,4 +1,4 @@
-# MacBot Configuration Guide
+# MacBot Configuration Guide (Current)
 
 ## Overview
 MacBot uses a YAML configuration file (`config.yaml`) to manage all settings. This file controls model paths, voice settings, system prompts, and service configurations.
@@ -20,16 +20,28 @@ models:
     language: "en"
 
   tts:
-    voice: "en_US-lessac-medium"  # Piper neural voice
+    # Piper-only TTS
+    piper:
+      voice_path: "piper_voices/en_US-lessac-medium/model.onnx" # absolute or relative path
+      sample_rate: 22050
+      reload_sec: 30  # heartbeat to re-init Piper if needed
     speed: 1.0      # Speech speed multiplier
 
 # Voice Assistant Settings
 voice_assistant:
-  microphone_device: 0
-  speaker_device: 0
-  vad_threshold: 0.5
-  silence_timeout: 1.0
-  wake_word: "hey macbot"
+  # Conversation + interruption settings
+  interruption:
+    enabled: true
+    interrupt_threshold: 0.01
+    interrupt_cooldown: 0.5
+    conversation_timeout: 30
+    context_buffer_size: 10
+
+  # Audio routing and anti-feedback during TTS
+  audio:
+    mic_mute_while_tts: true
+    output_device: null   # CoreAudio device index or name (optional)
+    input_device: null    # CoreAudio device index or name (optional)
 
 # System Prompts
 prompts:
@@ -46,8 +58,11 @@ services:
     port: 3000
     host: "0.0.0.0"
 
+  voice_assistant:
+    host: "localhost"
+    port: 8123
   rag_server:
-    port: 8081
+    port: 8001
     host: "localhost"
     collection_name: "macbot_docs"
 
@@ -137,23 +152,16 @@ tools:
 - **Threads**: Number of CPU threads to use (-1 for all available)
 
 ### STT Models
-- **Model**: Whisper model path or size
-  - `tiny` (39 MB) - Fastest, least accurate
-  - `base` (74 MB) - Good balance
-  - `small` (244 MB) - Better accuracy
-  - `medium` (1.5 GB) - High accuracy
-  - `large-v3-turbo` (1.5 GB) - Best accuracy, Metal accelerated
-  - **Recommended**: `large-v3-turbo-q5_0` (547 MB quantized)
-- **Language**: Language code for transcription (`en`, `es`, `fr`, etc.)
-- **Performance**: ~0.2s latency with Metal acceleration
+- Whisper.cpp is used via CLI for browser audio; python bindings (if present) are used as a fallback.
+- Set the model path under `models.stt.model` in `config.yaml` (e.g., `models/whisper.cpp/models/ggml-base.en.bin`).
 
-### TTS Models
-- **Engine Priority**: Kokoro (interruptible) → Piper (neural) → pyttsx3 (fallback)
-- **Piper Voices**: `en_US-lessac-medium`, `en_GB-alan-medium`, etc.
-- **Kokoro Voices**: Framework ready for advanced interruptible TTS
-- **pyttsx3 Voices**: System voices (185 available on macOS)
-- **Speed**: Speech speed multiplier (0.5-2.0)
-- **Performance**: 178 WPM with natural prosody
+### TTS (Piper)
+- Piper is the sole TTS engine. Place voices in `piper_voices/*/model.onnx` for auto-discovery in the dashboard.
+- The dashboard exposes a Voice Settings section to preview/apply voices.
+- Audio output device can be changed at runtime via VA control API or persisted in config.
+
+### CORS & Control Server
+- The Voice Assistant control server enables CORS for `http://127.0.0.1:3000` and `http://localhost:3000` so the dashboard can call `/voices`, `/set-voice`, etc.
 
 ## Voice Assistant Settings
 
