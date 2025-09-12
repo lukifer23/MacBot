@@ -565,7 +565,7 @@ DASHBOARD_HTML = """
                         </button>
                     </div>
                     <div class="chat-history" id="chat-history">
-                        <div class="chat-message chat-assistant">Hello! I'm MacBot. How can I help you today?</div>
+                        <div class="chat-message chat-assistant">Hello! I am MacBot. How can I help you today?</div>
                     </div>
                 </div>
                 
@@ -773,7 +773,7 @@ DASHBOARD_HTML = """
                 // Clear local display
                 const chatHistory = document.getElementById('chat-history');
                 if (chatHistory) {
-                    chatHistory.innerHTML = '<div class="chat-message chat-assistant">Hello! I\'m MacBot. How can I help you today?</div>';
+                    chatHistory.innerHTML = `<div class="chat-message chat-assistant">Hello! I'm MacBot. How can I help you today?</div>`;
                 }
                 // Reset conversation state
                 isConversationalMode = false;

@@ -299,7 +299,34 @@ class MacBotOrchestrator:
                 try:
                     response = requests.get('http://localhost:8080/v1/models', timeout=2)
                     if response.status_code == 200:
-                        logger.info("✅ llama.cpp server ready")
+                        # Try to extract model info for helpful logs
+                        model_name = None
+                        try:
+                            data = response.json()
+                            models = data.get('data') or data.get('models') or []
+                            if isinstance(models, list) and models:
+                                m0 = models[0]
+                                model_name = m0.get('id') or m0.get('name') or m0.get('model')
+                        except Exception:
+                            pass
+
+                        # Memory stats for llama process
+                        mem_info = None
+                        try:
+                            p = psutil.Process(process.pid)
+                            rss = p.memory_info().rss
+                            mem_pct = p.memory_percent()
+                            mem_info = (rss, mem_pct)
+                        except Exception:
+                            mem_info = None
+
+                        if model_name and mem_info:
+                            rss_mb = mem_info[0] / (1024*1024)
+                            logger.info(f"✅ llama.cpp server ready | model={model_name} | RSS={rss_mb:.1f} MB | mem%={mem_info[1]:.2f}")
+                        elif model_name:
+                            logger.info(f"✅ llama.cpp server ready | model={model_name}")
+                        else:
+                            logger.info("✅ llama.cpp server ready")
                         return True
                 except (requests.exceptions.RequestException, ValueError) as e:
                     logger.debug(f"LLM server not ready yet: {e}")
