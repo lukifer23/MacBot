@@ -8,6 +8,7 @@ import time
 import signal
 import subprocess
 import threading
+import uuid
 
 # Add src/ to path for imports if run directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -538,17 +539,21 @@ class MacBotOrchestrator:
 
         @app.route('/health')
         def health():
-            return jsonify({'status':'ok','timestamp': time.time()})
+            req_id = str(uuid.uuid4())
+            logger.info(f"orc_req id={req_id} path=/health")
+            return jsonify({'status':'ok','timestamp': time.time(), 'req_id': req_id})
 
         @app.route('/status')
         def status():
+            req_id = str(uuid.uuid4())
             procs = {}
             for name, proc in self.processes.items():
                 procs[name] = {
                     'running': proc.poll() is None,
                     'pid': proc.pid if proc and proc.poll() is None else None
                 }
-            return jsonify({'processes': procs})
+            logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())}")
+            return jsonify({'processes': procs, 'req_id': req_id})
 
         host, port = CFG.get("services.orchestrator.host", "0.0.0.0"), int(CFG.get("services.orchestrator.port", 8090))
 

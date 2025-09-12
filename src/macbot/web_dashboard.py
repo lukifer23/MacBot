@@ -470,6 +470,7 @@ DASHBOARD_HTML = """
             <p>Local Voice Assistant with AI Tools & Live Monitoring</p>
             <button class="refresh-btn" onclick="window.updateStats()">🔄 Refresh Stats</button>
             <button class="refresh-btn" onclick="window.clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
+            <button class="refresh-btn" id="mic-access-btn" style="margin-left: 10px;">🎙️ Request Mic Access</button>
             <div id="status-banner" class="status-banner status-info" style="display:none; margin-left:10px;">Ready</div>
         </div>
         
@@ -1239,6 +1240,18 @@ DASHBOARD_HTML = """
                     window.addChatMessage(data.transcription, 'user');
                 }
             });
+
+            // Assistant state events (speaking/listening/interrupt)
+            socket.on('assistant_state', function(data) {
+                if (!data || !data.type) return;
+                if (data.type === 'speaking_started') {
+                    window.setStatus('Speaking...', 'speaking');
+                } else if (data.type === 'speaking_ended') {
+                    window.setStatus('Ready', 'info');
+                } else if (data.type === 'speaking_interrupted') {
+                    window.setStatus('Interrupted', 'interrupted');
+                }
+            });
         }
         
         function handleConversationUpdate(data) {
@@ -1284,6 +1297,7 @@ DASHBOARD_HTML = """
             const voiceButton = document.getElementById('voice-button');
             const chatInput = document.getElementById('chat-input');
             const stopButton = document.getElementById('stop-conversation-btn');
+            const micBtn = document.getElementById('mic-access-btn');
 
             console.log('🎯 Elements found:', {
                 sendButton: !!sendButton,
@@ -1335,6 +1349,33 @@ DASHBOARD_HTML = """
                     }
                 });
                 stopButton.style.cursor = 'pointer';
+            }
+
+            if (micBtn) {
+                micBtn.addEventListener('click', async function() {
+                    try {
+                        // Browser permission first
+                        await navigator.mediaDevices.getUserMedia({ audio: true });
+                        window.setStatus('Browser mic permission granted', 'info');
+                    } catch (e) {
+                        console.warn('Browser mic permission denied:', e);
+                        window.setStatus('Browser mic permission denied', 'interrupted');
+                    }
+
+                    try {
+                        // Trigger OS-level prompt via assistant
+                        const resp = await fetch('/api/mic-check', { method: 'POST' });
+                        const data = await resp.json();
+                        if (resp.ok && data.ok) {
+                            window.setStatus('Assistant mic ready', 'info');
+                        } else {
+                            window.setStatus('Assistant mic check failed', 'interrupted');
+                        }
+                    } catch (e) {
+                        console.warn('Assistant mic check error:', e);
+                        window.setStatus('Assistant mic check error', 'interrupted');
+                    }
+                });
             }
 
             console.log('Event listeners setup complete');
@@ -1532,6 +1573,44 @@ def api_llm():
         logger.error(f"LLM API error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/mic-check', methods=['POST'])
+def api_mic_check():
+    """Proxy mic check to the voice assistant control server.
+    Helps trigger OS mic permission prompt and report status to UI."""
+    try:
+        r = requests.post(f"http://{va_host}:{va_port}/mic-check", timeout=3)
+        return (jsonify(r.json()), r.status_code)
+    except Exception as e:
+        logger.warning(f"Mic check proxy failed: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/assistant-event', methods=['POST'])
+def api_assistant_event():
+    """Internal endpoint for the Voice Assistant to push state events.
+    Expected JSON: { "type": "speaking_started|speaking_ended|speaking_interrupted", "message": optional }
+    """
+    try:
+        data = request.get_json() or {}
+        event_type = str(data.get('type', '')).strip()
+        message = str(data.get('message', '')).strip()
+
+        if not event_type:
+            return jsonify({'error': 'type is required'}), 400
+
+        # Broadcast to clients
+        payload = {'type': event_type, 'timestamp': datetime.now().isoformat()}
+        if message:
+            payload['message'] = message
+        try:
+            socketio.emit('assistant_state', payload)
+        except Exception as e:
+            logger.warning(f"Failed to emit assistant_state: {e}")
+
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logger.error(f"Assistant event error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/voice', methods=['POST'])
 def api_voice():
     """API endpoint for voice processing using Whisper"""
@@ -1565,7 +1644,9 @@ def api_voice():
 
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
-    """Upload documents and forward to RAG server (supports .txt for now)."""
+    """Upload documents and forward to RAG server.
+    Supports .txt natively; attempts .pdf (PyPDF2) and .docx (python-docx) when available.
+    """
     try:
         if 'files' not in request.files:
             return jsonify({'success': False, 'error': 'No files provided'}), 400
@@ -1606,8 +1687,58 @@ def upload_documents():
                         forwarded.append(filename)
                     else:
                         errors.append(f"{filename}: RAG responded {resp.status_code}")
+                elif name_lower.endswith('.pdf'):
+                    try:
+                        import PyPDF2  # type: ignore
+                    except Exception:
+                        errors.append(f"{filename}: PDF support requires PyPDF2")
+                        continue
+                    # Read PDF bytes and extract text
+                    from io import BytesIO
+                    pdf_reader = PyPDF2.PdfReader(BytesIO(file.read()))
+                    content = "\n".join([page.extract_text() or '' for page in pdf_reader.pages])
+                    content = content.strip()
+                    if not content:
+                        errors.append(f"{filename}: no extractable text")
+                        continue
+                    rag_url = f"http://{rag_host}:{rag_port}/api/documents"
+                    resp = requests.post(
+                        rag_url,
+                        json={'content': content, 'title': filename, 'type': 'pdf'},
+                        headers={'Authorization': f'Bearer {api_token}'},
+                        timeout=15
+                    )
+                    if resp.status_code == 200:
+                        success_count += 1
+                        forwarded.append(filename)
+                    else:
+                        errors.append(f"{filename}: RAG responded {resp.status_code}")
+                elif name_lower.endswith('.docx'):
+                    try:
+                        import docx  # type: ignore
+                    except Exception:
+                        errors.append(f"{filename}: DOCX support requires python-docx")
+                        continue
+                    document = docx.Document(file)
+                    paras = [p.text for p in document.paragraphs]
+                    content = "\n".join([p for p in paras if p]).strip()
+                    if not content:
+                        errors.append(f"{filename}: empty or unreadable document")
+                        continue
+                    rag_url = f"http://{rag_host}:{rag_port}/api/documents"
+                    resp = requests.post(
+                        rag_url,
+                        json={'content': content, 'title': filename, 'type': 'docx'},
+                        headers={'Authorization': f'Bearer {api_token}'},
+                        timeout=15
+                    )
+                    if resp.status_code == 200:
+                        success_count += 1
+                        forwarded.append(filename)
+                    else:
+                        errors.append(f"{filename}: RAG responded {resp.status_code}")
                 else:
-                    errors.append(f"{filename}: unsupported file type (only .txt supported currently)")
+                    errors.append(f"{filename}: unsupported file type (txt, pdf, docx supported)")
             except Exception as e:
                 logger.error(f"Failed to forward {filename} to RAG: {e}")
                 errors.append(f"{filename}: {e}")
@@ -1664,6 +1795,8 @@ def _handle_chat_message_and_broadcast(message: str) -> str:
     """Unified chat processing path. Updates state/history and emits WebSocket events.
     Returns assistant response or error message."""
     try:
+        # Correlation IDs
+        user_msg_id = str(uuid.uuid4())
         # Update user message state
         conversation_state['active'] = True
         conversation_state['current_speaker'] = 'user'
@@ -1674,38 +1807,49 @@ def _handle_chat_message_and_broadcast(message: str) -> str:
             'type': 'user_message',
             'content': message,
             'timestamp': datetime.now().isoformat(),
-            'source': 'web'
+            'source': 'web',
+            'id': user_msg_id
         })
 
         try:
             socketio.emit('conversation_update', {
                 'type': 'user_message',
                 'content': message,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'id': user_msg_id
             })
         except Exception:
             pass
+
+        logger.info(f"chat_in id={user_msg_id} len={len(message)} preview={message[:80]!r}")
 
         # Process message
         response = process_with_llm(message)
 
         # Update assistant state
         conversation_state['current_speaker'] = 'assistant'
+        assistant_msg_id = str(uuid.uuid4())
         conversation_history.append({
             'type': 'assistant_message',
             'content': response,
             'timestamp': datetime.now().isoformat(),
-            'source': 'llm'
+            'source': 'llm',
+            'id': assistant_msg_id,
+            'reply_to': user_msg_id
         })
 
         try:
             socketio.emit('conversation_update', {
                 'type': 'assistant_message',
                 'content': response,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'id': assistant_msg_id,
+                'reply_to': user_msg_id
             })
         except Exception:
             pass
+
+        logger.info(f"chat_out id={assistant_msg_id} reply_to={user_msg_id} len={len(response)} preview={response[:80]!r}")
 
         return response
     except Exception as e:

@@ -103,6 +103,15 @@ python src/macbot/cli.py orchestrator
 Note:
 - The Voice Assistant now exposes a lightweight control server (default: http://localhost:8123) used by the Web Dashboard to send interruption requests and perform health checks.
 - Ensure `ffmpeg` is installed for voice input from the browser (used to convert WebM/Opus to WAV for Whisper).
+- Assistant UI states: The assistant now notifies the dashboard about speaking start/end/interrupt events so the banner shows Listening / Speaking / Interrupted / Ready in real time.
+
+### Quick Verify
+
+After starting, run the verification script to check core endpoints:
+
+```
+python scripts/verify_setup.py
+```
 ```
 
 ## 🐳 Docker Deployment

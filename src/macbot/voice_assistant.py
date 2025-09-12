@@ -7,6 +7,7 @@ import time
 import threading
 import sys
 import signal
+import uuid
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -29,6 +30,21 @@ from . import tools
 
 # Configure logging
 logger = setup_logger("macbot.voice_assistant", "logs/voice_assistant.log")
+
+# Dashboard notifications
+_WD_HOST, _WD_PORT = CFG.get_web_dashboard_host_port()
+VA_HOST, VA_PORT = CFG.get_voice_assistant_host_port()
+
+def _notify_dashboard_state(event_type: str, message: str = "") -> None:
+    """Best-effort POST to dashboard to inform of assistant state changes."""
+    try:
+        url = f"http://{_WD_HOST}:{_WD_PORT}/api/assistant-event"
+        payload = {"type": event_type}
+        if message:
+            payload["message"] = message
+        requests.post(url, json=payload, timeout=1.0)
+    except Exception as e:
+        logger.debug(f"Dashboard notify failed: {e}")
 
 # No heavy optional deps needed here; RAG is handled via HTTP client.
 
@@ -544,6 +560,7 @@ if INTERRUPTION_ENABLED:
         if context.current_state == ConversationState.INTERRUPTED:
             tts_manager.interrupt()
             print("🎤 Conversation interrupted by user")
+            _notify_dashboard_state('speaking_interrupted')
 
     conversation_manager.register_state_callback(on_conversation_state_change)
 
@@ -562,20 +579,25 @@ def speak(text: str):
         conversation_manager.start_response(text)
 
         # Use interruptible TTS
+        _notify_dashboard_state('speaking_started')
         completed = tts_manager.speak(text, interruptible=True)
 
         if completed:
             conversation_manager.update_response(text, is_complete=True)
+            _notify_dashboard_state('speaking_ended')
         else:
             # TTS was interrupted - only interrupt if not already interrupted
             with conversation_manager.lock:
                 if (conversation_manager.current_context and
                     conversation_manager.current_context.current_state != ConversationState.INTERRUPTED):
                     conversation_manager.interrupt_response()
+            _notify_dashboard_state('speaking_interrupted')
 
     else:
         # Use non-interruptible TTS
+        _notify_dashboard_state('speaking_started')
         tts_manager.speak(text, interruptible=False)
+        _notify_dashboard_state('speaking_ended')
 
 """Web GUI removed from voice_assistant; use web_dashboard service instead."""
 
@@ -642,6 +664,19 @@ def main():
                 logger.error(f"Control interrupt error: {e}")
                 return jsonify({'status': 'error', 'error': str(e)}), 500
 
+        @control_app.route('/mic-check', methods=['POST'])
+        def _control_mic_check():
+            """Attempt to open a short-lived input stream to trigger OS mic permission.
+            Returns JSON with success/error for guidance."""
+            try:
+                # Try to open and immediately close a short input stream
+                with sd.InputStream(channels=1, samplerate=SAMPLE_RATE, dtype='float32'):
+                    pass
+                return jsonify({'ok': True})
+            except Exception as e:
+                logger.warning(f"Mic check failed: {e}")
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
         def _run_control():
             try:
                 control_app.run(host=VA_HOST, port=VA_PORT, debug=False, use_reloader=False)
@@ -653,16 +688,21 @@ def main():
     except Exception as e:
         logger.warning(f"Voice assistant control server not started: {e}")
 
-    sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
-
-    stream = sd.InputStream(
-        channels=1,
-        samplerate=SAMPLE_RATE,
-        dtype="float32",
-        blocksize=int(SAMPLE_RATE * BLOCK_DUR),
-        callback=_callback,
-    )
-    stream.start()
+    # Initialize audio input; run in text-only mode if unavailable
+    stream = None
+    try:
+        sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
+        stream = sd.InputStream(
+            channels=1,
+            samplerate=SAMPLE_RATE,
+            dtype="float32",
+            blocksize=int(SAMPLE_RATE * BLOCK_DUR),
+            callback=_callback,
+        )
+        stream.start()
+        logger.info("Audio input stream started")
+    except Exception as e:
+        logger.warning(f"Audio initialization failed; running in text-only mode: {e}")
 
     voiced = False
     stream_tr = StreamingTranscriber()
@@ -670,6 +710,9 @@ def main():
 
     try:
         while True:
+            if stream is None:
+                time.sleep(1.0)
+                continue
             block = audio_q.get()
             block = block.reshape(-1)
             v = is_voiced(block)
@@ -690,6 +733,8 @@ def main():
                         voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+                            msg_id = str(uuid.uuid4())
+                            logger.info(f"va_chat_in id={msg_id} len={len(transcript)} preview={transcript[:80]!r}")
                             
                             # Validate input before processing
                             if not validate_input(transcript):
@@ -710,6 +755,7 @@ def main():
                                 reply = get_degraded_response(transcript)
 
                             print(f"[BOT] {reply}\n")
+                            logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
                             speak(reply)
                 else:
                     if now - last_voice > SILENCE_HANG:
@@ -717,10 +763,8 @@ def main():
                         voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
-# Control server (HTTP) configuration
-from . import config as CFG
-VA_HOST, VA_PORT = CFG.get_voice_assistant_host_port()
-
+                            msg_id = str(uuid.uuid4())
+                            logger.info(f"va_chat_in id={msg_id} len={len(transcript)} preview={transcript[:80]!r}")
                             
                             # Validate input before processing
                             if not validate_input(transcript):
@@ -741,12 +785,17 @@ VA_HOST, VA_PORT = CFG.get_voice_assistant_host_port()
                                 reply = get_degraded_response(transcript)
 
                             print(f"[BOT] {reply}\n")
+                            logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
                             speak(reply)
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
-        stream.stop()
-        stream.close()
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
         # Clean up message bus client
         if INTERRUPTION_ENABLED and bus_client:

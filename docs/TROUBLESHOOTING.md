@@ -426,6 +426,44 @@ Poor audio quality or distortion.
 
 ## Advanced Troubleshooting
 
+### Voice Input: ffmpeg and Whisper
+- Symptom: Voice input fails or shows “No speech detected”.
+- Checks:
+  - Ensure `ffmpeg` is installed and available on PATH (`ffmpeg -version`). The web dashboard converts browser audio (WebM/Opus) to WAV via ffmpeg.
+  - Ensure either Whisper CLI (whisper.cpp) or `python-whisper` is available. The dashboard prefers Whisper CLI and falls back to python-whisper if installed.
+
+### Interruption Doesn’t Work
+- The dashboard sends interruption requests to the Voice Assistant control server.
+  - Verify Voice Assistant control server: `curl http://localhost:8123/health`
+  - Manually test interrupt: `curl -X POST http://localhost:8123/interrupt`
+  - If HTTP path fails, the system attempts an in-process message bus fallback.
+
+### Service Health Checks
+- The dashboard prefers the Orchestrator’s `/status` endpoint to reflect llama/web/rag/voice states.
+  - Verify: `curl http://localhost:8090/status`
+  - If unavailable, it falls back to direct service endpoints.
+
+### RAG Uploads
+- Supported formats: `.txt` (native), `.pdf` (requires PyPDF2), `.docx` (requires python-docx).
+- The dashboard forwards extracted text to the RAG server `/api/documents` with a configured API token.
+- Check RAG server health: `curl http://localhost:8001/health`.
+
+### Logging Locations
+- Web Dashboard: `logs/web_dashboard.log`
+- Voice Assistant: `logs/voice_assistant.log`
+- Orchestrator: `logs/macbot.log`
+- RAG Server: `logs/rag_server.log`
+
+### Correlation IDs in Logs
+- Web Dashboard chat logs include correlation IDs:
+  - `chat_in id=<uuid> ...` for user messages
+  - `chat_out id=<uuid> reply_to=<uuid> ...` for assistant replies
+- Voice Assistant (voice mode) logs:
+  - `va_chat_in id=<uuid> ...` when a transcript is processed
+  - `va_chat_out reply_to=<uuid> ...` for the resulting reply
+- Orchestrator control endpoints include `req_id` for each request.
+Use these IDs to trace flows across logs.
+
 ### Debug Mode
 Enable debug logging for detailed information:
 
