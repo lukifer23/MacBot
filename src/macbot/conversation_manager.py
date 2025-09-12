@@ -79,7 +79,10 @@ class ConversationManager:
         self.conversation_history: List[Message] = []
 
         # Thread safety
-        self.lock = threading.Lock()
+        # Use a reentrant lock so that methods can safely call
+        # other lock-protected methods like update_state without
+        # risking deadlocks.
+        self.lock = threading.RLock()
 
         # Callbacks
         self.state_change_callbacks: List[Callable] = []
