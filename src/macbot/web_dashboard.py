@@ -20,12 +20,12 @@ import requests
 from flask import Flask, render_template_string, jsonify, request, Response, stream_with_context
 from flask_socketio import SocketIO, emit  # type: ignore
 import logging
+from .logging_utils import setup_logger
 
 from .health_monitor import get_health_monitor
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging (unified)
+logger = setup_logger("macbot.web_dashboard", "logs/web_dashboard.log")
 
 app = Flask(__name__)
 
@@ -68,6 +68,8 @@ websocket_clients = set()
 llm_models_endpoint = CFG.get_llm_models_endpoint()
 rag_host, rag_port = CFG.get_rag_host_port()
 wd_host, wd_port = CFG.get_web_dashboard_host_port()
+va_host, va_port = CFG.get_voice_assistant_host_port()
+orc_host, orc_port = CFG.get_orchestrator_host_port()
 
 service_status = {
     'llama': {'status': 'unknown', 'port': None, 'endpoint': llm_models_endpoint.rsplit('/v1', 1)[0]},
@@ -446,6 +448,19 @@ DASHBOARD_HTML = """
             height: 100vh; 
             overflow: hidden; 
         }
+
+        /* Status banner */
+        .status-banner {
+            margin-top: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            display: inline-block;
+        }
+        .status-info { background: #e7f1ff; color: #004085; border: 1px solid #b8daff; }
+        .status-listening { background: #e6ffed; color: #155724; border: 1px solid #c3e6cb; }
+        .status-speaking { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .status-interrupted { background: #fdecea; color: #721c24; border: 1px solid #f5c6cb; }
     </style>
 </head>
 <body>
@@ -455,6 +470,7 @@ DASHBOARD_HTML = """
             <p>Local Voice Assistant with AI Tools & Live Monitoring</p>
             <button class="refresh-btn" onclick="window.updateStats()">🔄 Refresh Stats</button>
             <button class="refresh-btn" onclick="window.clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
+            <div id="status-banner" class="status-banner status-info" style="display:none; margin-left:10px;">Ready</div>
         </div>
         
         <div class="main-content">
@@ -515,10 +531,10 @@ DASHBOARD_HTML = """
                     <h3>💬 Chat Interface</h3>
                     <div class="chat-input-container">
                         <input type="text" class="chat-input" id="chat-input" placeholder="Type your message here...">
-                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording" onclick="window.toggleVoiceRecording()">
+                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording">
                             🎤
                         </button>
-                        <button class="chat-button" onclick="window.sendMessage()">Send</button>
+                        <button class="chat-button" id="chat-button">Send</button>
                         <button class="stop-conversation-btn" id="stop-conversation-btn" title="Stop conversational mode" style="display: none;">
                             🛑
                         </button>
@@ -577,9 +593,20 @@ DASHBOARD_HTML = """
         </div>
     </div>
     
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- Try to load Socket.IO from CDN; app still works without it (HTTP/SSE fallback) -->
     <script>
-        // Global variables and functions for HTML onclick handlers
+      (function() {
+        var script = document.createElement('script');
+        script.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
+        script.async = true;
+        script.onerror = function() {
+          console.warn('Socket.IO CDN failed to load; using HTTP/SSE fallback only');
+        };
+        document.head.appendChild(script);
+      })();
+    </script>
+    <script>
+        // Global variables
         let isRecording = false;
         let mediaRecorder = null;
         let audioChunks = [];
@@ -587,91 +614,34 @@ DASHBOARD_HTML = """
         let conversationTimeout = null;
         let silenceThreshold = 2000;
         let lastVoiceActivity = 0;
+        let socket = null;
 
-        function updateStats() {
-            console.log('Updating stats...');
-            fetch('/api/stats')
-                .then(response => response.json())
-                .then(data => {
-                    renderStats(data);
-                })
-                .catch(error => {
-                    console.error('Stats update error:', error);
-                });
-        }
+        console.log('🔧 JavaScript loaded successfully');
 
-        function updateServiceStatus() {
-            console.log('Updating service status...');
-            fetch('/api/services')
-                .then(response => response.json())
-                .then(data => {
-                    renderServiceStatus(data);
-                })
-                .catch(error => {
-                    console.error('Service status update error:', error);
-                });
-        }
+        // Status banner helpers
+        window.setStatus = function(text, type) {
+            const el = document.getElementById('status-banner');
+            if (!el) return;
+            el.style.display = text ? 'inline-block' : 'none';
+            el.textContent = text || '';
+            el.className = 'status-banner';
+            if (type) el.classList.add('status-' + type);
+        };
 
-        function clearConversation() {
-            if (confirm('Are you sure you want to clear the conversation history?')) {
-                if (socket && socket.connected) {
-                    socket.emit('clear_conversation');
-                }
-                // Clear local display
-                const chatHistory = document.getElementById('chat-history');
-                if (chatHistory) {
-                    chatHistory.innerHTML = '<div class="chat-message chat-assistant">Hello! I\'m MacBot. How can I help you today?</div>';
-                }
-            }
-        }
 
-        // Global function for chat input
-        function sendMessage() {
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-            if (!message) return;
-
-            console.log('Sending message:', message);
-
-            // Add user message to local display
-            addChatMessage(message, 'user');
-            input.value = '';
-
-            // Send via WebSocket if connected, otherwise fallback to HTTP
-            if (socket && socket.connected) {
-                console.log('Sending via WebSocket');
-                socket.emit('chat_message', { message: message });
-            } else {
-                console.log('WebSocket not connected, using HTTP fallback');
-                sendMessageHTTP(message);
-            }
-        }
-
-        // Global function for voice recording
-        function toggleVoiceRecording() {
-            const voiceButton = document.getElementById('voice-button');
-
-            if (!isRecording) {
-                // Start recording
-                startVoiceRecording();
-            } else {
-                // Stop recording
-                stopVoiceRecording();
-            }
-        }
 
         // Global function for adding chat messages
-        function addChatMessage(message, sender) {
+        window.addChatMessage = function(message, sender) {
             const history = document.getElementById('chat-history');
             const messageDiv = document.createElement('div');
-            messageDiv.className = `chat-message chat-${sender}`;
+            messageDiv.className = 'chat-message chat-' + sender;
             messageDiv.textContent = message;
             history.appendChild(messageDiv);
             history.scrollTop = history.scrollHeight;
-        }
+        };
 
         // Global function for HTTP message sending
-        async function sendMessageHTTP(message) {
+        window.sendMessageHTTP = async function(message) {
             try {
                 console.log('Sending to LLM via HTTP:', message);
 
@@ -686,48 +656,148 @@ DASHBOARD_HTML = """
                 if (response.ok) {
                     const data = await response.json();
                     console.log('HTTP response data:', data);
-                    addChatMessage(data.response || 'No response', 'assistant');
+                    window.window.addChatMessage(data.response || 'No response', 'assistant');
                 } else {
                     const errorText = await response.text();
                     console.error('HTTP error response:', errorText);
-                    addChatMessage('❌ Error: ' + errorText, 'system');
+                    window.window.addChatMessage('❌ Error: ' + errorText, 'system');
                 }
             } catch (error) {
                 console.error('HTTP fetch error:', error);
-                addChatMessage('❌ Network error: ' + error.message, 'system');
+                window.window.addChatMessage('❌ Network error: ' + error.message, 'system');
             }
-        }
+        };
+
+        // Global button handlers
+        window.sendMessage = function() {
+            console.log('=== SEND BUTTON CLICKED ===');
+            const input = document.getElementById('chat-input');
+            if (!input) {
+                console.error('Chat input not found');
+                return;
+            }
+            const message = input.value.trim();
+            if (!message) {
+                console.log('Empty message, not sending');
+                return;
+            }
+
+            console.log('Sending message:', message);
+
+            // Add user message to local display
+            window.window.addChatMessage(message, 'user');
+            input.value = '';
+
+            // Indicate assistant is thinking/responding
+            window.setStatus('Assistant is thinking...', 'speaking');
+
+            // Send via WebSocket if connected, otherwise fallback to HTTP
+            if (socket && socket.connected) {
+                console.log('Sending via WebSocket');
+                socket.emit('chat_message', { message: message });
+            } else {
+                console.log('WebSocket not connected, using HTTP fallback');
+                window.sendMessageHTTP(message);
+            }
+        };
+
+        window.toggleVoiceRecording = function() {
+            console.log('=== VOICE BUTTON CLICKED ===');
+            if (!isRecording) {
+                console.log('Starting voice recording');
+                window.startVoiceRecording();
+            } else {
+                console.log('Stopping voice recording');
+                window.stopVoiceRecording();
+            }
+        };
+
+        window.updateStats = function() {
+            console.log('🔄 Updating stats...');
+            fetch('/api/stats')
+                .then(response => {
+                    console.log('📊 Stats response status:', response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('📊 Stats data received:', data);
+                    window.window.renderStats(data);
+                })
+                .catch(error => {
+                    console.error('❌ Stats update error:', error);
+                });
+        };
+
+        window.updateServiceStatus = function() {
+            console.log('Updating service status...');
+            fetch('/api/services')
+                .then(response => response.json())
+                .then(data => {
+                    window.window.renderServiceStatus(data);
+                })
+                .catch(error => {
+                    console.error('Service status update error:', error);
+                });
+        };
+
+        window.clearConversation = function() {
+            if (confirm('Are you sure you want to clear the conversation history?')) {
+                if (socket && socket.connected) {
+                    socket.emit('clear_conversation');
+                }
+                // Clear local display
+                const chatHistory = document.getElementById('chat-history');
+                if (chatHistory) {
+                    chatHistory.innerHTML = '<div class="chat-message chat-assistant">Hello! I\'m MacBot. How can I help you today?</div>';
+                }
+                // Reset conversation state
+                isConversationalMode = false;
+                if (conversationTimeout) {
+                    clearTimeout(conversationTimeout);
+                    conversationTimeout = null;
+                }
+            }
+        };
+
 
         // Initialize WebSocket connection
-        let socket = null;
         let eventSource = null;
 
         function initWebSocket() {
             try {
-                // Initialize Socket.IO connection
-                socket = io();
-                console.log('WebSocket initialized');
-
-                socket.on('connect', function() {
-                    console.log('WebSocket connected');
-                });
-
-                socket.on('disconnect', function() {
-                    console.log('WebSocket disconnected');
-                });
-
-                socket.on('conversation_update', function(data) {
-                    console.log('Received conversation update:', data);
-                    handleConversationUpdate(data);
-                });
-
-                socket.on('voice_processed', function(data) {
-                    console.log('Voice processed:', data);
-                    if (data.transcription) {
-                        addChatMessage(data.transcription, 'user');
+                if (typeof io === 'function') {
+                    if (!socket) {
+                        socket = io({
+                            transports: ['websocket', 'polling'],
+                            reconnection: true,
+                            reconnectionAttempts: 5,
+                            reconnectionDelay: 1000
+                        });
+                        console.log('WebSocket initialized');
                     }
-                });
 
+                    socket.on('connect', function() {
+                        console.log('WebSocket connected');
+                    });
+
+                    socket.on('disconnect', function() {
+                        console.log('WebSocket disconnected');
+                    });
+
+                    socket.on('conversation_update', function(data) {
+                        console.log('Received conversation update:', data);
+                        handleConversationUpdate(data);
+                    });
+
+                    socket.on('voice_processed', function(data) {
+                        console.log('Voice processed:', data);
+                        if (data.transcription) {
+                            window.addChatMessage(data.transcription, 'user');
+                        }
+                    });
+                } else {
+                    console.warn('Socket.IO not available; operating in HTTP/SSE mode');
+                }
             } catch (err) {
                 console.error('WebSocket initialization failed:', err);
             }
@@ -740,10 +810,10 @@ DASHBOARD_HTML = """
                     try {
                         const payload = JSON.parse(event.data);
                         if (payload.system_stats) {
-                            renderStats(payload.system_stats);
+                            window.renderStats(payload.system_stats);
                         }
                         if (payload.service_status) {
-                            renderServiceStatus(payload.service_status);
+                            window.renderServiceStatus(payload.service_status);
                         }
                     } catch (err) {
                         console.error('Failed to parse SSE data', err);
@@ -761,23 +831,27 @@ DASHBOARD_HTML = """
         }
 
         function startPolling() {
-            updateStats();
-            updateServiceStatus();
+            window.updateStats();
+            window.updateServiceStatus();
             setInterval(updateStats, 5000);
             setInterval(updateServiceStatus, 5000);
         }
 
         // Voice recording variables are now declared at the top
         
-        function renderStats(data) {
+        window.renderStats = function(data) {
+            console.log('🎨 Rendering stats:', data);
             if (data.cpu !== undefined) {
                 document.getElementById('cpu-usage').textContent = data.cpu + '%';
+                console.log('📈 CPU updated to:', data.cpu + '%');
             }
             if (data.ram !== undefined) {
                 document.getElementById('ram-usage').textContent = data.ram + '%';
+                console.log('📈 RAM updated to:', data.ram + '%');
             }
             if (data.disk !== undefined) {
                 document.getElementById('disk-usage').textContent = data.disk + '%';
+                console.log('📈 Disk updated to:', data.disk + '%');
             }
             if (data.network && data.network.bytes_sent !== undefined) {
                 document.getElementById('network-usage').textContent = formatBytes(data.network.bytes_sent + data.network.bytes_recv);
@@ -792,7 +866,7 @@ DASHBOARD_HTML = """
             return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
-        function renderServiceStatus(data) {
+        window.renderServiceStatus = function(data) {
             const llmStatus = document.getElementById('llm-status');
             if (data.llama && data.llama.status === 'running') {
                 llmStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
@@ -818,15 +892,28 @@ DASHBOARD_HTML = """
             if (data.web_gui && data.web_gui.status === 'running') {
                 webStatus.innerHTML = 'Status: <span class="status-dot">🟢</span> Running';
             } else {
-                webStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Running';
+                webStatus.innerHTML = 'Status: <span class="status-dot">🔴</span> Stopped';
             }
         }
 
 
 
-        function clearConversation() {
+        window.clearConversation = function() {
             if (confirm('Are you sure you want to clear the conversation history?')) {
-                socket.emit('clear_conversation');
+                if (socket && socket.connected) {
+                    socket.emit('clear_conversation');
+                }
+                // Clear local display
+                const chatHistory = document.getElementById('chat-history');
+                if (chatHistory) {
+                    chatHistory.innerHTML = '<div class="chat-message chat-assistant">Hello! I\'m MacBot. How can I help you today?</div>';
+                }
+                // Reset conversation state
+                isConversationalMode = false;
+                if (conversationTimeout) {
+                    clearTimeout(conversationTimeout);
+                    conversationTimeout = null;
+                }
             }
         }
         
@@ -844,7 +931,7 @@ DASHBOARD_HTML = """
             }
         }
         
-        async function startVoiceRecording() {
+        window.startVoiceRecording = async function() {
             const voiceButton = document.getElementById('voice-button');
             
             try {
@@ -877,21 +964,25 @@ DASHBOARD_HTML = """
                 voiceButton.textContent = '⏹️';
                 
                 if (isConversationalMode) {
-                    addChatMessage('🎤 Listening... Speak naturally.', 'system');
+                    window.addChatMessage('🎤 Listening... Speak naturally.', 'system');
+                    window.setStatus('Listening...', 'listening');
                 } else {
-                    addChatMessage('🎤 Recording... Click again to stop.', 'system');
+                    window.addChatMessage('🎤 Recording... Click again to stop.', 'system');
+                    window.setStatus('Listening...', 'listening');
                 }
                 
-                // Emit WebSocket event
+            // Emit WebSocket event
+            if (socket && socket.connected) {
                 socket.emit('start_voice_recording');
+            }
                 
             } catch (error) {
-                addChatMessage('❌ Microphone access denied. Please allow microphone access.', 'system');
+                window.addChatMessage('❌ Microphone access denied. Please allow microphone access.', 'system');
                 console.error('Voice recording error:', error);
             }
         }
         
-        function stopVoiceRecording() {
+        window.stopVoiceRecording = function() {
             const voiceButton = document.getElementById('voice-button');
             
             if (mediaRecorder && isRecording) {
@@ -904,11 +995,14 @@ DASHBOARD_HTML = """
             voiceButton.textContent = '🎤';
             
             // Emit WebSocket event
-            socket.emit('stop_voice_recording');
+            if (socket && socket.connected) {
+                socket.emit('stop_voice_recording');
+            }
+            window.setStatus('Processing voice...', 'info');
         }
         
         async function processVoiceInput(audioBlob) {
-            addChatMessage('🎵 Processing voice input...', 'system');
+            window.addChatMessage('🎵 Processing voice input...', 'system');
 
             try {
                 // Convert audio to base64
@@ -924,26 +1018,30 @@ DASHBOARD_HTML = """
                             body: JSON.stringify({ audio: base64Audio })
                         });
 
-                        if (response.ok) {
-                            const data = await response.json();
-                            if (data.transcription) {
-                                addChatMessage(data.transcription, 'user');
-                                // Now send the transcription to LLM
-                                if (socket && socket.connected) {
-                                    socket.emit('chat_message', { message: data.transcription });
-                                } else {
-                                    sendMessageHTTP(data.transcription);
-                                }
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.transcription) {
+                            window.addChatMessage(data.transcription, 'user');
+                            // Now send the transcription to LLM
+                            if (socket && socket.connected) {
+                                socket.emit('chat_message', { message: data.transcription });
                             } else {
-                                addChatMessage('❌ No speech detected', 'system');
+                                sendMessageHTTP(data.transcription);
                             }
+                            window.setStatus('Assistant is thinking...', 'speaking');
                         } else {
-                            const errorText = await response.text();
-                            addChatMessage('❌ Voice processing failed: ' + errorText, 'system');
+                            window.addChatMessage('❌ No speech detected', 'system');
+                            window.setStatus('Ready', 'info');
                         }
-                    } catch (httpError) {
-                        addChatMessage('❌ Voice processing error: ' + httpError.message, 'system');
+                    } else {
+                        const errorText = await response.text();
+                        window.addChatMessage('❌ Voice processing failed: ' + errorText, 'system');
+                        window.setStatus('Ready', 'info');
                     }
+                } catch (httpError) {
+                    window.addChatMessage('❌ Voice processing error: ' + httpError.message, 'system');
+                    window.setStatus('Ready', 'info');
+                }
 
                     // Start conversational mode for natural flow
                     startConversationalMode();
@@ -951,14 +1049,15 @@ DASHBOARD_HTML = """
                 reader.readAsDataURL(audioBlob);
 
             } catch (error) {
-                addChatMessage('❌ Voice processing error: ' + error.message, 'system');
+                window.addChatMessage('❌ Voice processing error: ' + error.message, 'system');
                 console.error('Voice processing error:', error);
             }
         }
         
         function startConversationalMode() {
             isConversationalMode = true;
-            addChatMessage('🎤 Conversational mode active. Speak naturally - I\'ll listen for your response.', 'system');
+            window.addChatMessage('🎤 Conversational mode active. Speak naturally - I\'ll listen for your response.', 'system');
+            window.setStatus('Listening...', 'listening');
             
             // Show stop conversation button
             document.getElementById('stop-conversation-btn').style.display = 'inline-block';
@@ -992,7 +1091,8 @@ DASHBOARD_HTML = """
             // Update UI
             updateConversationalUI();
             
-            addChatMessage('🎤 Conversational mode stopped. Click the microphone to start again.', 'system');
+            window.addChatMessage('🎤 Conversational mode stopped. Click the microphone to start again.', 'system');
+            window.setStatus('Ready', 'info');
         }
         
         function handleVoiceActivity() {
@@ -1027,15 +1127,15 @@ DASHBOARD_HTML = """
                 if (response.ok) {
                     const data = await response.json();
                     console.log('LLM response data:', data); // Debug log
-                    addChatMessage(data.response, 'assistant');
+                    window.addChatMessage(data.response, 'assistant');
                 } else {
                     const errorText = await response.text();
                     console.error('LLM error response:', errorText); // Debug log
-                    addChatMessage('❌ LLM processing failed: ' + errorText, 'system');
+                    window.addChatMessage('❌ LLM processing failed: ' + errorText, 'system');
                 }
             } catch (error) {
                 console.error('LLM fetch error:', error); // Debug log
-                addChatMessage('❌ LLM error: ' + error.message, 'system');
+                window.addChatMessage('❌ LLM error: ' + error.message, 'system');
             }
         }
         
@@ -1081,14 +1181,14 @@ DASHBOARD_HTML = """
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    addChatMessage(`✅ ${files.length} file(s) uploaded to knowledge base successfully`, 'system');
+                    window.addChatMessage(`✅ ${files.length} file(s) uploaded to knowledge base successfully`, 'system');
                 } else {
-                    addChatMessage(`❌ Failed to upload files: ${data.error}`, 'system');
+                    window.addChatMessage(`❌ Failed to upload files: ${data.error}`, 'system');
                 }
             })
             .catch(error => {
                 console.error('Upload error:', error);
-                addChatMessage(`❌ Upload failed: ${error.message}`, 'system');
+                window.addChatMessage(`❌ Upload failed: ${error.message}`, 'system');
             });
         }
         
@@ -1115,8 +1215,8 @@ DASHBOARD_HTML = """
         }
         
         // Initial stats and service status load
-        updateStats();
-        updateServiceStatus();
+        window.updateStats();
+        window.updateServiceStatus();
         
         // Trigger initial resize
         window.dispatchEvent(new Event('resize'));
@@ -1126,38 +1226,46 @@ DASHBOARD_HTML = """
             console.error('JavaScript error:', e.error);
         });
         
-        // WebSocket event handlers
-        socket.on('conversation_update', function(data) {
-            console.log('Received conversation update:', data);
-            handleConversationUpdate(data);
-        });
-        
-        socket.on('voice_processed', function(data) {
-            console.log('Voice processed:', data);
-            if (data.transcription) {
-                addChatMessage(data.transcription, 'user');
-            }
-        });
+        // WebSocket event handlers (guard if Socket.IO is unavailable)
+        if (socket) {
+            socket.on('conversation_update', function(data) {
+                console.log('Received conversation update:', data);
+                handleConversationUpdate(data);
+            });
+            
+            socket.on('voice_processed', function(data) {
+                console.log('Voice processed:', data);
+                if (data.transcription) {
+                    window.addChatMessage(data.transcription, 'user');
+                }
+            });
+        }
         
         function handleConversationUpdate(data) {
             if (data.type === 'user_message') {
-                addChatMessage(data.content, 'user');
+                window.addChatMessage(data.content, 'user');
             } else if (data.type === 'assistant_message') {
-                addChatMessage(data.content, 'assistant');
+                window.addChatMessage(data.content, 'assistant');
+                window.setStatus('Ready', 'info');
             } else if (data.type === 'voice_transcription') {
-                addChatMessage(data.transcription, 'user');
+                window.addChatMessage(data.transcription, 'user');
             } else if (data.type === 'error_message') {
-                addChatMessage(data.content, 'system');
+                window.addChatMessage(data.content, 'system');
+                window.setStatus('Ready', 'info');
             } else if (data.type === 'interruption') {
-                addChatMessage('🔇 Conversation interrupted', 'system');
+                window.addChatMessage('🔇 Conversation interrupted', 'system');
+                window.setStatus('Interrupted', 'interrupted');
             } else if (data.type === 'voice_recording_started') {
-                addChatMessage('🎤 Voice recording started...', 'system');
+                window.addChatMessage('🎤 Voice recording started...', 'system');
+                window.setStatus('Listening...', 'listening');
             } else if (data.type === 'voice_recording_stopped') {
-                addChatMessage('🎤 Voice recording stopped', 'system');
+                window.addChatMessage('🎤 Voice recording stopped', 'system');
+                window.setStatus('Processing voice...', 'info');
             } else if (data.type === 'conversation_cleared') {
                 const chatHistory = document.getElementById('chat-history');
                 chatHistory.innerHTML = '';
-                addChatMessage('🧹 Conversation history cleared', 'system');
+                window.addChatMessage('🧹 Conversation history cleared', 'system');
+                window.setStatus('Ready', 'info');
             }
         }
         
@@ -1170,14 +1278,14 @@ DASHBOARD_HTML = """
 
         // Set up event listeners immediately (DOM is already loaded)
         function setupEventListeners() {
-            console.log('Setting up event listeners...');
+            console.log('🎧 Setting up event listeners...');
 
             const sendButton = document.getElementById('chat-button');
             const voiceButton = document.getElementById('voice-button');
             const chatInput = document.getElementById('chat-input');
             const stopButton = document.getElementById('stop-conversation-btn');
 
-            console.log('Elements found:', {
+            console.log('🎯 Elements found:', {
                 sendButton: !!sendButton,
                 voiceButton: !!voiceButton,
                 chatInput: !!chatInput,
@@ -1185,24 +1293,16 @@ DASHBOARD_HTML = """
             });
 
             if (sendButton) {
-                console.log('Setting up send button listener');
-                sendButton.addEventListener('click', function(event) {
-                    event.preventDefault();
-                    console.log('Send button clicked!');
-                    sendMessage();
-                });
-                sendButton.style.cursor = 'pointer';
+                console.log('✅ Attaching send button listener');
+                sendButton.addEventListener('click', window.sendMessage);
             }
 
             if (voiceButton) {
-                console.log('Setting up voice button listener');
-                voiceButton.addEventListener('click', function(event) {
-                    event.preventDefault();
-                    console.log('Voice button clicked!');
-                    toggleVoiceRecording();
-                });
-                voiceButton.style.cursor = 'pointer';
+                console.log('✅ Attaching voice button listener');
+                voiceButton.addEventListener('click', window.toggleVoiceRecording);
             }
+
+            // Duplicate listeners removed - using global function listeners above
 
             if (chatInput) {
                 console.log('Setting up chat input listener');
@@ -1210,18 +1310,28 @@ DASHBOARD_HTML = """
                     if (event.key === 'Enter' && !event.shiftKey) {
                         event.preventDefault();
                         console.log('Enter pressed in chat input');
-                        sendMessage();
+                        window.sendMessage();
                     }
                 });
             }
 
             if (stopButton) {
                 console.log('Setting up stop conversation button listener');
-                stopButton.addEventListener('click', function(event) {
+                stopButton.addEventListener('click', async function(event) {
                     event.preventDefault();
                     console.log('Stop conversation button clicked!');
-                    if (socket) {
+                    if (socket && socket.connected) {
                         socket.emit('interrupt_conversation');
+                    } else {
+                        // HTTP fallback
+                        try {
+                            const resp = await fetch('/api/interrupt', { method: 'POST' });
+                            if (!resp.ok) {
+                                console.warn('HTTP interrupt failed', resp.status);
+                            }
+                        } catch (e) {
+                            console.warn('Interrupt fallback error:', e);
+                        }
                     }
                 });
                 stopButton.style.cursor = 'pointer';
@@ -1273,15 +1383,11 @@ def check_service_health():
         except:
             service_status['llama']['status'] = 'stopped'
         
-        # Check voice assistant (simple process check)
+        # Check voice assistant via control health endpoint
         try:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if proc.info['cmdline'] and 'voice_assistant.py' in ' '.join(proc.info['cmdline']):
-                    service_status['voice_assistant']['status'] = 'running'
-                    break
-            else:
-                service_status['voice_assistant']['status'] = 'stopped'
-        except:
+            va_resp = requests.get(f"http://{va_host}:{va_port}/health", timeout=2)
+            service_status['voice_assistant']['status'] = 'running' if va_resp.status_code == 200 else 'stopped'
+        except Exception:
             service_status['voice_assistant']['status'] = 'stopped'
         
         # Check RAG service
@@ -1297,6 +1403,7 @@ def check_service_health():
 @app.route('/')
 def dashboard():
     """Main dashboard page"""
+    print("🌐 WEB DASHBOARD: Serving main dashboard page")
     check_service_health()
     return render_template_string(DASHBOARD_HTML, services=service_status)
 
@@ -1310,29 +1417,52 @@ def api_stats():
     """API endpoint for system statistics"""
     global system_stats
     system_stats = get_system_stats()
+    print(f"📊 WEB DASHBOARD: Stats API called - CPU: {system_stats.get('cpu_percent', 'N/A')}%, RAM: {system_stats.get('memory_percent', 'N/A')}%, Disk: {system_stats.get('disk_percent', 'N/A')}%")
     return jsonify(system_stats)
 
 @app.route('/api/services')
 def api_services():
     """API endpoint for service status"""
+    print("🔍 WEB DASHBOARD: Services API called")
     # Check actual service health
     try:
-        # Check LLM server
+        # Prefer orchestrator aggregation if available
+        orchestrator_ok = False
         try:
-            response = requests.get(llm_models_endpoint, timeout=2)
-            service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
-        except:
-            service_status['llama']['status'] = 'stopped'
-        
-        # Check RAG server
-        try:
-            response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
-            service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
-        except:
-            service_status['rag']['status'] = 'stopped'
-        
-        # Voice assistant is always running if this endpoint is accessible
-        service_status['voice_assistant']['status'] = 'running'
+            orc_resp = requests.get(f"http://{orc_host}:{orc_port}/status", timeout=1.5)
+            if orc_resp.status_code == 200:
+                data = orc_resp.json().get('processes', {})
+                # Map orchestrator process names to dashboard services
+                service_status['llama']['status'] = 'running' if data.get('llama', {}).get('running') else 'stopped'
+                service_status['web_gui']['status'] = 'running' if data.get('web_gui', {}).get('running') else 'stopped'
+                service_status['rag']['status'] = 'running' if data.get('rag', {}).get('running') else 'stopped'
+                service_status['voice_assistant']['status'] = 'running' if data.get('voice_assistant', {}).get('running') else 'stopped'
+                orchestrator_ok = True
+        except Exception:
+            orchestrator_ok = False
+
+        if not orchestrator_ok:
+            # Direct checks as fallback
+            # LLM server
+            try:
+                response = requests.get(llm_models_endpoint, timeout=2)
+                service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
+            except:
+                service_status['llama']['status'] = 'stopped'
+
+            # RAG server
+            try:
+                response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
+                service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
+            except:
+                service_status['rag']['status'] = 'stopped'
+
+            # Voice assistant via control endpoint
+            try:
+                va_resp = requests.get(f"http://{va_host}:{va_port}/health", timeout=2)
+                service_status['voice_assistant']['status'] = 'running' if va_resp.status_code == 200 else 'stopped'
+            except Exception:
+                service_status['voice_assistant']['status'] = 'stopped'
         
         # Web GUI is always running if this endpoint is accessible
         service_status['web_gui']['status'] = 'running'
@@ -1358,17 +1488,30 @@ def stream():
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
+@app.route('/test')
+def test_endpoint():
+    """Test endpoint to verify web dashboard is responding"""
+    print("🧪 TEST ENDPOINT CALLED - Web dashboard is working!")
+    return jsonify({"status": "ok", "message": "Web dashboard test endpoint working", "timestamp": datetime.now().isoformat()})
+
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     """API endpoint for chat messages (legacy)"""
     try:
-        data = request.get_json()
-        message = data.get('message', '')
-        
-        # Forward to LLM endpoint
-        response = process_with_llm(message)
+        data = request.get_json() or {}
+        message = data.get('message', '').strip()
+        print(f"🔵 WEB DASHBOARD: Chat API called with message: '{message}'")
+        logger.info(f"Chat API called with message: {message}")
+
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+
+        # Use unified processing path used by WebSocket handler
+        response = _handle_chat_message_and_broadcast(message)
+        print(f"🟢 WEB DASHBOARD: Chat API response: '{response}'")
         return jsonify({'response': response})
     except Exception as e:
+        print(f"🔴 WEB DASHBOARD: Chat API error: {e}")
         logger.error(f"Chat API error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
@@ -1422,29 +1565,60 @@ def api_voice():
 
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
-    """API endpoint for uploading documents to RAG system"""
+    """Upload documents and forward to RAG server (supports .txt for now)."""
     try:
         if 'files' not in request.files:
             return jsonify({'success': False, 'error': 'No files provided'}), 400
-        
+
         files = request.files.getlist('files')
         if not files or files[0].filename == '':
             return jsonify({'success': False, 'error': 'No files selected'}), 400
-        
-        uploaded_files = []
+
+        success_count = 0
+        errors = []
+        forwarded = []
+        token_list = CFG.get_rag_api_tokens()
+        api_token = token_list[0] if token_list else 'change-me'
+
         for file in files:
-            if file and file.filename:
-                # Here you would typically save the file and process it
-                # For now, we'll just acknowledge receipt
-                uploaded_files.append(file.filename)
-                logger.info(f"Document uploaded: {file.filename}")
-        
+            if not file or not file.filename:
+                continue
+            filename = file.filename
+            name_lower = filename.lower()
+            try:
+                if name_lower.endswith('.txt'):
+                    # Read text content
+                    content_bytes = file.read()
+                    try:
+                        content = content_bytes.decode('utf-8', errors='ignore')
+                    except Exception:
+                        content = content_bytes.decode('latin-1', errors='ignore')
+
+                    rag_url = f"http://{rag_host}:{rag_port}/api/documents"
+                    resp = requests.post(
+                        rag_url,
+                        json={'content': content, 'title': filename, 'type': 'text'},
+                        headers={'Authorization': f'Bearer {api_token}'},
+                        timeout=10
+                    )
+                    if resp.status_code == 200:
+                        success_count += 1
+                        forwarded.append(filename)
+                    else:
+                        errors.append(f"{filename}: RAG responded {resp.status_code}")
+                else:
+                    errors.append(f"{filename}: unsupported file type (only .txt supported currently)")
+            except Exception as e:
+                logger.error(f"Failed to forward {filename} to RAG: {e}")
+                errors.append(f"{filename}: {e}")
+
         return jsonify({
-            'success': True, 
-            'message': f'Successfully uploaded {len(uploaded_files)} documents',
-            'files': uploaded_files
+            'success': success_count > 0 and len(errors) == 0,
+            'uploaded': forwarded,
+            'errors': errors,
+            'message': f'Processed {success_count} file(s). {len(errors)} error(s).'
         })
-        
+
     except Exception as e:
         logger.error(f"Document upload error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1486,71 +1660,79 @@ def handle_disconnect():
     logger.info("Client disconnected")
     websocket_clients.discard(id(request))
 
-@socketio.on('chat_message')
-def handle_chat_message(data):
-    """Handle chat messages from web interface"""
-    message = data.get('message', '').strip()
-    if not message:
-        return
-    
-    # Update conversation state
-    conversation_state['active'] = True
-    conversation_state['current_speaker'] = 'user'
-    conversation_state['last_activity'] = datetime.now()
-    conversation_state['message_count'] += 1
-    
-    # Add to conversation history
-    conversation_history.append({
-        'type': 'user_message',
-        'content': message,
-        'timestamp': datetime.now().isoformat(),
-        'source': 'web'
-    })
-    
-    # Broadcast user message
-    emit('conversation_update', {
-        'type': 'user_message',
-        'content': message,
-        'timestamp': datetime.now().isoformat()
-    }, broadcast=True)
-    
-    # Process with LLM
+def _handle_chat_message_and_broadcast(message: str) -> str:
+    """Unified chat processing path. Updates state/history and emits WebSocket events.
+    Returns assistant response or error message."""
     try:
+        # Update user message state
+        conversation_state['active'] = True
+        conversation_state['current_speaker'] = 'user'
+        conversation_state['last_activity'] = datetime.now()
+        conversation_state['message_count'] += 1
+
+        conversation_history.append({
+            'type': 'user_message',
+            'content': message,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web'
+        })
+
+        try:
+            socketio.emit('conversation_update', {
+                'type': 'user_message',
+                'content': message,
+                'timestamp': datetime.now().isoformat()
+            })
+        except Exception:
+            pass
+
+        # Process message
         response = process_with_llm(message)
-        
-        # Update conversation state
+
+        # Update assistant state
         conversation_state['current_speaker'] = 'assistant'
-        
-        # Add assistant response to history
         conversation_history.append({
             'type': 'assistant_message',
             'content': response,
             'timestamp': datetime.now().isoformat(),
             'source': 'llm'
         })
-        
-        # Broadcast assistant response
-        socketio.emit('conversation_update', {
-            'type': 'assistant_message',
-            'content': response,
-            'timestamp': datetime.now().isoformat()
-        })
-        
+
+        try:
+            socketio.emit('conversation_update', {
+                'type': 'assistant_message',
+                'content': response,
+                'timestamp': datetime.now().isoformat()
+            })
+        except Exception:
+            pass
+
+        return response
     except Exception as e:
         logger.error(f"Chat processing error: {e}")
         error_msg = f"Error processing message: {str(e)}"
-        
         conversation_history.append({
             'type': 'error_message',
             'content': error_msg,
             'timestamp': datetime.now().isoformat()
         })
-        
-        emit('conversation_update', {
-            'type': 'error_message',
-            'content': error_msg,
-            'timestamp': datetime.now().isoformat()
-        })
+        try:
+            socketio.emit('conversation_update', {
+                'type': 'error_message',
+                'content': error_msg,
+                'timestamp': datetime.now().isoformat()
+            })
+        except Exception:
+            pass
+        return error_msg
+
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    """Handle chat messages from web interface (WebSocket)"""
+    message = (data or {}).get('message', '').strip()
+    if not message:
+        return
+    _handle_chat_message_and_broadcast(message)
 
 @socketio.on('interrupt_conversation')
 def handle_interrupt_conversation():
@@ -1567,33 +1749,51 @@ def handle_interrupt_conversation():
         'timestamp': datetime.now().isoformat()
     })
     
-    # Send interruption signal to voice assistant via message bus
+    # Preferred: HTTP call to voice assistant control endpoint
+    sent = False
     try:
-        # Import message bus client for interruption signaling
-        from .message_bus_client import MessageBusClient
-        bus_client = MessageBusClient(service_type="web_dashboard")
-        bus_client.start()
-        
-        # Send interruption message
-        interruption_msg = {
-            'type': 'interruption',
-            'target': 'voice_assistant',
-            'source': 'web_dashboard',
-            'timestamp': datetime.now().isoformat(),
-            'reason': 'user_interrupt_from_web'
-        }
-        bus_client.send_message(interruption_msg)
-        bus_client.stop()
-        
-        logger.info("Interruption signal sent to voice assistant")
+        va_url = f"http://{va_host}:{va_port}/interrupt"
+        r = requests.post(va_url, timeout=2)
+        if r.status_code == 200:
+            sent = True
+            logger.info("Interruption sent via HTTP to voice assistant")
     except Exception as e:
-        logger.warning(f"Failed to send interruption signal: {e}")
+        logger.warning(f"HTTP interruption failed: {e}")
+
+    if not sent:
+        # Fallback: in-process message bus (likely a no-op across processes)
+        try:
+            from .message_bus_client import MessageBusClient
+            bus_client = MessageBusClient(service_type="web_dashboard")
+            bus_client.start()
+            interruption_msg = {
+                'type': 'interruption',
+                'target': 'voice_assistant',
+                'source': 'web_dashboard',
+                'timestamp': datetime.now().isoformat(),
+                'reason': 'user_interrupt_from_web'
+            }
+            bus_client.send_message(interruption_msg)
+            bus_client.stop()
+            logger.info("Interruption signal attempted via message bus")
+        except Exception as e:
+            logger.warning(f"Failed to send interruption via message bus: {e}")
     
     emit('system_status', {
         'type': 'interruption_sent',
         'message': 'Interruption signal sent to voice assistant',
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route('/api/interrupt', methods=['POST'])
+def api_interrupt():
+    """HTTP fallback to request conversation interruption"""
+    try:
+        handle_interrupt_conversation()
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.error(f"HTTP interrupt error: {e}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @socketio.on('start_voice_recording')
 def handle_start_voice_recording():
@@ -1634,88 +1834,100 @@ def handle_clear_conversation():
     })
 
 def process_voice_with_whisper(base64_audio: str) -> str:
-    """Process voice input using Whisper (Python library)"""
+    """Process voice input. Accepts browser-recorded audio (WebM/Opus or similar),
+    converts to 16kHz mono WAV via ffmpeg, and transcribes with Whisper CLI if available
+    (falls back to Python whisper if installed)."""
+    import base64
+    import tempfile
+    import os
+
     try:
-        import base64
-        import numpy as np
-
-        # Try Python whisper library first
-        try:
-            import whisper
-
-            # Decode base64 audio
-            audio_bytes = base64.b64decode(base64_audio.split(',')[1] if ',' in base64_audio else base64_audio)
-
-            # Convert to numpy array (assuming 16-bit PCM at 16kHz)
-            audio_data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
-            # Load whisper model and transcribe
-            model = whisper.load_model("tiny")
-            result = model.transcribe(audio_data, language="en")
-
-            transcription = result.get("text", "").strip()
-            return transcription if transcription else "No speech detected"
-
-        except ImportError:
-            logger.warning("Python whisper not available, falling back to CLI")
-
-        # Fallback to CLI whisper
-        import tempfile
-        import os
-
-        # Decode base64 audio
+        # Decode incoming base64
         audio_bytes = base64.b64decode(base64_audio.split(',')[1] if ',' in base64_audio else base64_audio)
 
-        # Save to temporary WAV file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            # Write WAV header + audio data
-            temp_file.write(audio_bytes)
-            temp_file_path = temp_file.name
+        # Write raw container to a temp file (assume webm if unknown)
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as src_file:
+            src_file.write(audio_bytes)
+            src_path = src_file.name
 
+        # Convert to WAV (16kHz mono PCM16) using ffmpeg
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
+            wav_path = wav_file.name
+
+        ffmpeg_cmd = [
+            'ffmpeg', '-y', '-i', src_path,
+            '-ac', '1', '-ar', '16000', '-f', 'wav', wav_path
+        ]
         try:
-            # Use CLI Whisper to transcribe
-            whisper_bin = os.path.abspath("models/whisper.cpp/build/bin/whisper-cli")
-            whisper_model = os.path.abspath("models/whisper.cpp/models/ggml-base.en.bin")
+            conv = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+            if conv.returncode != 0:
+                logger.error(f"ffmpeg conversion failed: {conv.stderr}")
+                return "Audio conversion failed (ffmpeg). Ensure ffmpeg is installed."
+        except FileNotFoundError:
+            return "ffmpeg not found. Please install ffmpeg for voice input."
 
-            if not os.path.exists(whisper_bin):
-                return "Whisper CLI not found. Using Python whisper instead."
+        # Prefer Whisper CLI if available
+        whisper_bin = os.path.abspath("models/whisper.cpp/build/bin/whisper-cli")
+        whisper_model = os.path.abspath("models/whisper.cpp/models/ggml-base.en.bin")
 
-            if not os.path.exists(whisper_model):
-                return "Whisper model not found. Using Python whisper instead."
+        if os.path.exists(whisper_bin) and os.path.exists(whisper_model):
+            try:
+                result = subprocess.run([
+                    whisper_bin, '-m', whisper_model, '-f', wav_path, '--output-txt'
+                ], capture_output=True, text=True, timeout=60)
 
-            # Run Whisper transcription
-            result = subprocess.run([
-                whisper_bin,
-                '-m', whisper_model,
-                '-f', temp_file_path,
-                '--output-txt'
-            ], capture_output=True, text=True, timeout=30)
-
-            if result.returncode == 0:
-                # Read the transcription from the output file
-                txt_file = temp_file_path.replace('.wav', '.txt')
-                if os.path.exists(txt_file):
-                    with open(txt_file, 'r') as f:
-                        transcription = f.read().strip()
-                    # Clean up
-                    os.unlink(txt_file)
-                    return transcription if transcription else "No speech detected"
+                if result.returncode == 0:
+                    txt_file = wav_path.replace('.wav', '.txt')
+                    if os.path.exists(txt_file):
+                        with open(txt_file, 'r') as f:
+                            transcription = f.read().strip()
+                        os.unlink(txt_file)
+                        return transcription or "No speech detected"
+                    else:
+                        return "Speech detected but no transcription generated"
                 else:
-                    return "Speech detected but no transcription generated"
-            else:
-                logger.error(f"Whisper CLI failed: {result.stderr}")
-                return f"Transcription failed: {result.stderr}"
+                    logger.error(f"Whisper CLI failed: {result.stderr}")
+                    return f"Transcription failed: {result.stderr}"
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except Exception:
+                    pass
+        else:
+            # Fallback to Python whisper if available
+            try:
+                import numpy as np
+                import soundfile as sf
+                try:
+                    import whisper
+                except Exception:
+                    return "Neither Whisper CLI nor python-whisper are available."
 
-        finally:
-            # Clean up temporary files
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-
+                # Load wav and transcribe
+                data, sr = sf.read(wav_path)
+                if sr != 16000:
+                    # Should not happen due to ffmpeg, but guard anyway
+                    logger.warning(f"Unexpected sample rate {sr}, continuing")
+                model = whisper.load_model("tiny")
+                result = model.transcribe(data, language="en")
+                transcription = result.get("text", "").strip()
+                return transcription or "No speech detected"
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except Exception:
+                    pass
     except subprocess.TimeoutExpired:
         return "Transcription timed out. Audio might be too long."
     except Exception as e:
         logger.error(f"Voice processing error: {e}")
         return f"Voice processing error: {str(e)}"
+    finally:
+        try:
+            if 'src_path' in locals() and os.path.exists(src_path):
+                os.unlink(src_path)
+        except Exception:
+            pass
 
 def process_with_llm(message: str) -> str:
     """Process message with the LLM and tools"""

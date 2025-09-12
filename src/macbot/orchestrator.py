@@ -17,22 +17,16 @@ import requests
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
+from logging.handlers import RotatingFileHandler
+from .logging_utils import setup_logger
 
 from .message_bus import MessageBus, start_message_bus, stop_message_bus
 from .message_bus_client import MessageBusClient
 from .health_monitor import get_health_monitor
 from . import config as CFG
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/macbot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Configure logging (unified)
+logger = setup_logger("macbot.orchestrator", "logs/macbot.log")
 
 class MacBotOrchestrator:
     def __init__(self, config_path: Optional[str] = None):
@@ -57,6 +51,9 @@ class MacBotOrchestrator:
         # Signal handling
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
+        # Control HTTP server (status/health)
+        self.control_thread: Optional[threading.Thread] = None
     
     def load_config(self) -> dict:
         """Load configuration from YAML file"""
@@ -308,8 +305,8 @@ class MacBotOrchestrator:
             logger.info("Starting web GUI...")
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=None,  # Don't capture stdout for web dashboard
+                stderr=None,  # Don't capture stderr for web dashboard
                 env=env,
                 cwd=os.path.join(os.path.dirname(__file__), '..', '..')
             )
@@ -327,17 +324,11 @@ class MacBotOrchestrator:
                     logger.debug(f"Web GUI not ready yet: {e}")
                     time.sleep(1)
             
-            # Check if process is still running and log any errors
+            # Check if process is still running
             if process.poll() is not None:
-                stdout, stderr = process.communicate()
                 logger.error(f"Web GUI process exited with code {process.returncode}")
-                if stderr:
-                    logger.error(f"Web GUI stderr: {stderr.decode()}")
-                if stdout:
-                    logger.info(f"Web GUI stdout: {stdout.decode()}")
-            
-            logger.error("❌ Web GUI failed to start")
-            return False
+                logger.error("❌ Web GUI failed to start")
+                return False
             
         except Exception as e:
             logger.error(f"Failed to start web GUI: {e}")
@@ -509,7 +500,13 @@ class MacBotOrchestrator:
         logger.info(f"🌐 Web GUI: http://{host}:{port}")
         logger.info(f"🤖 Voice Assistant: Ready")
         logger.info(f"🔍 RAG Service: {'Ready' if self.config.get('rag', {}).get('enabled', True) else 'Disabled'}")
-        
+
+        # Start control server
+        try:
+            self.start_control_server()
+        except Exception as e:
+            logger.warning(f"Failed to start orchestrator control server: {e}")
+
         return True
     
     def stop_all(self):
@@ -531,6 +528,39 @@ class MacBotOrchestrator:
         
         self.processes.clear()
         logger.info("All services stopped")
+
+    def start_control_server(self):
+        """Start a lightweight HTTP server exposing /health and /status"""
+        from flask import Flask, jsonify
+        from . import config as CFG
+
+        app = Flask("macbot_orchestrator")
+
+        @app.route('/health')
+        def health():
+            return jsonify({'status':'ok','timestamp': time.time()})
+
+        @app.route('/status')
+        def status():
+            procs = {}
+            for name, proc in self.processes.items():
+                procs[name] = {
+                    'running': proc.poll() is None,
+                    'pid': proc.pid if proc and proc.poll() is None else None
+                }
+            return jsonify({'processes': procs})
+
+        host, port = CFG.get("services.orchestrator.host", "0.0.0.0"), int(CFG.get("services.orchestrator.port", 8090))
+
+        def run():
+            try:
+                app.run(host=host, port=port, debug=False, use_reloader=False)
+            except Exception as e:
+                logger.warning(f"Control server failed: {e}")
+
+        self.control_thread = threading.Thread(target=run, daemon=True)
+        self.control_thread.start()
+        logger.info(f"Orchestrator control server on http://{host}:{port}")
     
     def signal_handler(self, signum, frame):
         """Handle shutdown signals"""

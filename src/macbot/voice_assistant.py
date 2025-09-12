@@ -13,6 +13,7 @@ import soundfile as sf
 import requests
 import psutil
 import logging
+from .logging_utils import setup_logger
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from . import config as CFG
 from . import tools
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = setup_logger("macbot.voice_assistant", "logs/voice_assistant.log")
 
 # No heavy optional deps needed here; RAG is handled via HTTP client.
 
@@ -546,22 +547,8 @@ if INTERRUPTION_ENABLED:
 
     conversation_manager.register_state_callback(on_conversation_state_change)
 
-    # Initialize message bus client for external interruption signals
-    bus_client = MessageBusClient(service_type="voice_assistant")
-    bus_client.start()
-
-    # Register handler for interruption messages from web dashboard
-    def handle_interruption_message(message: Dict):
-        """Handle interruption messages from other services"""
-        source = message.get('source', 'unknown')
-        logger.info(f"Received interruption signal from {source}")
-
-        # Interrupt current conversation if active
-        if conversation_manager and conversation_manager.current_context:
-            conversation_manager.interrupt_response()
-            print(f"🎤 Conversation interrupted by {source}")
-
-    bus_client.register_handler('interruption', handle_interruption_message)
+    # Message bus client - initialized later when voice assistant starts
+    bus_client = None
 
 else:
     # Fallback for when interruption is disabled
@@ -603,6 +590,68 @@ def main():
     print("   • 'take screenshot' - Capture screen")
     print("   • 'system info' - System status")
     print("🌐 Tip: Start the web dashboard via 'macbot-dashboard' for UI.")
+
+    # Initialize message bus client for interruption signals (if enabled)
+    global bus_client
+    if INTERRUPTION_ENABLED and bus_client is None:
+        try:
+            bus_client = MessageBusClient(service_type="voice_assistant")
+            bus_client.start()
+
+            # Register handler for interruption messages from web dashboard
+            def handle_interruption_message(message: Dict):
+                """Handle interruption messages from other services"""
+                source = message.get('source', 'unknown')
+                logger.info(f"Received interruption signal from {source}")
+
+                # Interrupt current conversation if active
+                if conversation_manager and conversation_manager.current_context:
+                    conversation_manager.interrupt_response()
+                    print(f"🎤 Conversation interrupted by {source}")
+
+            bus_client.register_handler('interruption', handle_interruption_message)
+            print("✅ Message bus client connected")
+
+        except Exception as e:
+            logger.warning(f"Failed to connect to message bus: {e}")
+            print("⚠️ Message bus connection failed - running without external interruption support")
+
+    # Start lightweight HTTP control server for health/interrupt
+    try:
+        from flask import Flask, jsonify, request
+        control_app = Flask("macbot_voice_control")
+
+        @control_app.route('/health')
+        def _control_health():
+            return jsonify({
+                'status': 'ok',
+                'interruption_enabled': INTERRUPTION_ENABLED,
+                'timestamp': time.time()
+            })
+
+        @control_app.route('/interrupt', methods=['POST'])
+        def _control_interrupt():
+            try:
+                if INTERRUPTION_ENABLED and conversation_manager and conversation_manager.current_context:
+                    conversation_manager.interrupt_response()
+                else:
+                    # Even if not in speaking state, trigger TTS interrupt if active
+                    tts_manager.interrupt()
+                return jsonify({'status': 'ok'}), 200
+            except Exception as e:
+                logger.error(f"Control interrupt error: {e}")
+                return jsonify({'status': 'error', 'error': str(e)}), 500
+
+        def _run_control():
+            try:
+                control_app.run(host=VA_HOST, port=VA_PORT, debug=False, use_reloader=False)
+            except Exception as e:
+                logger.warning(f"Voice assistant control server failed to start: {e}")
+
+        threading.Thread(target=_run_control, daemon=True).start()
+        logger.info(f"Voice assistant control server on http://{VA_HOST}:{VA_PORT}")
+    except Exception as e:
+        logger.warning(f"Voice assistant control server not started: {e}")
 
     sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
 
@@ -668,6 +717,10 @@ def main():
                         voiced = False
                         if transcript:
                             print(f"\n[YOU] {transcript}")
+# Control server (HTTP) configuration
+from . import config as CFG
+VA_HOST, VA_PORT = CFG.get_voice_assistant_host_port()
+
                             
                             # Validate input before processing
                             if not validate_input(transcript):
@@ -697,7 +750,11 @@ def main():
 
         # Clean up message bus client
         if INTERRUPTION_ENABLED and bus_client:
-            bus_client.stop()
+            try:
+                bus_client.stop()
+                print("✅ Message bus client disconnected")
+            except Exception as e:
+                logger.warning(f"Error stopping message bus client: {e}")
 
 if __name__ == "__main__":
     main()

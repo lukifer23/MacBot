@@ -207,6 +207,15 @@ def get_rag_base_url() -> str:
     host, port = get_rag_host_port()
     return f"http://{host}:{port}"
 
+def get_voice_assistant_host_port() -> tuple[str, int]:
+    """Host/port for the voice assistant control server"""
+    host = str(get("services.voice_assistant.host", "localhost"))
+    try:
+        port = int(get("services.voice_assistant.port", 8123))
+    except Exception:
+        port = 8123
+    return host, port
+
 
 def get_llm_models_endpoint() -> str:
     # Convert chat completions URL to models listing endpoint base
@@ -246,3 +255,12 @@ def get_rag_rate_limit_per_minute() -> int:
     except Exception:
         return 60
 
+
+def get_orchestrator_host_port() -> tuple[str, int]:
+    """Host/port for the orchestrator control server"""
+    host = str(get("services.orchestrator.host", "localhost"))
+    try:
+        port = int(get("services.orchestrator.port", 8090))
+    except Exception:
+        port = 8090
+    return host, port

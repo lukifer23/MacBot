@@ -99,6 +99,10 @@ make run-assistant  # Start voice assistant
 
 # Or use CLI
 python src/macbot/cli.py orchestrator
+
+Note:
+- The Voice Assistant now exposes a lightweight control server (default: http://localhost:8123) used by the Web Dashboard to send interruption requests and perform health checks.
+- Ensure `ffmpeg` is installed for voice input from the browser (used to convert WebM/Opus to WAV for Whisper).
 ```
 
 ## 🐳 Docker Deployment
@@ -190,6 +194,20 @@ tools:
   web_search:
     default_engine: "google"
     timeout: 10
+
+### Service Configuration
+```yaml
+services:
+  web_dashboard:
+    host: "0.0.0.0"
+    port: 3000
+  rag_server:
+    host: "localhost"
+    port: 8001
+  voice_assistant:
+    host: "localhost"   # Control server host
+    port: 8123           # Control server port
+```
 ```
 
 ## 🎯 Voice Commands

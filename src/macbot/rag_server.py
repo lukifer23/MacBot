@@ -7,6 +7,7 @@ import sys
 import json
 import time
 import logging
+from .logging_utils import setup_logger
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple
 from datetime import datetime
@@ -17,9 +18,8 @@ import requests
 from flask import Flask, request, jsonify, render_template_string
 import threading
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging (unified)
+logger = setup_logger("macbot.rag_server", "logs/rag_server.log")
 
 app = Flask(__name__)
 from . import config as CFG
