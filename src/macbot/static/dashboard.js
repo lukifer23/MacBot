@@ -13,6 +13,7 @@
     analyser: null,
     source: null,
     raf: null,
+    services: {},
   };
 
   const byId = (id) => document.getElementById(id);
@@ -78,6 +79,7 @@
 
   function renderServiceStatus(data) {
     if (!data) return;
+    state.services = data;
     const llm = byId('llm-status');
     const voice = byId('voice-status');
     const rag = byId('rag-status');
@@ -165,7 +167,7 @@
   }
   async function runSelfCheck() {
     try {
-      addChatMessage('Running pipeline self-check...', 'system');
+      setStatus('Running self-check...', 'info');
       const r = await fetch('/api/pipeline-check');
       const j = await r.json();
       if (!r.ok) { addChatMessage('❌ Self-check failed: ' + (j.error || r.status), 'system'); return; }
@@ -177,8 +179,10 @@
       lines.push(`${ok(j.tts && j.tts.ok)} TTS engine`);
       lines.push(`${ok(j.rag && j.rag.ok)} RAG`);
       addChatMessage('Self-check: ' + (j.overall ? '✅ OK' : '❌ Issues found') + '\n' + lines.join('\n'), 'system');
+      setStatus('Ready', 'info');
     } catch (e) {
       addChatMessage('❌ Self-check error: ' + e.message, 'system');
+      setStatus('Ready', 'info');
     }
   }
 
@@ -395,6 +399,8 @@
 
   async function speakViaAssistant(text) {
     try {
+      const svc = state.services && state.services.voice_assistant;
+      if (!svc || svc.status !== 'running') return; // avoid 500 spam when VA is down
       await fetch('/api/assistant-speak', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text })
       });

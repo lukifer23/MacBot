@@ -488,34 +488,46 @@ class TTSManager:
         self.piper_available = False
         self.say_available = False
         self._speak_lock = threading.Lock()
+        self._initialized = False  # lazy init to avoid crashes on import
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
             return
 
-        # Prefer Piper (more reliable packaging); then Kokoro; then pyttsx3; then macOS 'say'
+        # Probe availability flags without loading heavy models
         try:
-            import piper  # noqa: F401
-            from piper import PiperVoice
+            import shutil as _sh
+            self.say_available = _sh.which('say') is not None
+        except Exception:
+            self.say_available = False
+
+    def init_engine(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        # Prefer Piper at runtime; fall back gracefully
+        try:
             from . import config as _C
             voice_path = _C.get_piper_voice_path()
+            import piper  # noqa: F401
+            from piper import PiperVoice
             if os.path.exists(voice_path):
                 self.engine = PiperVoice.load(voice_path)
                 self.engine_type = "piper"
                 self.piper_available = True
-                print(f"✅ Using Piper TTS ({voice_path})")
+                print(f"✅ Piper ready: {voice_path}")
             else:
                 raise ImportError(f"Piper voice model not found at {voice_path}")
         except Exception as e:
-            print(f"⚠️ Piper unavailable: {e}. Trying Kokoro...")
+            print(f"⚠️ Piper init failed: {e}")
             try:
                 from kokoro import KPipeline
                 self.engine = KPipeline(lang_code="a")
                 self.engine_type = "kokoro"
                 self.kokoro_available = True
-                print("✅ Using Kokoro for TTS (interruptible)")
+                print("✅ Kokoro ready")
             except Exception as e2:
-                print(f"⚠️ Kokoro unavailable: {e2}. Trying pyttsx3...")
+                print(f"⚠️ Kokoro init failed: {e2}")
                 try:
                     import pyttsx3
                     self.engine = pyttsx3.init()
@@ -537,14 +549,14 @@ class TTSManager:
                                 self.engine.setProperty('voice', chosen)
                     except Exception:
                         pass
-                    print("✅ Using pyttsx3 for TTS (non-interruptible)")
+                    print("✅ pyttsx3 ready")
                 except Exception as e3:
                     print(f"❌ No TTS engine available: {e3}")
                     self.engine = None
                     self.engine_type = None
 
         # Setup interrupt audio handler if possible
-        if INTERRUPTION_ENABLED and self.engine is not None:
+        if INTERRUPTION_ENABLED and self.engine is not None and self.audio_handler is None:
             try:
                 from .audio_interrupt import get_audio_handler
                 self.audio_handler = get_audio_handler()
@@ -583,10 +595,14 @@ class TTSManager:
         Returns:
             bool: True if speech completed, False if interrupted
         """
-        if not self.engine or not text.strip():
+        if not text.strip():
             return True
 
         try:
+            if not self._initialized:
+                self.init_engine()
+            if not self.engine:
+                return True
             if notify:
                 _notify_dashboard_state('speaking_started')
 
@@ -834,6 +850,26 @@ def main():
                 except Exception:
                     convo = None
 
+                # Determine planned/active TTS engine without forcing heavy init
+                planned_engine = tts_manager.engine_type
+                if not planned_engine:
+                    try:
+                        from . import config as _C
+                        if os.path.exists(_C.get_piper_voice_path()):
+                            planned_engine = 'piper'
+                        else:
+                            try:
+                                import kokoro  # type: ignore
+                                planned_engine = 'kokoro'
+                            except Exception:
+                                try:
+                                    import pyttsx3  # type: ignore
+                                    planned_engine = 'pyttsx3'
+                                except Exception:
+                                    planned_engine = None
+                    except Exception:
+                        planned_engine = None
+
                 return jsonify({
                     'stt': {
                         'impl': _WHISPER_IMPL,
@@ -841,7 +877,7 @@ def main():
                         'language': WHISPER_LANG
                     },
                     'tts': {
-                        'engine': tts_manager.engine_type,
+                        'engine': planned_engine,
                         'voice': VOICE,
                         'speed': SPEED,
                         'voices': getattr(tts_manager, 'voices', []),

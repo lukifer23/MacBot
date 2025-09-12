@@ -294,6 +294,7 @@ DASHBOARD_HTML = """
         }
         .chat-history { 
             height: calc(100% - 80px); 
+            max-height: 60vh;
             overflow-y: auto; 
             background: #f2f2f7; 
             padding: 10px; 
@@ -304,6 +305,7 @@ DASHBOARD_HTML = """
             padding: 5px 8px; 
             border-radius: 4px; 
             font-size: 0.85em; 
+            white-space: pre-wrap;
         }
         .chat-user { 
             background: #007aff; 

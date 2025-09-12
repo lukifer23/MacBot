@@ -703,16 +703,22 @@ class MacBotOrchestrator:
             except Exception as e:
                 results['stt'] = {'ok': False, 'error': str(e)}
 
-            # TTS via voice assistant info
+            # Voice assistant info (STT/TTS)
             try:
                 vh, vp = CFG.get_voice_assistant_host_port()
                 r = requests.get(f"http://{vh}:{vp}/info", timeout=3)
                 if r.ok:
                     info = r.json()
+                    results['voice_assistant'] = {
+                        'stt': info.get('stt') or {},
+                        'tts': info.get('tts') or {}
+                    }
                     results['tts'] = {'engine': (info.get('tts') or {}).get('engine'), 'ok': (info.get('tts') or {}).get('engine') is not None}
                 else:
+                    results['voice_assistant'] = {}
                     results['tts'] = {'ok': False, 'code': r.status_code}
             except Exception as e:
+                results['voice_assistant'] = {}
                 results['tts'] = {'ok': False, 'error': str(e)}
 
             # RAG
