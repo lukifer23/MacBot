@@ -3,6 +3,12 @@
 ## Overview
 MacBot provides several API endpoints for interacting with the system programmatically. All services run locally on your machine.
 
+## Recent Updates (Phase 6)
+- ✅ **Message Bus Integration**: Voice assistant now receives interruption signals
+- ✅ **TTS System Overhaul**: Unified TTSManager with reliable interruption
+- ✅ **State Synchronization**: Fixed conversation state management
+- ✅ **Circuit Breaker Recovery**: Automatic service recovery with proper datetime handling
+
 ## LLM Server (llama.cpp)
 **Base URL:** `http://localhost:8080`
 
@@ -196,6 +202,63 @@ The web dashboard provides real-time communication via WebSocket for live update
     "timestamp": "2025-01-01T12:00:00Z"
   }
   ```
+
+## Internal APIs (Phase 6)
+
+These APIs are used internally by MacBot components for inter-service communication and are not exposed externally.
+
+### TTSManager API
+The unified TTS management system provides reliable text-to-speech with interruption support.
+
+#### Core Methods
+- `TTSManager.__init__()` - Initialize with automatic engine detection
+- `speak(text, interruptible=True)` - Speak text with optional interruption support
+- `interrupt()` - Interrupt current speech playback
+
+#### Engine Priority
+1. **Kokoro** (interruptible, high quality, preferred)
+2. **pyttsx3** (non-interruptible, fallback)
+
+#### Configuration
+```yaml
+models:
+  tts:
+    voice: "af_heart"  # Voice selection
+    speed: 1.0         # Speed multiplier
+```
+
+### Message Bus API
+Internal queue-based communication system for service coordination.
+
+#### MessageBus Class
+- `register_client(client_id, service_type)` - Register a service client
+- `send_message(message)` - Send message to all clients
+- `unregister_client(client_id)` - Remove client registration
+
+#### MessageBusClient Class
+- `start()` - Connect to message bus
+- `send_message(message)` - Send message through bus
+- `register_handler(type, callback)` - Register message handler
+- `stop()` - Disconnect from message bus
+
+#### Message Types
+- `interruption` - Cross-service interruption signals
+- `conversation_update` - Conversation state changes
+- `service_status` - Service health updates
+
+### Conversation Manager API
+Manages conversation state and interruption handling.
+
+#### Core Methods
+- `start_conversation(id)` - Begin new conversation
+- `interrupt_response()` - Handle interruption
+- `add_user_input(text)` - Add user message
+- `update_response(text, complete)` - Update AI response
+
+#### State Synchronization
+- Automatic state coordination with audio handler
+- Race condition prevention for interruptions
+- Thread-safe conversation tracking
 
 ## RAG Server API
 **Base URL:** `http://localhost:8081`

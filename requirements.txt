@@ -15,9 +15,10 @@ kokoro>=0.9.4
 # LiveKit agents for voice activity detection
 livekit-agents[turn-detector]>=1.2.0
 
-# WebSocket communication for message bus
-websockets>=10.0
+# WebSocket communication for web dashboard
 python-socketio>=5.0.0
+flask-socketio>=5.0.0
+flask-cors>=4.0.0
 
 # Development dependencies (uncomment for development)
 # pytest>=7.0.0

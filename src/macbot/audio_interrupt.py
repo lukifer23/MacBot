@@ -65,7 +65,12 @@ class AudioInterruptHandler:
         """
         if self.interrupt_requested:
             logger.info("Playback skipped due to pending interrupt")
+            # Reset the flag for future calls
+            self.interrupt_requested = False
             return False
+
+        # Reset interrupt flag for new playback
+        self.interrupt_requested = False
 
         with self.buffer_lock:
             self.audio_buffer = audio_data.copy()

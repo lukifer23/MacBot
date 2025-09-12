@@ -220,9 +220,23 @@ def get_llm_models_endpoint() -> str:
     return f"{base}/v1/models"
 
 
+def get_llm_chat_endpoint() -> str:
+    """Return the LLM server's /v1/chat/completions endpoint URL"""
+    url = get_llm_server_url()
+    # expected: http(s)://host:port/v1/chat/completions
+    try:
+        base = url.split("/v1/")[0]
+    except Exception:
+        base = "http://localhost:8080"
+    return f"{base}/v1/chat/completions"
+
+
 def get_rag_api_tokens() -> List[str]:
     """Return list of allowed RAG API tokens"""
-    return list(get("services.rag_server.api_tokens", []))
+    tokens = get("services.rag_server.api_tokens", [])
+    if not tokens:
+        tokens = get("services.rag.api_tokens", [])
+    return list(tokens) if tokens else ["change-me"]
 
 
 def get_rag_rate_limit_per_minute() -> int:

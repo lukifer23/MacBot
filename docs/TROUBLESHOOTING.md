@@ -1,12 +1,22 @@
-# MacBot Trouble# View Logs
-```bash
-# View main log
-tail -f logs/macbot.log
+# MacBot Troubleshooting Guide
 
-# Check service-specific logs
-tail -f models/llama.cpp/server.log
-tail -f models/whisper.cpp/whisper.log
-```Guide
+## Recent Updates (Phase 6 - Critical Fixes)
+
+**Last Updated:** Post Phase 6 Completion
+**Status:** All critical architecture issues resolved
+
+### ✅ **Resolved Issues**
+- Message bus WebSocket/queue communication mismatch
+- TTS interruption race conditions and complex fallback logic
+- Conversation state synchronization problems
+- Circuit breaker datetime comparison errors
+- Code duplicates and quality issues
+- Missing message bus integration in voice assistant
+
+### 🔧 **System Health**
+All modules now compile successfully and critical communication paths are verified.
+
+## View Logs
 
 ## Overview
 This guide helps you diagnose and resolve common issues with MacBot. Start with the quick diagnostics, then follow the specific issue sections.

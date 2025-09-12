@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-MacBot Message Bus Client - Network-based client for connecting to the message bus
+MacBot Message Bus Client - Client for connecting to the in-memory message bus
 """
 
-import asyncio
 import json
 import logging
 import threading
 import time
+import queue
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-import websockets
+from .message_bus import message_bus
 
 logger = logging.getLogger(__name__)
 
 
 class MessageBusClient:
-    """Client for connecting to the MacBot message bus over WebSockets"""
+    """Client for connecting to the MacBot in-memory message bus"""
 
     def __init__(
         self,
@@ -25,9 +25,6 @@ class MessageBusClient:
         port: int = 8082,
         service_type: str = "unknown",
         heartbeat_interval: float = 10.0,
-        heartbeat_timeout: float = 5.0,
-        reconnect_initial: float = 1.0,
-        reconnect_max: float = 30.0,
         on_disconnect: Optional[Callable[[], None]] = None,
         on_reconnect: Optional[Callable[[], None]] = None,
     ):
@@ -35,47 +32,53 @@ class MessageBusClient:
         self.port = port
         self.service_type = service_type
         self.heartbeat_interval = heartbeat_interval
-        self.heartbeat_timeout = heartbeat_timeout
-        self.reconnect_initial = reconnect_initial
-        self.reconnect_max = reconnect_max
         self.on_disconnect = on_disconnect
         self.on_reconnect = on_reconnect
 
         self.client_id: Optional[str] = None
         self.running = False
         self.connected = False
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        self.message_queue: Optional[queue.Queue] = None
 
         self.message_handlers: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
 
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.thread: Optional[threading.Thread] = None
+        self.monitor_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         """Start the message bus client"""
         if self.running:
             return
+
         self.running = True
         self.client_id = f"{self.service_type}_{int(time.time())}"
-        self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.thread.start()
+
+        # Register with the global message bus
+        self.message_queue = message_bus.register_client(self.client_id, self.service_type)
+        self.connected = True
+
+        # Start message monitoring thread
+        self.monitor_thread = threading.Thread(target=self._monitor_messages, daemon=True)
+        self.monitor_thread.start()
+
+        logger.info(f"Message bus client started for {self.service_type} ({self.client_id})")
 
     def stop(self) -> None:
         """Stop the message bus client"""
         self.running = False
-        if self.loop:
-            if self.ws:
-                asyncio.run_coroutine_threadsafe(self.ws.close(), self.loop)
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        if self.thread:
-            self.thread.join(timeout=5)
+
+        if self.client_id:
+            message_bus.unregister_client(self.client_id)
+
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=5)
+
         self.connected = False
+        self.message_queue = None
         logger.info(f"Message bus client stopped for {self.service_type}")
 
     def send_message(self, message: Dict[str, Any]) -> None:
         """Send a message through the bus"""
-        if not self.connected or not self.loop or not self.ws:
+        if not self.connected or not self.client_id:
             logger.warning("Not connected to message bus, message not sent")
             return
 
@@ -86,14 +89,12 @@ class MessageBusClient:
             "timestamp": datetime.now().isoformat(),
         }
 
-        async def _send():
-            await self.ws.send(json.dumps(enriched_message))
-
-        asyncio.run_coroutine_threadsafe(_send(), self.loop)
+        # Send through the global message bus
+        message_bus.send_message(enriched_message)
 
     def is_connected(self) -> bool:
         """Check if client is connected"""
-        return self.connected
+        return self.connected and message_bus is not None
 
     def register_handler(
         self, message_type: str, handler: Callable[[Dict[str, Any]], None]
@@ -121,72 +122,23 @@ class MessageBusClient:
         """Set callback for connection restoration"""
         self.on_reconnect = callback
 
-    def _run_loop(self) -> None:
-        assert self.loop is not None
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._connection_loop())
-
-    async def _connection_loop(self) -> None:
-        backoff = self.reconnect_initial
-        has_connected_once = False
-        while self.running:
+    def _monitor_messages(self) -> None:
+        """Monitor incoming messages from the message bus"""
+        while self.running and self.message_queue:
             try:
-                uri = f"ws://{self.host}:{self.port}"
-                logger.info(f"Connecting to message bus at {uri}")
-                async with websockets.connect(uri) as ws:
-                    self.ws = ws
-                    self.connected = True
-                    if has_connected_once and self.on_reconnect:
-                        self.on_reconnect()
-                    has_connected_once = True
-                    backoff = self.reconnect_initial
-                    await self._manage_connection(ws)
-            except Exception as e:  # pragma: no cover - network errors vary
-                if self.connected:
-                    self.connected = False
-                    self.ws = None
-                    if self.on_disconnect:
-                        self.on_disconnect()
-                logger.warning(f"Connection error: {e}")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self.reconnect_max)
-        if self.ws:
-            await self.ws.close()
+                # Non-blocking check for messages
+                try:
+                    message = self.message_queue.get(timeout=0.1)
+                    self._handle_message(message)
+                except queue.Empty:
+                    continue
 
-    async def _manage_connection(
-        self, ws: websockets.WebSocketClientProtocol
-    ) -> None:
-        receiver_task = asyncio.create_task(self._receive_loop(ws))
-        heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws))
-        done, pending = await asyncio.wait(
-            [receiver_task, heartbeat_task], return_when=asyncio.FIRST_EXCEPTION
-        )
-        for task in pending:
-            task.cancel()
-        for task in done:
-            exc = task.exception()
-            if exc:
-                raise exc
-
-    async def _receive_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
-        async for message in ws:
-            try:
-                data = json.loads(message)
-                self._handle_message(data)
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid message format: {e}")
-
-    async def _heartbeat_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
-        while True:
-            await asyncio.sleep(self.heartbeat_interval)
-            try:
-                pong = await ws.ping()
-                await asyncio.wait_for(pong, timeout=self.heartbeat_timeout)
-            except Exception:
-                logger.warning("Heartbeat failed")
-                raise
+            except Exception as e:
+                logger.error(f"Error monitoring messages: {e}")
+                time.sleep(1)
 
     def _handle_message(self, message: Dict[str, Any]) -> None:
+        """Handle an incoming message"""
         message_type = message.get("type", "unknown")
         if message_type in self.message_handlers:
             for handler in self.message_handlers[message_type]:

@@ -18,8 +18,8 @@ models:
     language: "en"
 
   tts:
-    voice: "en_us"
-    speed: 1.0
+    voice: "en_us"  # Voice selection for TTS engines
+    speed: 1.0      # Speech speed multiplier
 
 # Voice Assistant Settings
 voice_assistant:

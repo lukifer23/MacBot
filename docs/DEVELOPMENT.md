@@ -97,6 +97,31 @@ MacBot/
 └── README.md
 ```
 
+## Recent Architecture Changes (Phase 6)
+
+### TTS System Overhaul
+The TTS (Text-to-Speech) system has been completely refactored for reliability:
+
+- **TTSManager Class**: Unified interface for Kokoro and pyttsx3 engines
+- **Automatic Fallback**: Kokoro (interruptible) → pyttsx3 (non-interruptible)
+- **Proper State Management**: Clean interrupt handling without race conditions
+- **Resource Cleanup**: Automatic cleanup of audio handlers and TTS engines
+
+### Message Bus Architecture Fix
+- **Queue-Based Communication**: Converted from WebSocket to in-memory queues
+- **Cross-Service Integration**: Voice assistant now receives web dashboard signals
+- **Thread-Safe Operations**: Proper synchronization for concurrent message handling
+
+### Conversation State Synchronization
+- **Audio Handler Integration**: Fixed interrupt flag reset issues
+- **State Coordination**: Conversation manager and audio handler stay synchronized
+- **Race Condition Prevention**: Protected against double interruption calls
+
+### Health Monitoring Improvements
+- **Circuit Breaker Fix**: Corrected datetime comparison logic
+- **Automatic Recovery**: Services properly recover after failures
+- **Better Error Handling**: Comprehensive exception handling throughout
+
 ## Architecture Overview
 
 ### Core Components

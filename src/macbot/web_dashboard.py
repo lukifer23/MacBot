@@ -28,7 +28,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Configure CORS properly
+try:
+    from flask_cors import CORS
+    CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.38:3000"])
+    print("✅ CORS enabled for web dashboard")
+except ImportError:
+    print("⚠️ flask-cors not available, CORS may not work properly")
+
+socketio = SocketIO(app, cors_allowed_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.38:3000"], async_mode='threading')
 from . import config as CFG
 
 # Global state
@@ -198,33 +207,46 @@ DASHBOARD_HTML = """
         .chat-input:focus { 
             border-color: #007aff; 
         }
-        .chat-button { 
-            background: #007aff; 
-            color: white; 
-            border: none; 
-            padding: 10px 16px; 
-            border-radius: 6px; 
-            font-size: 0.9em; 
-            cursor: pointer; 
+        .chat-button {
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: background-color 0.2s;
         }
-        .chat-button:hover { 
-            background: #0056cc; 
+        .chat-button:hover {
+            background: #0056cc;
         }
-        .voice-button { 
-            background: #34c759; 
-            color: white; 
-            border: none; 
-            padding: 10px 12px; 
-            border-radius: 6px; 
-            font-size: 0.9em; 
-            cursor: pointer; 
+        .chat-button:active {
+            background: #004499;
         }
-        .voice-button:hover { 
-            background: #28a745; 
+        .voice-button {
+            background: #34c759;
+            color: white;
+            border: none;
+            padding: 10px 12px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: all 0.2s;
         }
-        .voice-button.recording { 
-            background: #ff3b30; 
-            animation: pulse 1s infinite; 
+        .voice-button:hover {
+            background: #28a745;
+            transform: scale(1.05);
+        }
+        .voice-button:active {
+            background: #1e7e34;
+            transform: scale(0.95);
+        }
+        .voice-button.recording {
+            background: #ff3b30;
+            animation: pulse 1s infinite;
+        }
+        .voice-button.recording:hover {
+            background: #e03128;
         }
         .stop-conversation-btn { 
             background: #ff9500; 
@@ -431,8 +453,8 @@ DASHBOARD_HTML = """
         <div class="header">
             <h1>🤖 MacBot Dashboard</h1>
             <p>Local Voice Assistant with AI Tools & Live Monitoring</p>
-            <button class="refresh-btn" onclick="updateStats()">🔄 Refresh Stats</button>
-            <button class="refresh-btn" onclick="clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
+            <button class="refresh-btn" onclick="window.updateStats()">🔄 Refresh Stats</button>
+            <button class="refresh-btn" onclick="window.clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
         </div>
         
         <div class="main-content">
@@ -493,10 +515,10 @@ DASHBOARD_HTML = """
                     <h3>💬 Chat Interface</h3>
                     <div class="chat-input-container">
                         <input type="text" class="chat-input" id="chat-input" placeholder="Type your message here...">
-                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording">
+                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording" onclick="window.toggleVoiceRecording()">
                             🎤
                         </button>
-                        <button class="chat-button">Send</button>
+                        <button class="chat-button" onclick="window.sendMessage()">Send</button>
                         <button class="stop-conversation-btn" id="stop-conversation-btn" title="Stop conversational mode" style="display: none;">
                             🛑
                         </button>
@@ -555,9 +577,161 @@ DASHBOARD_HTML = """
         </div>
     </div>
     
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
-        // Attempt to use Server-Sent Events for real-time updates
+        // Global variables and functions for HTML onclick handlers
+        let isRecording = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isConversationalMode = false;
+        let conversationTimeout = null;
+        let silenceThreshold = 2000;
+        let lastVoiceActivity = 0;
+
+        function updateStats() {
+            console.log('Updating stats...');
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    renderStats(data);
+                })
+                .catch(error => {
+                    console.error('Stats update error:', error);
+                });
+        }
+
+        function updateServiceStatus() {
+            console.log('Updating service status...');
+            fetch('/api/services')
+                .then(response => response.json())
+                .then(data => {
+                    renderServiceStatus(data);
+                })
+                .catch(error => {
+                    console.error('Service status update error:', error);
+                });
+        }
+
+        function clearConversation() {
+            if (confirm('Are you sure you want to clear the conversation history?')) {
+                if (socket && socket.connected) {
+                    socket.emit('clear_conversation');
+                }
+                // Clear local display
+                const chatHistory = document.getElementById('chat-history');
+                if (chatHistory) {
+                    chatHistory.innerHTML = '<div class="chat-message chat-assistant">Hello! I\'m MacBot. How can I help you today?</div>';
+                }
+            }
+        }
+
+        // Global function for chat input
+        function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            console.log('Sending message:', message);
+
+            // Add user message to local display
+            addChatMessage(message, 'user');
+            input.value = '';
+
+            // Send via WebSocket if connected, otherwise fallback to HTTP
+            if (socket && socket.connected) {
+                console.log('Sending via WebSocket');
+                socket.emit('chat_message', { message: message });
+            } else {
+                console.log('WebSocket not connected, using HTTP fallback');
+                sendMessageHTTP(message);
+            }
+        }
+
+        // Global function for voice recording
+        function toggleVoiceRecording() {
+            const voiceButton = document.getElementById('voice-button');
+
+            if (!isRecording) {
+                // Start recording
+                startVoiceRecording();
+            } else {
+                // Stop recording
+                stopVoiceRecording();
+            }
+        }
+
+        // Global function for adding chat messages
+        function addChatMessage(message, sender) {
+            const history = document.getElementById('chat-history');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message chat-${sender}`;
+            messageDiv.textContent = message;
+            history.appendChild(messageDiv);
+            history.scrollTop = history.scrollHeight;
+        }
+
+        // Global function for HTTP message sending
+        async function sendMessageHTTP(message) {
+            try {
+                console.log('Sending to LLM via HTTP:', message);
+
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+
+                console.log('HTTP response status:', response.status);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('HTTP response data:', data);
+                    addChatMessage(data.response || 'No response', 'assistant');
+                } else {
+                    const errorText = await response.text();
+                    console.error('HTTP error response:', errorText);
+                    addChatMessage('❌ Error: ' + errorText, 'system');
+                }
+            } catch (error) {
+                console.error('HTTP fetch error:', error);
+                addChatMessage('❌ Network error: ' + error.message, 'system');
+            }
+        }
+
+        // Initialize WebSocket connection
+        let socket = null;
         let eventSource = null;
+
+        function initWebSocket() {
+            try {
+                // Initialize Socket.IO connection
+                socket = io();
+                console.log('WebSocket initialized');
+
+                socket.on('connect', function() {
+                    console.log('WebSocket connected');
+                });
+
+                socket.on('disconnect', function() {
+                    console.log('WebSocket disconnected');
+                });
+
+                socket.on('conversation_update', function(data) {
+                    console.log('Received conversation update:', data);
+                    handleConversationUpdate(data);
+                });
+
+                socket.on('voice_processed', function(data) {
+                    console.log('Voice processed:', data);
+                    if (data.transcription) {
+                        addChatMessage(data.transcription, 'user');
+                    }
+                });
+
+            } catch (err) {
+                console.error('WebSocket initialization failed:', err);
+            }
+        }
 
         function initEventSource() {
             try {
@@ -593,16 +767,7 @@ DASHBOARD_HTML = """
             setInterval(updateServiceStatus, 5000);
         }
 
-        // Voice recording state
-        let isRecording = false;
-        let mediaRecorder = null;
-        let audioChunks = [];
-        
-        // Conversational voice state
-        let isConversationalMode = false;
-        let conversationTimeout = null;
-        let silenceThreshold = 2000; // 2 seconds of silence to auto-send
-        let lastVoiceActivity = 0;
+        // Voice recording variables are now declared at the top
         
         function renderStats(data) {
             if (data.cpu !== undefined) {
@@ -657,53 +822,7 @@ DASHBOARD_HTML = """
             }
         }
 
-        function updateStats() {
-            console.log('Updating stats...'); // Debug log
 
-            fetch('/api/stats')
-                .then(response => {
-                    console.log('Stats response status:', response.status); // Debug log
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    console.log('Stats data received:', data); // Debug log
-                    renderStats(data);
-                })
-                .catch(error => {
-                    console.error('Stats update error:', error);
-                    document.getElementById('cpu-usage').textContent = 'Error';
-                    document.getElementById('ram-usage').textContent = 'Error';
-                    document.getElementById('disk-usage').textContent = 'Error';
-                    document.getElementById('network-usage').textContent = 'Error';
-                });
-        }
-
-        function updateServiceStatus() {
-            console.log('Updating service status...'); // Debug log
-
-            fetch('/api/services')
-                .then(response => {
-                    console.log('Service status response:', response.status); // Debug log
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    console.log('Service status data:', data); // Debug log
-                    renderServiceStatus(data);
-                })
-                .catch(error => {
-                    console.error('Service status update error:', error);
-                    document.getElementById('llm-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
-                    document.getElementById('voice-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
-                    document.getElementById('rag-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
-                    document.getElementById('web-status').innerHTML = 'Status: <span class="status-dot">🔴</span> Error';
-                });
-        }
 
         function clearConversation() {
             if (confirm('Are you sure you want to clear the conversation history?')) {
@@ -712,31 +831,7 @@ DASHBOARD_HTML = """
         }
         
         // handleKeyPress function removed - now handled by event listener
-        
-        function sendMessage() {
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-            if (!message) return;
-            
-            console.log('Sending message:', message); // Debug log
-            
-            // Add user message to local display
-            addChatMessage(message, 'user');
-            input.value = '';
-            
-            // Send via WebSocket
-            socket.emit('chat_message', { message: message });
-        }
-        
-        function addChatMessage(message, sender) {
-            const history = document.getElementById('chat-history');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `chat-message chat-${sender}`;
-            messageDiv.textContent = message;
-            history.appendChild(messageDiv);
-            history.scrollTop = history.scrollHeight;
-        }
-        
+
         async function toggleVoiceRecording() {
             const voiceButton = document.getElementById('voice-button');
             
@@ -814,21 +909,47 @@ DASHBOARD_HTML = """
         
         async function processVoiceInput(audioBlob) {
             addChatMessage('🎵 Processing voice input...', 'system');
-            
+
             try {
                 // Convert audio to base64
                 const reader = new FileReader();
                 reader.onload = async () => {
                     const base64Audio = reader.result.split(',')[1];
-                    
-                    // Send via WebSocket instead of HTTP API
-                    socket.emit('voice_message', { audio: base64Audio });
-                    
+
+                    // Send via HTTP API (more reliable than WebSocket for large audio data)
+                    try {
+                        const response = await fetch('/api/voice', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ audio: base64Audio })
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data.transcription) {
+                                addChatMessage(data.transcription, 'user');
+                                // Now send the transcription to LLM
+                                if (socket && socket.connected) {
+                                    socket.emit('chat_message', { message: data.transcription });
+                                } else {
+                                    sendMessageHTTP(data.transcription);
+                                }
+                            } else {
+                                addChatMessage('❌ No speech detected', 'system');
+                            }
+                        } else {
+                            const errorText = await response.text();
+                            addChatMessage('❌ Voice processing failed: ' + errorText, 'system');
+                        }
+                    } catch (httpError) {
+                        addChatMessage('❌ Voice processing error: ' + httpError.message, 'system');
+                    }
+
                     // Start conversational mode for natural flow
                     startConversationalMode();
                 };
                 reader.readAsDataURL(audioBlob);
-                
+
             } catch (error) {
                 addChatMessage('❌ Voice processing error: ' + error.message, 'system');
                 console.error('Voice processing error:', error);
@@ -1040,58 +1161,81 @@ DASHBOARD_HTML = """
             }
         }
         
-        // Test button functionality
-        console.log('Dashboard loaded, testing elements...');
-        console.log('Chat input:', document.getElementById('chat-input'));
-        console.log('Send button:', document.getElementById('chat-button'));
-        console.log('Voice button:', document.getElementById('voice-button'));
-        
-        // Add proper event listeners instead of relying on onclick
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('DOM loaded, setting up event listeners...');
-            initEventSource();
-            
+        // Initialize everything when script loads
+        console.log('Dashboard loading, initializing...');
+
+        // Initialize connections
+        initWebSocket();
+        initEventSource();
+
+        // Set up event listeners immediately (DOM is already loaded)
+        function setupEventListeners() {
+            console.log('Setting up event listeners...');
+
             const sendButton = document.getElementById('chat-button');
             const voiceButton = document.getElementById('voice-button');
             const chatInput = document.getElementById('chat-input');
-            
+            const stopButton = document.getElementById('stop-conversation-btn');
+
+            console.log('Elements found:', {
+                sendButton: !!sendButton,
+                voiceButton: !!voiceButton,
+                chatInput: !!chatInput,
+                stopButton: !!stopButton
+            });
+
             if (sendButton) {
                 console.log('Setting up send button listener');
-                sendButton.addEventListener('click', function() {
+                sendButton.addEventListener('click', function(event) {
+                    event.preventDefault();
                     console.log('Send button clicked!');
                     sendMessage();
                 });
+                sendButton.style.cursor = 'pointer';
             }
-            
+
             if (voiceButton) {
                 console.log('Setting up voice button listener');
-                voiceButton.addEventListener('click', function() {
+                voiceButton.addEventListener('click', function(event) {
+                    event.preventDefault();
                     console.log('Voice button clicked!');
                     toggleVoiceRecording();
                 });
+                voiceButton.style.cursor = 'pointer';
             }
-            
+
             if (chatInput) {
                 console.log('Setting up chat input listener');
                 chatInput.addEventListener('keypress', function(event) {
-                    if (event.key === 'Enter') {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
                         console.log('Enter pressed in chat input');
                         sendMessage();
                     }
                 });
             }
-            
-            const stopButton = document.getElementById('stop-conversation-btn');
+
             if (stopButton) {
                 console.log('Setting up stop conversation button listener');
-                stopButton.addEventListener('click', function() {
+                stopButton.addEventListener('click', function(event) {
+                    event.preventDefault();
                     console.log('Stop conversation button clicked!');
-                    socket.emit('interrupt_conversation');
+                    if (socket) {
+                        socket.emit('interrupt_conversation');
+                    }
                 });
+                stopButton.style.cursor = 'pointer';
             }
-            
-            console.log('Event listeners set up complete');
-        });
+
+            console.log('Event listeners setup complete');
+        }
+
+        // Setup listeners when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', setupEventListeners);
+        } else {
+            setupEventListeners();
+        }
     </script>
 </body>
 </html>
@@ -1490,39 +1634,63 @@ def handle_clear_conversation():
     })
 
 def process_voice_with_whisper(base64_audio: str) -> str:
-    """Process voice input using Whisper"""
+    """Process voice input using Whisper (Python library)"""
     try:
         import base64
+        import numpy as np
+
+        # Try Python whisper library first
+        try:
+            import whisper
+
+            # Decode base64 audio
+            audio_bytes = base64.b64decode(base64_audio.split(',')[1] if ',' in base64_audio else base64_audio)
+
+            # Convert to numpy array (assuming 16-bit PCM at 16kHz)
+            audio_data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+            # Load whisper model and transcribe
+            model = whisper.load_model("tiny")
+            result = model.transcribe(audio_data, language="en")
+
+            transcription = result.get("text", "").strip()
+            return transcription if transcription else "No speech detected"
+
+        except ImportError:
+            logger.warning("Python whisper not available, falling back to CLI")
+
+        # Fallback to CLI whisper
         import tempfile
         import os
-        
+
         # Decode base64 audio
-        audio_bytes = base64.b64decode(base64_audio)
-        
-        # Save to temporary file
+        audio_bytes = base64.b64decode(base64_audio.split(',')[1] if ',' in base64_audio else base64_audio)
+
+        # Save to temporary WAV file
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            # Write WAV header + audio data
             temp_file.write(audio_bytes)
             temp_file_path = temp_file.name
-        
+
         try:
-            # Use Whisper to transcribe
+            # Use CLI Whisper to transcribe
             whisper_bin = os.path.abspath("models/whisper.cpp/build/bin/whisper-cli")
             whisper_model = os.path.abspath("models/whisper.cpp/models/ggml-base.en.bin")
-            
+
             if not os.path.exists(whisper_bin):
-                return "Whisper not found. Please run 'make build-whisper' first."
-            
+                return "Whisper CLI not found. Using Python whisper instead."
+
             if not os.path.exists(whisper_model):
-                return "Whisper model not found. Please run 'make build-whisper' first."
-            
+                return "Whisper model not found. Using Python whisper instead."
+
             # Run Whisper transcription
-            result = subprocess.run([  # type: ignore
+            result = subprocess.run([
                 whisper_bin,
                 '-m', whisper_model,
                 '-f', temp_file_path,
                 '--output-txt'
             ], capture_output=True, text=True, timeout=30)
-            
+
             if result.returncode == 0:
                 # Read the transcription from the output file
                 txt_file = temp_file_path.replace('.wav', '.txt')
@@ -1535,14 +1703,14 @@ def process_voice_with_whisper(base64_audio: str) -> str:
                 else:
                     return "Speech detected but no transcription generated"
             else:
-                logger.error(f"Whisper failed: {result.stderr}")
+                logger.error(f"Whisper CLI failed: {result.stderr}")
                 return f"Transcription failed: {result.stderr}"
-                
+
         finally:
             # Clean up temporary files
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-                
+
     except subprocess.TimeoutExpired:
         return "Transcription timed out. Audio might be too long."
     except Exception as e:
@@ -1583,9 +1751,9 @@ def process_with_llm(message: str) -> str:
             "max_tokens": 500
         }
         
+        chat_endpoint = CFG.get_llm_chat_endpoint()
         response = requests.post(
-            'http://localhost:8080/v1/chat/completions',
-            headers={"Authorization": "Bearer x"},
+            chat_endpoint,
             json=payload,
             timeout=30
         )
@@ -1734,7 +1902,7 @@ def start_dashboard(host='0.0.0.0', port=3000):
     monitor_thread.start()
     
     try:
-        socketio.run(app, host=host, port=port, debug=False, use_reloader=False)
+        socketio.run(app, host=host, port=port, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
     except Exception as e:
         logger.error(f"Failed to start web dashboard: {e}")
         raise
