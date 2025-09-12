@@ -364,12 +364,19 @@
 
   async function requestMic() {
     try {
+      // Always test browser mic permission first
       await navigator.mediaDevices.getUserMedia({ audio: true });
       setStatus('Browser mic permission granted', 'info');
     } catch (e) {
       setStatus('Browser mic permission denied', 'interrupted');
     }
     try {
+      // Only ping assistant if it is running
+      const svc = state.services && state.services.voice_assistant;
+      if (!svc || svc.status !== 'running') {
+        setStatus('Assistant not running', 'interrupted');
+        return;
+      }
       const r = await fetch('/api/mic-check', { method: 'POST' });
       const data = await r.json();
       if (r.ok && data.ok) setStatus('Assistant mic ready', 'info');
