@@ -6,6 +6,7 @@ PyYAML>=6.0
 requests>=2.25.0
 psutil>=5.8.0
 flask>=2.0.0
+flask-socketio>=5.0.0
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
 PyPDF2>=3.0.0

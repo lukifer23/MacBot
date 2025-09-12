@@ -9,8 +9,14 @@ import time
 import threading
 import queue
 import numpy as np
-import sounddevice as sd
-import soundfile as sf
+try:
+    import sounddevice as sd  # PortAudio bindings
+except Exception as _sd_e:  # Guard import failures; allow text-only fallback
+    sd = None  # type: ignore
+try:
+    import soundfile as sf
+except Exception:
+    sf = None  # type: ignore
 from typing import Optional, Callable, List
 import logging
 
@@ -19,7 +25,7 @@ logger = logging.getLogger(__name__)
 class AudioInterruptHandler:
     """Handles audio playback interruption using macOS AudioQueue"""
 
-    def __init__(self, sample_rate: int = 24000):
+    def __init__(self, sample_rate: int = 24000, output_device=None):
         self.sample_rate = sample_rate
         self.current_stream: Optional[sd.OutputStream] = None
         self.audio_queue = queue.Queue()
@@ -27,6 +33,7 @@ class AudioInterruptHandler:
         self.interrupt_requested = False
         self.playback_thread: Optional[threading.Thread] = None
         self.interrupt_callbacks: List[Callable] = []
+        self.output_device = output_device  # sd device index or name
 
         # Audio buffer management
         self.audio_buffer = np.array([], dtype=np.float32)
@@ -63,13 +70,16 @@ class AudioInterruptHandler:
         Returns:
             bool: True if playback completed, False if interrupted
         """
-        # Test/CI friendly bypass: avoid CoreAudio access during tests
+        # Test/CI friendly bypass: avoid CoreAudio access during tests or when sounddevice is missing
         try:
             if os.environ.get("MACBOT_NO_AUDIO", "0") == "1":
                 logger.info("MACBOT_NO_AUDIO=1 set; skipping audio playback")
                 return True
         except Exception:
             pass
+        if sd is None:
+            logger.warning("sounddevice not available; skipping audio playback")
+            return True
         if self.interrupt_requested:
             logger.info("Playback skipped due to pending interrupt")
             # Reset the flag for future calls
@@ -108,6 +118,8 @@ class AudioInterruptHandler:
 
     def _playback_worker(self):
         """Worker thread for audio playback with interruption monitoring"""
+        if sd is None:
+            return
         try:
             # Create audio stream
             self.current_stream = sd.OutputStream(
@@ -115,7 +127,8 @@ class AudioInterruptHandler:
                 channels=1,
                 dtype=np.float32,
                 blocksize=int(self.sample_rate * 0.05),  # 50ms blocks
-                callback=self._audio_callback
+                callback=self._audio_callback,
+                device=self.output_device
             )
 
             with self.current_stream:

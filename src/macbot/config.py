@@ -160,6 +160,16 @@ def get_interrupt_threshold() -> float:
     except Exception:
         return 0.01
 
+def get_audio_output_device():
+    """Return configured output device (int index or str name) or None."""
+    val = get("voice_assistant.audio.output_device", None)
+    return val
+
+def get_audio_input_device():
+    """Return configured input device (int index or str name) or None."""
+    val = get("voice_assistant.audio.input_device", None)
+    return val
+
 
 def get_interrupt_cooldown() -> float:
     try:

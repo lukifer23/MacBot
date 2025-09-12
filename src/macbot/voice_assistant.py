@@ -9,8 +9,14 @@ import sys
 import signal
 import uuid
 import numpy as np
-import sounddevice as sd
-import soundfile as sf
+try:
+    import sounddevice as sd
+except Exception as _sd_imp_err:
+    sd = None  # type: ignore
+try:
+    import soundfile as sf
+except Exception as _sf_imp_err:
+    sf = None  # type: ignore
 import requests
 import psutil
 import logging
@@ -232,8 +238,23 @@ def _transcribe_cli(wav_f32: np.ndarray) -> str:
     """Fallback transcription via whisper.cpp CLI using temp files."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
             tmp = f.name
+            try:
+                if sf is not None:
+                    sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
+                else:
+                    import wave, struct
+                    with wave.open(f.name, 'wb') as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)  # 16-bit
+                        wf.setframerate(SAMPLE_RATE)
+                        # clip and convert to int16
+                        data_i16 = np.clip(wav_f32, -1.0, 1.0)
+                        data_i16 = (data_i16 * 32767.0).astype(np.int16)
+                        wf.writeframes(data_i16.tobytes())
+            except Exception as e:
+                logger.error(f"Failed to write WAV: {e}")
+                return ""
 
         # call whisper.cpp
         # -nt = no timestamps, -l language
@@ -561,7 +582,9 @@ class TTSManager:
                 from .audio_interrupt import get_audio_handler
                 self.audio_handler = get_audio_handler()
             except Exception:
-                self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE)
+                # honor configured output device if present
+                out_dev = CFG.get_audio_output_device()
+                self.audio_handler = AudioInterruptHandler(sample_rate=TTS_SAMPLE_RATE, output_device=out_dev)
             if hasattr(self.audio_handler, 'vad_threshold'):
                 self.audio_handler.vad_threshold = INTERRUPT_THRESHOLD
 
@@ -752,6 +775,7 @@ def speak(text: str):
 
 # ---- Main loop ----
 def main():
+    global TTS_STREAMED
     print("🚀 Starting MacBot Voice Assistant...")
     print("Local Voice AI ready. Speak after the beep. (Ctrl+C to quit)")
     print("💡 Try saying:")
@@ -832,12 +856,43 @@ def main():
             """Attempt to open a short-lived input stream to trigger OS mic permission.
             Returns JSON with success/error for guidance."""
             try:
+                if os.environ.get('MACBOT_NO_AUDIO') == '1':
+                    return jsonify({'ok': False, 'error': 'audio disabled via env'}), 400
+                if sd is None:
+                    return jsonify({'ok': False, 'error': 'sounddevice not available'}), 500
                 # Try to open and immediately close a short input stream
                 with sd.InputStream(channels=1, samplerate=SAMPLE_RATE, dtype='float32'):
                     pass
                 return jsonify({'ok': True})
             except Exception as e:
                 logger.warning(f"Mic check failed: {e}")
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/devices')
+        def _control_devices():
+            try:
+                if sd is None:
+                    return jsonify({'ok': False, 'error': 'sounddevice not available'}), 500
+                devices = sd.query_devices()
+                default = sd.default.device
+                return jsonify({'ok': True, 'devices': devices, 'default': default})
+            except Exception as e:
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/set-output', methods=['POST'])
+        def _control_set_output():
+            try:
+                if sd is None:
+                    return jsonify({'ok': False, 'error': 'sounddevice not available'}), 500
+                data = request.get_json() or {}
+                dev = data.get('device')
+                cur_in, cur_out = sd.default.device if sd.default.device else (None, None)
+                sd.default.device = (cur_in, dev)
+                # Update audio handler if exists
+                if tts_manager and tts_manager.audio_handler:
+                    tts_manager.audio_handler.output_device = dev
+                return jsonify({'ok': True, 'default': sd.default.device})
+            except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
 
         @control_app.route('/info')
@@ -895,9 +950,10 @@ def main():
                     'audio': {
                         'sample_rate': SAMPLE_RATE,
                         'block_sec': BLOCK_DUR,
-                        'vad_threshold': VAD_THRESH
+                        'vad_threshold': VAD_THRESH,
+                        'devices_default': (sd.default.device if sd else None)
                     },
-                    'conversation': convo
+                'conversation': convo
                 })
             except Exception as e:
                 logger.error(f"Control info error: {e}")
@@ -917,7 +973,14 @@ def main():
     # Initialize audio input; run in text-only mode if unavailable
     stream = None
     try:
-        sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
+        if os.environ.get('MACBOT_NO_AUDIO') == '1':
+            raise RuntimeError('audio disabled via MACBOT_NO_AUDIO')
+        if sd is None:
+            raise RuntimeError('sounddevice not available')
+        try:
+            sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
+        except Exception:
+            pass
         stream = sd.InputStream(
             channels=1,
             samplerate=SAMPLE_RATE,
@@ -983,7 +1046,6 @@ def main():
                             print(f"[BOT] {reply}\n")
                             logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
                             # Avoid duplicate speech if streaming TTS already occurred
-                            global TTS_STREAMED
                             if not TTS_STREAMED:
                                 speak(reply)
                 else:
@@ -1015,7 +1077,6 @@ def main():
 
                             print(f"[BOT] {reply}\n")
                             logger.info(f"va_chat_out reply_to={msg_id} len={len(reply)} preview={reply[:80]!r}")
-                            global TTS_STREAMED
                             if not TTS_STREAMED:
                                 speak(reply)
     except KeyboardInterrupt:

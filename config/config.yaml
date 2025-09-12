@@ -17,7 +17,7 @@ models:
     language: "en"
 
   tts:
-    voice: "af_heart"  # try: af_heart, af_bella, af_nicole, am_adam, am_michael, etc.
+    voice: "en_US-lessac-medium"  # Piper TTS voice model
     speed: 1.0
 
 # Voice Assistant Settings
