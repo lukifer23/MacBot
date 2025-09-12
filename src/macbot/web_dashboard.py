@@ -33,9 +33,9 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 try:
     from flask_cors import CORS
     CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.38:3000"])
-    print("✅ CORS enabled for web dashboard")
+    # CORS enabled for web dashboard
 except ImportError:
-    print("⚠️ flask-cors not available, CORS may not work properly")
+    pass
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 from . import config as CFG
@@ -1499,7 +1499,7 @@ def check_service_health():
 @app.route('/')
 def dashboard():
     """Main dashboard page"""
-    print("🌐 WEB DASHBOARD: Serving main dashboard page")
+    # Serve main dashboard page
     check_service_health()
     return render_template_string(DASHBOARD_HTML, services=service_status, wd_host=wd_host, wd_port=wd_port)
 
@@ -1513,13 +1513,13 @@ def api_stats():
     """API endpoint for system statistics"""
     global system_stats
     system_stats = get_system_stats()
-    print(f"📊 WEB DASHBOARD: Stats API called - CPU: {system_stats.get('cpu', 'N/A')}%, RAM: {system_stats.get('ram', 'N/A')}%, Disk: {system_stats.get('disk', 'N/A')}%")
+    # lightweight stats API
     return jsonify(system_stats)
 
 @app.route('/api/services')
 def api_services():
     """API endpoint for service status"""
-    print("🔍 WEB DASHBOARD: Services API called")
+    # services API
     # Check actual service health
     try:
         # Prefer orchestrator aggregation if available
@@ -1614,7 +1614,7 @@ def stream():
 @app.route('/test')
 def test_endpoint():
     """Test endpoint to verify web dashboard is responding"""
-    print("🧪 TEST ENDPOINT CALLED - Web dashboard is working!")
+    # test endpoint
     return jsonify({"status": "ok", "message": "Web dashboard test endpoint working", "timestamp": datetime.now().isoformat()})
 
 @app.route('/api/chat', methods=['POST'])
