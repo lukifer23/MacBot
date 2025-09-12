@@ -492,8 +492,8 @@ DASHBOARD_HTML = """
         <div class="header">
             <h1>🤖 MacBot Dashboard</h1>
             <p>Local Voice Assistant with AI Tools & Live Monitoring</p>
-            <button class="refresh-btn" onclick="window.updateStats()">🔄 Refresh Stats</button>
-            <button class="refresh-btn" onclick="window.clearConversation()" style="margin-left: 10px;">🧹 Clear Chat</button>
+            <button class="refresh-btn" id="refresh-stats-btn">🔄 Refresh Stats</button>
+            <button class="refresh-btn" id="clear-chat-btn" style="margin-left: 10px;">🧹 Clear Chat</button>
             <button class="refresh-btn" id="mic-access-btn" style="margin-left: 10px;">🎙️ Request Mic Access</button>
             <div id="status-banner" class="status-banner status-info" style="display:none; margin-left:10px;">Ready</div>
         </div>
@@ -681,15 +681,15 @@ DASHBOARD_HTML = """
                 if (response.ok) {
                     const data = await response.json();
                     console.log('HTTP response data:', data);
-                    window.window.addChatMessage(data.response || 'No response', 'assistant');
+                    window.addChatMessage(data.response || 'No response', 'assistant');
                 } else {
                     const errorText = await response.text();
                     console.error('HTTP error response:', errorText);
-                    window.window.addChatMessage('❌ Error: ' + errorText, 'system');
+                    window.addChatMessage('❌ Error: ' + errorText, 'system');
                 }
             } catch (error) {
                 console.error('HTTP fetch error:', error);
-                window.window.addChatMessage('❌ Network error: ' + error.message, 'system');
+                window.addChatMessage('❌ Network error: ' + error.message, 'system');
             }
         };
 
@@ -710,7 +710,7 @@ DASHBOARD_HTML = """
             console.log('Sending message:', message);
 
             // Add user message to local display
-            window.window.addChatMessage(message, 'user');
+            window.addChatMessage(message, 'user');
             input.value = '';
 
             // Indicate assistant is thinking/responding
@@ -746,7 +746,7 @@ DASHBOARD_HTML = """
                 })
                 .then(data => {
                     console.log('📊 Stats data received:', data);
-                    window.window.renderStats(data);
+                    window.renderStats(data);
                 })
                 .catch(error => {
                     console.error('❌ Stats update error:', error);
@@ -758,7 +758,7 @@ DASHBOARD_HTML = """
             fetch('/api/services')
                 .then(response => response.json())
                 .then(data => {
-                    window.window.renderServiceStatus(data);
+                    window.renderServiceStatus(data);
                 })
                 .catch(error => {
                     console.error('Service status update error:', error);
@@ -858,8 +858,8 @@ DASHBOARD_HTML = """
         function startPolling() {
             window.updateStats();
             window.updateServiceStatus();
-            setInterval(updateStats, 5000);
-            setInterval(updateServiceStatus, 5000);
+            setInterval(window.updateStats, 5000);
+            setInterval(window.updateServiceStatus, 5000);
         }
 
         // Voice recording variables are now declared at the top
@@ -1322,6 +1322,8 @@ DASHBOARD_HTML = """
             const chatInput = document.getElementById('chat-input');
             const stopButton = document.getElementById('stop-conversation-btn');
             const micBtn = document.getElementById('mic-access-btn');
+            const refreshBtn = document.getElementById('refresh-stats-btn');
+            const clearBtn = document.getElementById('clear-chat-btn');
 
             console.log('🎯 Elements found:', {
                 sendButton: !!sendButton,
@@ -1399,6 +1401,18 @@ DASHBOARD_HTML = """
                         console.warn('Assistant mic check error:', e);
                         window.setStatus('Assistant mic check error', 'interrupted');
                     }
+                });
+            }
+
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', function() {
+                    try { window.updateStats(); } catch (e) { console.warn('updateStats failed', e); }
+                });
+            }
+
+            if (clearBtn) {
+                clearBtn.addEventListener('click', function() {
+                    try { window.clearConversation(); } catch (e) { console.warn('clearConversation failed', e); }
                 });
             }
 
