@@ -10,7 +10,7 @@ This guide covers setting up a development environment, contributing to MacBot, 
 # Install system dependencies
 xcode-select --install
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install cmake ffmpeg portaudio python@3.11 git git-lfs
+brew install cmake ffmpeg portaudio python@3.13 git git-lfs
 
 # Clone the repository
 git clone https://github.com/lukifer23/MacBot.git
@@ -23,11 +23,20 @@ git submodule update --init --recursive
 ### Python Environment
 ```bash
 # Create virtual environment
-make venv
-source .venv/bin/activate
+python3.13 -m venv macbot_env
+source macbot_env/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Install TTS engines (recommended)
+pip install piper-tts
+# Download Piper voice models
+mkdir -p piper_voices/en_US-lessac-medium
+curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
+     -o piper_voices/en_US-lessac-medium/model.onnx
+curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
+     -o piper_voices/en_US-lessac-medium/model.onnx.json
 
 # Install development dependencies
 pip install -r requirements-dev.txt

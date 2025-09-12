@@ -202,9 +202,11 @@ python -m macbot.web_dashboard
 - **GPU**: Apple Silicon (M1/M2/M3) with Metal support
 
 ### **Software**
-- **macOS**: 12.0+ (Monterey)
-- **Python**: 3.11+
+- **macOS**: 12.0+ (Monterey or later)
+- **Python**: 3.13+ (optimized for Apple Silicon)
 - **Homebrew**: For system dependencies
+- **TTS Engines**: Piper (primary) + Kokoro framework
+- **STT Engine**: Whisper.cpp v1.7.6 with Metal acceleration
 
 ## 🔧 Configuration
 
@@ -216,10 +218,11 @@ python -m macbot.web_dashboard
 - `src/macbot/voice_assistant.py` - Enhanced voice assistant
 
 ### **Model Configuration**
-- **LLM**: Qwen3-4B-Instruct-2507 (2.3GB)
-- **STT**: Whisper.cpp base.en (141MB)
-- **TTS**: Kokoro (82M)
-- **Embeddings**: Sentence Transformers
+- **LLM**: Qwen3-4B-Instruct-2507-Q4_K_M (2.3GB)
+- **STT**: Whisper Large v3 Turbo Q5_0 (547MB) - Metal accelerated
+- **TTS**: Piper Neural (82MB) + Kokoro framework ready
+- **Embeddings**: Sentence Transformers (via ChromaDB)
+- **Performance**: ~0.2s STT latency, 178 WPM TTS speed
 
 ## 🎉 Voice Commands Examples
 

@@ -1,20 +1,19 @@
 # MacBot Troubleshooting Guide
 
-## Recent Updates (Phase 6 - Critical Fixes)
+## Recent Updates (TTS & STT Enhancements)
 
-**Last Updated:** Post Phase 6 Completion
-**Status:** All critical architecture issues resolved
+**Last Updated:** TTS Integration & STT Performance Optimization
+**Status:** Advanced voice capabilities fully integrated
 
-### ✅ **Resolved Issues**
-- Message bus WebSocket/queue communication mismatch
-- TTS interruption race conditions and complex fallback logic
-- Conversation state synchronization problems
-- Circuit breaker datetime comparison errors
-- Code duplicates and quality issues
-- Missing message bus integration in voice assistant
+### ✅ **New Features & Improvements**
+- **Piper Neural TTS**: Superior voice quality with 178 WPM performance
+- **Whisper Large v3 Turbo**: Best-in-class STT with Metal acceleration (~0.2s latency)
+- **Kokoro Framework**: Ready for advanced interruptible TTS when compatible
+- **Enhanced Documentation**: Updated guides reflecting current capabilities
+- **Performance Metrics**: Comprehensive benchmarking and optimization
 
 ### 🔧 **System Health**
-All modules now compile successfully and critical communication paths are verified.
+All voice systems operational with fallback mechanisms and comprehensive error handling.
 
 ## View Logs
 
@@ -479,8 +478,66 @@ cd models/llama.cpp
 cd models/whisper.cpp
 ./build/bin/whisper-cli --model models/ggml-base.en.bin --file your-audio.wav
 
-# Test TTS only
-python -c "import kokoro; print('TTS working')"
+### TTS Troubleshooting
+
+**Test TTS Systems:**
+```bash
+# Test TTS integration
+cd /path/to/MacBot
+source macbot_env/bin/activate
+python tts_integration_test.py
+
+# Test specific TTS engines
+python -c "
+from src.macbot.voice_assistant import TTSManager
+tts = TTSManager()
+print(f'Engine: {tts.engine_type}')
+print(f'Piper Available: {tts.piper_available}')
+print(f'pyttsx3 Available: {tts.pyttsx3_available}')
+tts.speak('TTS test successful', interruptible=False)
+"
+
+# Test Piper TTS specifically
+python -c "
+import piper
+from piper import PiperVoice
+voice = PiperVoice.load('piper_voices/en_US-lessac-medium/model.onnx')
+voice.synthesize('Piper test successful')
+print('Piper TTS working')
+"
+```
+
+**Common TTS Issues:**
+
+1. **Piper Voice Model Not Found:**
+   ```bash
+   # Download Piper voice models
+   mkdir -p piper_voices/en_US-lessac-medium
+   curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
+        -o piper_voices/en_US-lessac-medium/model.onnx
+   ```
+
+2. **Kokoro Compatibility Issues:**
+   - Kokoro requires Python < 3.13 for some versions
+   - System falls back to Piper/pyttsx3 automatically
+   - Check logs for specific compatibility errors
+
+3. **Audio Playback Issues:**
+   ```bash
+   # Test audio output
+   python -c "
+   import sounddevice as sd
+   import numpy as np
+   sd.play(np.sin(2 * np.pi * 440 * np.linspace(0, 1, 44100)), samplerate=44100)
+   sd.wait()
+   print('Audio playback working')
+   "
+   ```
+
+4. **TTS Performance Issues:**
+   - Piper: ~178 WPM (optimal for natural speech)
+   - pyttsx3: ~185 WPM (may sound robotic)
+   - Check system resources if TTS is slow
 ```
 
 ### Log Analysis

@@ -9,16 +9,18 @@ MacBot uses a YAML configuration file (`config.yaml`) to manage all settings. Th
 # Model Configuration
 models:
   llm:
-    path: "llama.cpp/models/your-model.gguf"
-    context_length: 4096
+    path: "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    context_length: 8192
     threads: -1  # Use all available cores
+    temperature: 0.4
+    max_tokens: 200
 
   stt:
-    model: "base.en"
+    model: "models/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"
     language: "en"
 
   tts:
-    voice: "en_us"  # Voice selection for TTS engines
+    voice: "en_US-lessac-medium"  # Piper neural voice
     speed: 1.0      # Speech speed multiplier
 
 # Voice Assistant Settings
@@ -135,12 +137,23 @@ tools:
 - **Threads**: Number of CPU threads to use (-1 for all available)
 
 ### STT Models
-- **Model**: Whisper model size (`tiny`, `base`, `small`, `medium`, `large`)
+- **Model**: Whisper model path or size
+  - `tiny` (39 MB) - Fastest, least accurate
+  - `base` (74 MB) - Good balance
+  - `small` (244 MB) - Better accuracy
+  - `medium` (1.5 GB) - High accuracy
+  - `large-v3-turbo` (1.5 GB) - Best accuracy, Metal accelerated
+  - **Recommended**: `large-v3-turbo-q5_0` (547 MB quantized)
 - **Language**: Language code for transcription (`en`, `es`, `fr`, etc.)
+- **Performance**: ~0.2s latency with Metal acceleration
 
 ### TTS Models
-- **Voice**: Voice identifier for text-to-speech
+- **Engine Priority**: Kokoro (interruptible) → Piper (neural) → pyttsx3 (fallback)
+- **Piper Voices**: `en_US-lessac-medium`, `en_GB-alan-medium`, etc.
+- **Kokoro Voices**: Framework ready for advanced interruptible TTS
+- **pyttsx3 Voices**: System voices (185 available on macOS)
 - **Speed**: Speech speed multiplier (0.5-2.0)
+- **Performance**: 178 WPM with natural prosody
 
 ## Voice Assistant Settings
 

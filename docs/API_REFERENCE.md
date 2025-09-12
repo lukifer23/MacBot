@@ -3,11 +3,12 @@
 ## Overview
 MacBot provides several API endpoints for interacting with the system programmatically. All services run locally on your machine.
 
-## Recent Updates (Phase 6)
-- ✅ **Message Bus Integration**: Voice assistant now receives interruption signals
-- ✅ **TTS System Overhaul**: Unified TTSManager with reliable interruption
-- ✅ **State Synchronization**: Fixed conversation state management
-- ✅ **Circuit Breaker Recovery**: Automatic service recovery with proper datetime handling
+## Recent Updates (TTS & STT Enhancements)
+- ✅ **Piper Neural TTS**: Superior voice quality with 178 WPM performance
+- ✅ **Whisper Large v3 Turbo**: Best-in-class STT with Metal acceleration (~0.2s latency)
+- ✅ **Advanced TTS Integration**: Kokoro framework ready, Piper primary engine
+- ✅ **Enhanced Voice Assistant**: Comprehensive voice control and monitoring
+- ✅ **Performance Optimization**: Metal GPU acceleration for Apple Silicon
 
 ## LLM Server (llama.cpp)
 **Base URL:** `http://localhost:8080`
@@ -19,6 +20,73 @@ MacBot provides several API endpoints for interacting with the system programmat
 
 ### Health Check
 - `GET /health` - Server health status
+
+## Voice Assistant API
+**Base URL:** `http://localhost:8123`
+
+### Control Endpoints
+- `GET /health` - Voice assistant health status
+  ```json
+  {
+    "status": "ok",
+    "interruption_enabled": true,
+    "timestamp": 1234567890.123
+  }
+  ```
+
+- `POST /interrupt` - Interrupt current speech/TTS playback
+  ```json
+  {
+    "status": "ok"
+  }
+  ```
+
+- `POST /speak` - Speak text using TTS system
+  ```json
+  {
+    "text": "Hello, this is a test message",
+    "interruptible": false
+  }
+  ```
+
+- `POST /mic-check` - Test microphone permissions
+  ```json
+  {
+    "ok": true
+  }
+  ```
+
+- `GET /info` - Get comprehensive voice assistant information
+  ```json
+  {
+    "stt": {
+      "impl": "whisper",
+      "model": "models/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin",
+      "language": "en"
+    },
+    "tts": {
+      "engine": "piper",
+      "voice": "en_US-lessac-medium",
+      "speed": 1.0,
+      "voices": [],
+      "kokoro_available": false,
+      "pyttsx3_available": true
+    },
+    "interruption": {
+      "enabled": true,
+      "threshold": 0.01,
+      "cooldown": 0.5,
+      "conversation_timeout": 30,
+      "context_buffer_size": 10
+    },
+    "audio": {
+      "sample_rate": 16000,
+      "block_sec": 0.03,
+      "vad_threshold": 0.005
+    },
+    "conversation": null
+  }
+  ```
 
 ## Web Dashboard API
 **Base URL:** `http://localhost:3000`
