@@ -1630,7 +1630,8 @@ def api_chat():
             return jsonify({'success': False, 'error': 'Message is required', 'code': 'validation_error'}), 400
 
         # Use unified processing path used by WebSocket handler
-        response = _handle_chat_message_and_broadcast(message)
+        # Avoid duplicating the user message in UI for HTTP fallback
+        response = _handle_chat_message_and_broadcast(message, emit_user=False)
         print(f"🟢 WEB DASHBOARD: Chat API response: '{response}'")
         return jsonify({'success': True, 'message': 'ok', 'data': {'response': response}, 'response': response})
     except Exception as e:
@@ -1897,7 +1898,7 @@ def handle_disconnect():
     logger.info("Client disconnected")
     websocket_clients.discard(id(request))
 
-def _handle_chat_message_and_broadcast(message: str) -> str:
+def _handle_chat_message_and_broadcast(message: str, emit_user: bool = True) -> str:
     """Unified chat processing path. Updates state/history and emits WebSocket events.
     Returns assistant response or error message."""
     try:
@@ -1917,15 +1918,16 @@ def _handle_chat_message_and_broadcast(message: str) -> str:
             'id': user_msg_id
         })
 
-        try:
-            socketio.emit('conversation_update', {
-                'type': 'user_message',
-                'content': message,
-                'timestamp': datetime.now().isoformat(),
-                'id': user_msg_id
-            })
-        except Exception:
-            pass
+        if emit_user:
+            try:
+                socketio.emit('conversation_update', {
+                    'type': 'user_message',
+                    'content': message,
+                    'timestamp': datetime.now().isoformat(),
+                    'id': user_msg_id
+                })
+            except Exception:
+                pass
 
         logger.info(f"chat_in id={user_msg_id} len={len(message)} preview={message[:80]!r}")
 
@@ -1982,7 +1984,7 @@ def handle_chat_message(data):
     message = (data or {}).get('message', '').strip()
     if not message:
         return
-    _handle_chat_message_and_broadcast(message)
+    _handle_chat_message_and_broadcast(message, emit_user=True)
 
 @socketio.on('interrupt_conversation')
 def handle_interrupt_conversation():
