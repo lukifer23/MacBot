@@ -5,7 +5,7 @@
 models:
   llm:
     path: "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-    context_length: 4096
+    context_length: 8192
     threads: -1  # Use all available cores
     server_url: "http://localhost:8080/v1/chat/completions"
     temperature: 0.4

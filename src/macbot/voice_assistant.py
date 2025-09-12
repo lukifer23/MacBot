@@ -464,6 +464,9 @@ class TTSManager:
         self.engine = None
         self.engine_type = None
         self.audio_handler = None
+        self.voices = []  # available voice names/ids for the active engine
+        self.kokoro_available = False
+        self.pyttsx3_available = False
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
@@ -474,11 +477,10 @@ class TTSManager:
             from kokoro import KPipeline
             self.engine = KPipeline(lang_code="a")  # American English
             self.engine_type = "kokoro"
+            self.kokoro_available = True
             print("✅ Using Kokoro for TTS (interruptible)")
 
-            # Initialize audio handler for interruption
             if INTERRUPTION_ENABLED:
-                # Use shared audio handler to avoid duplicate streams
                 try:
                     from .audio_interrupt import get_audio_handler
                     self.audio_handler = get_audio_handler()
@@ -494,6 +496,24 @@ class TTSManager:
                 self.engine = pyttsx3.init()
                 self.engine.setProperty("rate", int(SPEED * TTS_RATE_MULTIPLIER))
                 self.engine_type = "pyttsx3"
+                self.pyttsx3_available = True
+                # Select voice if configured
+                try:
+                    voices = self.engine.getProperty('voices') or []
+                    self.voices = [v.id for v in voices if hasattr(v, 'id')] or [v.name for v in voices if hasattr(v, 'name')]
+                    if VOICE:
+                        # Choose first matching id or name containing VOICE
+                        chosen = None
+                        for v in voices:
+                            vid = getattr(v, 'id', '')
+                            vnm = getattr(v, 'name', '')
+                            if VOICE.lower() in str(vid).lower() or VOICE.lower() in str(vnm).lower():
+                                chosen = vid or vnm
+                                break
+                        if chosen:
+                            self.engine.setProperty('voice', chosen)
+                except Exception:
+                    pass
                 print("✅ Using pyttsx3 for TTS (non-interruptible)")
             except ImportError:
                 print("❌ No TTS engine available")
@@ -535,9 +555,14 @@ class TTSManager:
                 return True
 
             else:
-                # Fallback for any other engine
-                print(f"⚠️ Unsupported TTS engine: {self.engine_type}")
-                return True
+                # Final OS fallback using 'say' if available
+                try:
+                    import subprocess as _sp
+                    _sp.Popen(['say', str(text)])
+                    return True
+                except Exception:
+                    print(f"⚠️ Unsupported TTS engine: {self.engine_type}")
+                    return True
 
         except Exception as e:
             print(f"TTS Error: {e}")
@@ -669,6 +694,20 @@ def main():
                 logger.error(f"Control interrupt error: {e}")
                 return jsonify({'status': 'error', 'error': str(e)}), 500
 
+        @control_app.route('/speak', methods=['POST'])
+        def _control_speak():
+            try:
+                data = request.get_json() or {}
+                text = str(data.get('text', '')).strip()
+                if not text:
+                    return jsonify({'ok': False, 'error': 'text required'}), 400
+                # speak asynchronously so HTTP doesn't block on long TTS
+                threading.Thread(target=speak, args=(text,), daemon=True).start()
+                return jsonify({'ok': True})
+            except Exception as e:
+                logger.error(f"Control speak error: {e}")
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
         @control_app.route('/mic-check', methods=['POST'])
         def _control_mic_check():
             """Attempt to open a short-lived input stream to trigger OS mic permission.
@@ -681,6 +720,48 @@ def main():
             except Exception as e:
                 logger.warning(f"Mic check failed: {e}")
                 return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/info')
+        def _control_info():
+            try:
+                convo = None
+                try:
+                    if INTERRUPTION_ENABLED and conversation_manager:
+                        convo = conversation_manager.get_conversation_summary()
+                except Exception:
+                    convo = None
+
+                return jsonify({
+                    'stt': {
+                        'impl': _WHISPER_IMPL,
+                        'model': WHISPER_MODEL,
+                        'language': WHISPER_LANG
+                    },
+                    'tts': {
+                        'engine': tts_manager.engine_type,
+                        'voice': VOICE,
+                        'speed': SPEED,
+                        'voices': getattr(tts_manager, 'voices', []),
+                        'kokoro_available': getattr(tts_manager, 'kokoro_available', False),
+                        'pyttsx3_available': getattr(tts_manager, 'pyttsx3_available', False)
+                    },
+                    'interruption': {
+                        'enabled': INTERRUPTION_ENABLED,
+                        'threshold': INTERRUPT_THRESHOLD,
+                        'cooldown': INTERRUPT_COOLDOWN,
+                        'conversation_timeout': CONVERSATION_TIMEOUT,
+                        'context_buffer_size': CONTEXT_BUFFER_SIZE
+                    },
+                    'audio': {
+                        'sample_rate': SAMPLE_RATE,
+                        'block_sec': BLOCK_DUR,
+                        'vad_threshold': VAD_THRESH
+                    },
+                    'conversation': convo
+                })
+            except Exception as e:
+                logger.error(f"Control info error: {e}")
+                return jsonify({'error': str(e)}), 500
 
         def _run_control():
             try:

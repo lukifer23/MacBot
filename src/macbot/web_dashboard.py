@@ -27,7 +27,7 @@ from .health_monitor import get_health_monitor
 # Configure logging (unified)
 logger = setup_logger("macbot.web_dashboard", "logs/web_dashboard.log")
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 # Configure CORS properly
 try:
@@ -37,7 +37,7 @@ try:
 except ImportError:
     print("⚠️ flask-cors not available, CORS may not work properly")
 
-socketio = SocketIO(app, cors_allowed_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.38:3000"], async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 from . import config as CFG
 
 # Global state
@@ -73,7 +73,7 @@ orc_host, orc_port = CFG.get_orchestrator_host_port()
 
 service_status = {
     'llama': {'status': 'unknown', 'port': None, 'endpoint': llm_models_endpoint.rsplit('/v1', 1)[0]},
-    'voice_assistant': {'status': 'unknown', 'port': None, 'endpoint': 'Voice Interface'},
+    'voice_assistant': {'status': 'unknown', 'port': va_port, 'endpoint': f'http://{va_host}:{va_port}'},
     'rag': {'status': 'unknown', 'port': rag_port, 'endpoint': f'http://{rag_host}:{rag_port}'},
     'web_gui': {'status': 'running', 'port': wd_port, 'endpoint': f'http://{wd_host}:{wd_port}'}
 }
@@ -222,6 +222,12 @@ DASHBOARD_HTML = """
             margin-bottom: 15px; 
             align-items: center; 
         }
+        .mode-toggle { display: flex; gap: 6px; align-items: center; }
+        .mode-btn { background: #e5e5ea; color: #1d1d1f; border: none; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85em; }
+        .mode-btn.active { background: #007aff; color: white; }
+        .end-voice-btn { background: #ff3b30; color: white; border: none; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85em; display: none; }
+        .waveform-wrap { margin-top: 8px; height: 36px; background: #f2f2f7; border-radius: 6px; display: none; align-items: center; }
+        #waveform-canvas { width: 100%; height: 36px; }
         .chat-input { 
             flex: 1; 
             padding: 10px; 
@@ -461,16 +467,16 @@ DASHBOARD_HTML = """
             .chat-input { margin-bottom: 6px; }
         }
         
-        /* Ensure no vertical scrolling on any device */
+        /* Allow vertical scrolling for long chats */
         html, body { 
             overflow-x: hidden; 
-            overflow-y: hidden; 
-            height: 100vh; 
+            overflow-y: auto; 
+            min-height: 100vh; 
         }
         
         .container { 
-            height: 100vh; 
-            overflow: hidden; 
+            min-height: 100vh; 
+            overflow: visible; 
         }
 
         /* Status banner */
@@ -495,6 +501,13 @@ DASHBOARD_HTML = """
             <button class="refresh-btn" id="refresh-stats-btn">🔄 Refresh Stats</button>
             <button class="refresh-btn" id="clear-chat-btn" style="margin-left: 10px;">🧹 Clear Chat</button>
             <button class="refresh-btn" id="mic-access-btn" style="margin-left: 10px;">🎙️ Request Mic Access</button>
+            <button class="refresh-btn" id="self-check-btn" style="margin-left: 10px; background:#5856d6;">🧪 Self-Check</button>
+            <label style="margin-left: 10px; font-size: 0.9em;">
+              <input type="checkbox" id="speak-toggle" checked /> Speak replies
+            </label>
+            <label style="margin-left: 10px; font-size: 0.9em;">
+              <input type="checkbox" id="speak-toggle" checked /> Speak replies
+            </label>
             <div id="status-banner" class="status-banner status-info" style="display:none; margin-left:10px;">Ready</div>
         </div>
         
@@ -526,6 +539,14 @@ DASHBOARD_HTML = """
                 
                 <div class="services-grid">
                     <div class="service-card">
+                        <h3>📦 Model Status</h3>
+                        <div class="service-info" id="model-llm">LLM: —</div>
+                        <div class="service-info" id="model-ctx">Context: — • Threads: — • GPU layers: —</div>
+                        <div class="service-info" id="model-mem">Memory: —</div>
+                        <div class="service-info" id="model-stt">STT: —</div>
+                        <div class="service-info" id="model-tts">TTS: —</div>
+                    </div>
+                    <div class="service-card">
                         <h3>🚀 LLM Server (llama.cpp)</h3>
                         <div class="service-status" id="llm-status">Status: <span class="status-dot">🟡</span> Checking...</div>
                         <div class="service-info">Port: 8080</div>
@@ -534,7 +555,7 @@ DASHBOARD_HTML = """
                     <div class="service-card">
                         <h3>🎤 Voice Assistant</h3>
                         <div class="service-status" id="voice-status">Status: <span class="status-dot">🟡</span> Checking...</div>
-                        <div class="service-info">Interface: Voice Interface</div>
+                        <div class="service-info">Endpoint: {{ services['voice_assistant']['endpoint'] }}</div>
                     </div>
                     <div class="service-card">
                         <h3>🔍 RAG System</h3>
@@ -556,13 +577,18 @@ DASHBOARD_HTML = """
                     <h3>💬 Chat Interface</h3>
                     <div class="chat-input-container">
                         <input type="text" class="chat-input" id="chat-input" placeholder="Type your message here...">
-                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording">
-                            🎤
-                        </button>
+                        <button class="voice-button" id="voice-button" title="Click to start/stop voice recording">🎤</button>
+                        <div class="mode-toggle">
+                            <button class="mode-btn" id="ptt-btn" title="Push-to-talk mode">PTT</button>
+                            <button class="mode-btn" id="conv-btn" title="Conversational mode">Conversational</button>
+                            <button class="end-voice-btn" id="end-voice-btn" title="End conversation">End</button>
+                            <span id="mode-badge" style="margin-left:6px; font-size:0.85em; color:#6e6e73;">Mode: PTT</span>
+                        </div>
                         <button class="chat-button" id="chat-button">Send</button>
-                        <button class="stop-conversation-btn" id="stop-conversation-btn" title="Stop conversational mode" style="display: none;">
-                            🛑
-                        </button>
+                        <button class="stop-conversation-btn" id="stop-conversation-btn" title="Stop conversational mode" style="display: none;">🛑</button>
+                    </div>
+                    <div class="waveform-wrap" id="waveform-wrap">
+                        <canvas id="waveform-canvas"></canvas>
                     </div>
                     <div class="chat-history" id="chat-history">
                         <div class="chat-message chat-assistant">Hello! I am MacBot. How can I help you today?</div>
@@ -618,19 +644,11 @@ DASHBOARD_HTML = """
         </div>
     </div>
     
-    <!-- Try to load Socket.IO from CDN; app still works without it (HTTP/SSE fallback) -->
-    <script>
-      (function() {
-        var script = document.createElement('script');
-        script.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
-        script.async = true;
-        script.onerror = function() {
-          console.warn('Socket.IO CDN failed to load; using HTTP/SSE fallback only');
-        };
-        document.head.appendChild(script);
-      })();
-    </script>
-    <script>
+    <!-- Load Socket.IO from CDN (optional) -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- Robust external script to avoid inline parse issues -->
+    <script src="/static/dashboard.js"></script>
+    <script type="application/json" id="legacy-inline-js">
         // Global variables
         let isRecording = false;
         let mediaRecorder = null;
@@ -1496,7 +1514,7 @@ def api_stats():
     """API endpoint for system statistics"""
     global system_stats
     system_stats = get_system_stats()
-    print(f"📊 WEB DASHBOARD: Stats API called - CPU: {system_stats.get('cpu_percent', 'N/A')}%, RAM: {system_stats.get('memory_percent', 'N/A')}%, Disk: {system_stats.get('disk_percent', 'N/A')}%")
+    print(f"📊 WEB DASHBOARD: Stats API called - CPU: {system_stats.get('cpu', 'N/A')}%, RAM: {system_stats.get('ram', 'N/A')}%, Disk: {system_stats.get('disk', 'N/A')}%")
     return jsonify(system_stats)
 
 @app.route('/api/services')
@@ -1550,6 +1568,33 @@ def api_services():
         logger.error(f"Error checking service status: {e}")
 
     return jsonify(service_status)
+
+@app.route('/api/metrics')
+def api_metrics():
+    """Proxy to orchestrator metrics for UI consumption"""
+    try:
+        host, port = CFG.get_orchestrator_host_port()
+        # Allow a slightly higher timeout due to process introspection
+        r = requests.get(f"http://{host}:{port}/metrics", timeout=5)
+        if r.ok:
+            return jsonify(r.json())
+        return jsonify({'success': False, 'error': f'orc responded {r.status_code}'}), 502
+    except Exception as e:
+        logger.error(f"Metrics proxy error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/pipeline-check')
+def api_pipeline_check():
+    """Proxy orchestrator pipeline-check for UI."""
+    try:
+        host, port = CFG.get_orchestrator_host_port()
+        r = requests.get(f"http://{host}:{port}/pipeline-check", timeout=5)
+        if r.ok:
+            return jsonify(r.json())
+        return jsonify({'success': False, 'error': f'orc responded {r.status_code}'}), 502
+    except Exception as e:
+        logger.error(f"Pipeline proxy error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/stream')
 def stream():
@@ -1620,6 +1665,20 @@ def api_mic_check():
         return (jsonify(r.json()), r.status_code)
     except Exception as e:
         logger.warning(f"Mic check proxy failed: {e}")
+        return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
+
+@app.route('/api/assistant-speak', methods=['POST'])
+def api_assistant_speak():
+    """Proxy text-to-speech request to the voice assistant control server."""
+    try:
+        data = request.get_json() or {}
+        text = (data.get('text') or '').strip()
+        if not text:
+            return jsonify({'success': False, 'error': 'text required', 'code': 'validation_error'}), 400
+        r = requests.post(f"http://{va_host}:{va_port}/speak", json={'text': text}, timeout=5)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        logger.warning(f"assistant speak proxy failed: {e}")
         return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
 
 @app.route('/api/assistant-event', methods=['POST'])
@@ -1808,8 +1867,18 @@ def health_check():
         }), 500
 
 # WebSocket Event Handlers
+def _serialize_conversation_state():
+    try:
+        cs = dict(conversation_state)
+        la = cs.get('last_activity')
+        if isinstance(la, datetime):
+            cs['last_activity'] = la.isoformat()
+        return cs
+    except Exception:
+        return conversation_state
+
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth=None):
     """Handle WebSocket connection"""
     # In Flask-SocketIO, we can get the client ID from the socketio context
     logger.info("Client connected")
@@ -1817,7 +1886,7 @@ def handle_connect():
     
     # Send current state to new client
     emit('state_update', {
-        'conversation_state': conversation_state,
+        'conversation_state': _serialize_conversation_state(),
         'system_stats': get_system_stats(),
         'service_status': service_status,
         'conversation_history': list(conversation_history)
@@ -2054,15 +2123,20 @@ def process_voice_with_whisper(base64_audio: str) -> str:
 
         if os.path.exists(whisper_bin) and os.path.exists(whisper_model):
             try:
+                # Use whisper.cpp proper flags: -otxt to write txt, -of to set output base (without extension)
+                base = os.path.splitext(wav_path)[0]
                 result = subprocess.run([
-                    whisper_bin, '-m', whisper_model, '-f', wav_path, '--output-txt'
+                    whisper_bin, '-m', whisper_model, '-f', wav_path, '-otxt', '-of', base
                 ], capture_output=True, text=True, timeout=60)
 
                 if result.returncode == 0:
-                    txt_file = wav_path.replace('.wav', '.txt')
+                    txt_file = base + '.txt'
                     if os.path.exists(txt_file):
                         with open(txt_file, 'r') as f:
-                            transcription = f.read().strip()
+                            transcription = (f.read() or '').strip()
+                        # Treat special token from whisper.cpp as no-speech
+                        if '[BLANK_AUDIO]' in transcription:
+                            transcription = ''
                         os.unlink(txt_file)
                         return transcription or "No speech detected"
                     else:
@@ -2284,7 +2358,7 @@ def start_dashboard(host='0.0.0.0', port=3000):
                 socketio.emit('state_update', {
                     'system_stats': get_system_stats(),
                     'service_status': service_status,
-                    'conversation_state': conversation_state,
+                    'conversation_state': _serialize_conversation_state(),
                     'conversation_history': list(conversation_history)
                 })
                 time.sleep(5)  # Update every 5 seconds

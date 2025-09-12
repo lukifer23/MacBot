@@ -273,11 +273,25 @@ class MacBotOrchestrator:
                 return False
             
             # Build command to start llama-server directly
+            # Determine threads: if config is <=0, compute a higher value favoring performance
+            cfg_threads = CFG.get_llm_threads()
+            try:
+                logical = os.cpu_count() or 1
+            except Exception:
+                logical = 1
+            try:
+                import psutil as _ps
+                physical = _ps.cpu_count(logical=False) or (logical // 2) or 1
+            except Exception:
+                physical = (logical // 2) or 1
+            # Double physical cores but don't exceed logical
+            computed_threads = cfg_threads if cfg_threads and cfg_threads > 0 else min(logical, max(1, physical * 2))
+
             cmd = [
                 os.path.join(os.getcwd(), 'models', 'llama.cpp', 'build', 'bin', 'llama-server'),
                 '-m', model_path,
                 '-c', str(CFG.get_llm_context_length()),
-                '-t', str(CFG.get_llm_threads()),
+                '-t', str(computed_threads),
                 '-ngl', '999',  # offload max layers to Metal
                 '--port', '8080',
                 '--host', '127.0.0.1'
@@ -322,9 +336,9 @@ class MacBotOrchestrator:
 
                         if model_name and mem_info:
                             rss_mb = mem_info[0] / (1024*1024)
-                            logger.info(f"✅ llama.cpp server ready | model={model_name} | RSS={rss_mb:.1f} MB | mem%={mem_info[1]:.2f}")
+                            logger.info(f"✅ llama.cpp server ready | model={model_name} | ctx={CFG.get_llm_context_length()} | threads={computed_threads} | RSS={rss_mb:.1f} MB | mem%={mem_info[1]:.2f}")
                         elif model_name:
-                            logger.info(f"✅ llama.cpp server ready | model={model_name}")
+                            logger.info(f"✅ llama.cpp server ready | model={model_name} | ctx={CFG.get_llm_context_length()} | threads={computed_threads}")
                         else:
                             logger.info("✅ llama.cpp server ready")
                         return True
@@ -604,6 +618,119 @@ class MacBotOrchestrator:
                 }
             logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())}")
             return jsonify({'processes': procs, 'req_id': req_id})
+
+        @app.route('/metrics')
+        def metrics():
+            req_id = str(uuid.uuid4())
+            data = {'req_id': req_id, 'timestamp': time.time()}
+            # LLM metrics
+            llm = {}
+            try:
+                models_ep = CFG.get_llm_models_endpoint()
+                r = requests.get(models_ep, timeout=2)
+                if r.ok:
+                    j = r.json()
+                    models = j.get('data') or j.get('models') or []
+                    if isinstance(models, list) and models:
+                        m0 = models[0]
+                        llm['model'] = m0.get('id') or m0.get('name') or m0.get('model')
+                llm['context'] = CFG.get_llm_context_length()
+                llm['threads'] = CFG.get_llm_threads()
+                llm['gpu_layers'] = 999
+                # process RSS
+                p = self.processes.get('llama')
+                if p and p.poll() is None:
+                    try:
+                        rss = psutil.Process(p.pid).memory_info().rss
+                        llm['rss_mb'] = round(rss / (1024*1024), 1)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"metrics llm error: {e}")
+            data['llm'] = llm
+
+            # Voice assistant info
+            va = {}
+            try:
+                vhost, vport = CFG.get_voice_assistant_host_port()
+                r = requests.get(f"http://{vhost}:{vport}/info", timeout=2)
+                if r.ok:
+                    va = r.json()
+            except Exception as e:
+                logger.debug(f"metrics va error: {e}")
+            data['voice_assistant'] = va
+
+            # RAG stats
+            rag = {}
+            try:
+                rhost, rport = CFG.get_rag_host_port()
+                r = requests.get(f"http://{rhost}:{rport}/api/stats", timeout=2)
+                if r.ok:
+                    rag = r.json()
+            except Exception as e:
+                logger.debug(f"metrics rag error: {e}")
+            data['rag'] = rag
+
+            return jsonify(data)
+
+        @app.route('/pipeline-check')
+        def pipeline_check():
+            """Lightweight end-to-end readiness check across components."""
+            results = {'timestamp': time.time()}
+            # LLM quick chat
+            try:
+                chat_ep = CFG.get_llm_chat_endpoint()
+                payload = {
+                    "model": "local",
+                    "messages": [{"role":"user","content":"ping"}],
+                    "max_tokens": 8,
+                    "temperature": 0.1
+                }
+                r = requests.post(chat_ep, json=payload, timeout=5)
+                results['llm'] = {'ok': r.ok, 'code': r.status_code}
+            except Exception as e:
+                results['llm'] = {'ok': False, 'error': str(e)}
+
+            # STT presence
+            try:
+                from . import config as _C
+                stt_bin = _C.get_stt_bin()
+                stt_model = _C.get_stt_model()
+                results['stt'] = {
+                    'bin_exists': os.path.exists(stt_bin),
+                    'model_exists': os.path.exists(stt_model)
+                }
+            except Exception as e:
+                results['stt'] = {'ok': False, 'error': str(e)}
+
+            # TTS via voice assistant info
+            try:
+                vh, vp = CFG.get_voice_assistant_host_port()
+                r = requests.get(f"http://{vh}:{vp}/info", timeout=3)
+                if r.ok:
+                    info = r.json()
+                    results['tts'] = {'engine': (info.get('tts') or {}).get('engine'), 'ok': (info.get('tts') or {}).get('engine') is not None}
+                else:
+                    results['tts'] = {'ok': False, 'code': r.status_code}
+            except Exception as e:
+                results['tts'] = {'ok': False, 'error': str(e)}
+
+            # RAG
+            try:
+                rh, rp = CFG.get_rag_host_port()
+                r = requests.get(f"http://{rh}:{rp}/health", timeout=3)
+                results['rag'] = {'ok': r.ok, 'code': r.status_code}
+            except Exception as e:
+                results['rag'] = {'ok': False, 'error': str(e)}
+
+            results['overall'] = all([
+                results.get('llm',{}).get('ok', True),
+                results.get('stt',{}).get('bin_exists', True),
+                results.get('stt',{}).get('model_exists', True),
+                results.get('tts',{}).get('ok', True),
+                results.get('rag',{}).get('ok', True),
+            ])
+            return jsonify(results)
 
         host, port = CFG.get("services.orchestrator.host", "0.0.0.0"), int(CFG.get("services.orchestrator.port", 8090))
 
