@@ -952,7 +952,7 @@ def main():
                         yaml.safe_dump(data, f)
                 except Exception as e:
                     logger.warning(f"Failed to persist output device: {e}")
-                return jsonify({'ok': True, 'default': sd.default.device})
+                return jsonify({'ok': True, 'default': list(sd.default.device) if sd.default.device else None})
             except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1054,7 +1054,7 @@ def main():
                         'sample_rate': SAMPLE_RATE,
                         'block_sec': BLOCK_DUR,
                         'vad_threshold': VAD_THRESH,
-                        'devices_default': (sd.default.device if sd else None)
+                        'devices_default': (list(sd.default.device) if sd and sd.default.device else None)
                     },
                     'conversation': convo
                 })
