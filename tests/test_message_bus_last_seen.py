@@ -19,7 +19,7 @@ def test_last_seen_updates_on_message_exchange():
     assert after_c2 == initial_c2
 
     status = bus.get_service_status()
-    assert status["service"]["clients"]["client1"] == after_c1
+    assert status["service"]["clients"]["client1"]["last_seen"] == after_c1
 
     time.sleep(0.02)
     bus.broadcast({"type": "all"})
