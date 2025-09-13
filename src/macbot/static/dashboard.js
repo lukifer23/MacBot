@@ -331,7 +331,7 @@
     if (pttBtn) pttBtn.classList.toggle('active', m === 'ptt');
     if (convBtn) convBtn.classList.toggle('active', m === 'conversational');
     if (endBtn) endBtn.style.display = (m === 'conversational') ? 'inline-block' : 'none';
-    if (modeBadge) modeBadge.textContent = 'Mode: ' + (m === 'ptt' ? 'PTT' : 'Conversational (auto-stop)');
+    if (modeBadge) modeBadge.textContent = 'Mode: ' + (m === 'ptt' ? 'PTT' : 'Conversational (continuous)');
   }
 
   function endConversation() {
@@ -384,13 +384,20 @@
         if (energy > energyThresh) lastActive = Date.now();
         if (state.isRecording && state.mode === 'conversational') {
           if (Date.now() - lastActive > silenceMs) {
-            // Auto-stop to process the utterance
+            // Auto-stop to process the utterance, but restart recording after processing
             try { state.mediaRecorder && state.mediaRecorder.stop(); } catch(_){}
             try { state.mediaRecorder && state.mediaRecorder.stream.getTracks().forEach(t => t.stop()); } catch(_){}
             state.isRecording = false;
             setStatus('Processing voice...', 'info');
             teardownWaveform();
             const vb = byId('voice-button'); if (vb) vb.classList.remove('recording');
+            
+            // Restart recording after a short delay for conversational mode
+            setTimeout(() => {
+              if (state.mode === 'conversational') {
+                startRecording();
+              }
+            }, 1000);
           }
         }
       }

@@ -885,17 +885,22 @@ def main():
             try:
                 data = request.get_json() or {}
                 text = str(data.get('text', '')).strip()
+                logger.info(f"TTS request received: '{text[:50]}{'...' if len(text) > 50 else ''}'")
                 if not text:
                     return jsonify({'ok': False, 'error': 'text required'}), 400
                 # ensure TTS is ready
                 if tts_manager.engine is None or tts_manager.engine_type != 'piper':
+                    logger.info("TTS engine not ready, initializing...")
                     try:
                         tts_manager.init_engine()
-                    except Exception:
+                    except Exception as e:
+                        logger.error(f"TTS engine init failed: {e}")
                         pass
                 if tts_manager.engine is None:
+                    logger.error("TTS engine still not loaded after init attempt")
                     return jsonify({'ok': False, 'error': 'TTS engine not loaded'}), 503
                 # speak asynchronously so HTTP doesn't block on long TTS
+                logger.info("Starting TTS playback...")
                 threading.Thread(target=speak, args=(text,), daemon=True).start()
                 return jsonify({'ok': True})
             except Exception as e:
