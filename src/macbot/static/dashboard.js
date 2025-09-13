@@ -135,6 +135,18 @@
   }
   window.updateServiceStatus = updateServiceStatus;
 
+  async function restartService(name) {
+    try {
+      const r = await fetch('/api/service/' + name + '/restart', { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok || !data.success) {
+        console.warn('restart failed', data);
+      }
+      await updateServiceStatus();
+    } catch (e) { console.warn('restart error', e); }
+  }
+  window.restartService = restartService;
+
   function attachListeners() {
     const sendBtn = byId('chat-button');
     const input = byId('chat-input');

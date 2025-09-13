@@ -1490,27 +1490,40 @@ def get_system_stats():
 def check_service_health():
     """Check health of all services"""
     try:
-        # Check llama.cpp server
+        orchestrator_ok = False
         try:
-            response = requests.get(llm_models_endpoint, timeout=2)
-            service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
-        except:
-            service_status['llama']['status'] = 'stopped'
-        
-        # Check voice assistant via control health endpoint
-        try:
-            va_resp = requests.get(f"http://{va_host}:{va_port}/health", timeout=2)
-            service_status['voice_assistant']['status'] = 'running' if va_resp.status_code == 200 else 'stopped'
+            orc_resp = requests.get(f"http://{orc_host}:{orc_port}/services", timeout=1.5)
+            if orc_resp.status_code == 200:
+                data = orc_resp.json().get('services', {})
+                for name in service_status.keys():
+                    if name in data:
+                        service_status[name]['status'] = 'running' if data[name].get('running') else 'stopped'
+                orchestrator_ok = True
         except Exception:
-            service_status['voice_assistant']['status'] = 'stopped'
-        
-        # Check RAG service
-        try:
-            response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
-            service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
-        except:
-            service_status['rag']['status'] = 'stopped'
-        
+            orchestrator_ok = False
+
+        if not orchestrator_ok:
+            try:
+                response = requests.get(llm_models_endpoint, timeout=2)
+                service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
+            except Exception:
+                service_status['llama']['status'] = 'stopped'
+
+            try:
+                va_resp = requests.get(f"http://{va_host}:{va_port}/health", timeout=2)
+                service_status['voice_assistant']['status'] = 'running' if va_resp.status_code == 200 else 'stopped'
+            except Exception:
+                service_status['voice_assistant']['status'] = 'stopped'
+
+            try:
+                response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
+                service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
+            except Exception:
+                service_status['rag']['status'] = 'stopped'
+
+            # Web GUI is this dashboard
+            service_status['web_gui']['status'] = 'running'
+
     except Exception as e:
         logger.error(f"Error checking service health: {e}")
 
@@ -1537,53 +1550,10 @@ def api_stats():
 @app.route('/api/services')
 def api_services():
     """API endpoint for service status"""
-    # services API
-    # Check actual service health
     try:
-        # Prefer orchestrator aggregation if available
-        orchestrator_ok = False
-        try:
-            orc_resp = requests.get(f"http://{orc_host}:{orc_port}/status", timeout=1.5)
-            if orc_resp.status_code == 200:
-                data = orc_resp.json().get('processes', {})
-                # Map orchestrator process names to dashboard services
-                service_status['llama']['status'] = 'running' if data.get('llama', {}).get('running') else 'stopped'
-                service_status['web_gui']['status'] = 'running' if data.get('web_gui', {}).get('running') else 'stopped'
-                service_status['rag']['status'] = 'running' if data.get('rag', {}).get('running') else 'stopped'
-                service_status['voice_assistant']['status'] = 'running' if data.get('voice_assistant', {}).get('running') else 'stopped'
-                orchestrator_ok = True
-        except Exception:
-            orchestrator_ok = False
-
-        if not orchestrator_ok:
-            # Direct checks as fallback
-            # LLM server
-            try:
-                response = requests.get(llm_models_endpoint, timeout=2)
-                service_status['llama']['status'] = 'running' if response.status_code == 200 else 'stopped'
-            except:
-                service_status['llama']['status'] = 'stopped'
-
-            # RAG server
-            try:
-                response = requests.get(f"http://{rag_host}:{rag_port}/health", timeout=2)
-                service_status['rag']['status'] = 'running' if response.status_code == 200 else 'stopped'
-            except:
-                service_status['rag']['status'] = 'stopped'
-
-            # Voice assistant via control endpoint
-            try:
-                va_resp = requests.get(f"http://{va_host}:{va_port}/health", timeout=2)
-                service_status['voice_assistant']['status'] = 'running' if va_resp.status_code == 200 else 'stopped'
-            except Exception:
-                service_status['voice_assistant']['status'] = 'stopped'
-        
-        # Web GUI is always running if this endpoint is accessible
-        service_status['web_gui']['status'] = 'running'
-        
+        check_service_health()
     except Exception as e:
         logger.error(f"Error checking service status: {e}")
-
     return jsonify(service_status)
 
 @app.route('/api/metrics')
@@ -1611,6 +1581,18 @@ def api_pipeline_check():
         return jsonify({'success': False, 'error': f'orc responded {r.status_code}'}), 502
     except Exception as e:
         logger.error(f"Pipeline proxy error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/service/<name>/restart', methods=['POST'])
+def api_service_restart(name: str):
+    """Proxy restart requests to orchestrator."""
+    try:
+        host, port = CFG.get_orchestrator_host_port()
+        r = requests.post(f"http://{host}:{port}/service/{name}/restart", timeout=10)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        logger.error(f"Service restart proxy error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/stream')
