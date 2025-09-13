@@ -150,6 +150,7 @@ tools:
 - **Path**: Absolute or relative path to your GGUF model file
 - **Context Length**: Maximum context window (reduce for lower memory usage)
 - **Threads**: Number of CPU threads to use (-1 for all available)
+- **Max Tokens**: Maximum number of completion tokens per response (dashboard and voice assistant both honor `models.llm.max_tokens`). Increase for longer replies.
 
 ### STT Models
 - Whisper.cpp is used via CLI for browser audio; python bindings (if present) are used as a fallback.
@@ -221,8 +222,14 @@ Requests missing or using invalid tokens receive `401 Unauthorized`. Exceeding
 the rate limit returns `429 Too Many Requests`.
 
 ### Orchestrator
+- **Host/Port**: Defaults to `127.0.0.1:8090` for control API
 - **Check Interval**: How often to check service health (seconds)
 - **Auto Restart**: Automatically restart failed services
+
+### Voice Assistant Performance
+- `voice_assistant.performance.transcription_cache_window_sec` (float, default `2.0`):
+  - Controls how many seconds of most recent audio are hashed for the streaming transcription cache key.
+  - Smaller values reduce hashing cost; larger values can improve cache reuse for slow‑changing buffers.
 
 ## Tool Configuration
 

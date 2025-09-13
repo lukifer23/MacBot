@@ -31,7 +31,7 @@
 # Install system dependencies
 xcode-select --install
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install cmake ffmpeg portaudio python@3.13 git git-lfs
+brew install cmake ffmpeg portaudio python@3.11 git git-lfs
 ```
 
 ### 1. Clone and Setup
@@ -46,7 +46,7 @@ git lfs track "*.gguf"
 git lfs track "*.bin"
 
 # Create virtual environment
-python3.13 -m venv macbot_env
+python3.11 -m venv macbot_env
 source macbot_env/bin/activate
 
 # Install dependencies
@@ -128,12 +128,15 @@ Note:
 - The Voice Assistant now exposes a lightweight control server (default: http://localhost:8123) used by the Web Dashboard to send interruption requests and perform health checks.
 - Ensure `ffmpeg` is installed for voice input from the browser (used to convert WebM/Opus to WAV for Whisper).
 - Assistant UI states: The assistant now notifies the dashboard about speaking start/end/interrupt events so the banner shows Listening / Speaking / Interrupted / Ready in real time.
+- Orchestrator API binds to http://127.0.0.1:8090 by default for safety; the Web Dashboard proxies common calls.
 
 ### Quick Verify
 
-After starting, run the verification script to check core endpoints:
+After starting, run the verification to check core endpoints:
 
 ```
+make verify
+# or
 python scripts/verify_setup.py
 ```
 ```
@@ -330,7 +333,7 @@ docker run -v $(pwd):/app -p 3000:3000 macbot:dev
 
 ### Software
 - **macOS**: 12.0+ (Monterey or later)
-- **Python**: 3.13+ (optimized for Apple Silicon)
+- **Python**: 3.11+ (recommended; Apple Silicon optimized)
 - **Git LFS**: For model file management
 - **TTS Engines**: Piper (neural quality) or pyttsx3 (fallback)
 - **STT Engine**: Whisper.cpp v1.7.6 with Metal acceleration

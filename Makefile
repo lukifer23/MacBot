@@ -66,3 +66,7 @@ run-orchestrator:
 
 clean:
 	rm -rf $(VENV) $(WHISPER_DIR) $(LLAMA_DIR) __pycache__ */__pycache__
+
+.PHONY: verify
+verify:
+	$(ACT); $(PY) scripts/verify_setup.py

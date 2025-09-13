@@ -5,7 +5,7 @@ logging:
 models:
   llm:
     context_length: 8192
-    max_tokens: 200
+    max_tokens: 1024
     path: models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf
     server_url: http://localhost:8080/v1/chat/completions
     temperature: 0.4
@@ -16,11 +16,9 @@ models:
     model: models/whisper.cpp/models/ggml-base.en.bin
   tts:
     piper:
-      # Use quantized model as primary (70% smaller, 2-3x faster)
-      voice_path: /Users/admin/Downloads/MacBot/optimized_models/piper_dynamic_quantized.onnx
-      # Fallback to original model if quantized fails
-      fallback_path: /Users/admin/Downloads/MacBot/piper_voices/en_US-amy-medium/model.onnx
-      # coreml_path: /Users/admin/Downloads/MacBot/optimized_models/piper_model.mlpackage
+      # Use repo-relative voice model by default; override via /set-voice
+      voice_path: piper_voices/en_US-amy-medium/model.onnx
+      # coreml_path: optimized_models/piper_model.mlpackage
     speed: 1.2
     voice: en_US-amy-medium
 performance:
@@ -42,6 +40,8 @@ prompts:
     '
 services:
   orchestrator:
+    host: 127.0.0.1
+    port: 8090
     auto_restart: true
     check_interval: 10
   rag_server:
@@ -108,6 +108,7 @@ voice_assistant:
     transcription_cache_size: 10
     min_chunk_duration: 0.5
     transcription_interval: 0.3
+    transcription_cache_window_sec: 2.0
     tts_buffer_size: 180
     tts_cache_size: 100
     tts_cache_enabled: true

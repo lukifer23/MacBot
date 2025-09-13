@@ -294,7 +294,7 @@ python -m macbot.web_dashboard
 
 ### **Software**
 - **macOS**: 12.0+ (Monterey or later)
-- **Python**: 3.13+ (optimized for Apple Silicon)
+- **Python**: 3.11+ (recommended; Apple Silicon optimized)
 - **Homebrew**: For system dependencies
 - **TTS Engines**: Piper (primary) + Kokoro framework
 - **STT Engine**: Whisper.cpp v1.7.6 with Metal acceleration

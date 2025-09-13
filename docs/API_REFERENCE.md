@@ -123,6 +123,18 @@ MacBot provides several API endpoints for interacting with the system programmat
   }
   ```
 
+## Orchestrator API
+**Base URL:** `http://127.0.0.1:8090`
+
+The orchestrator provides a control and observability API for all services. By default, it binds to `127.0.0.1` for safety.
+
+- `GET /health` – Orchestrator health and summary
+- `GET /status` – Status summary of managed processes
+- `GET /services` – Machine-readable status for each managed service
+- `GET /metrics` – Consolidated metrics (LLM, VA, RAG)
+- `GET /pipeline-check` – Lightweight end-to-end readiness check
+- `POST /service/<name>/restart` – Restart a managed service (`voice_assistant`, `rag`, `web_gui`, `llama`)
+
 ### Service Status
 - `GET /api/services` - Service health and status
   ```json

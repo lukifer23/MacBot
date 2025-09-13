@@ -103,10 +103,23 @@ class AudioInterruptHandler:
         )
         self.playback_thread.start()
 
-        # Wait for playback to complete or be interrupted (bounded join)
-        self.playback_thread.join(timeout=10.0)
+        # Wait for playback to complete or be interrupted with adaptive timeout
+        try:
+            # Derive an expected duration based on samples and sample_rate, add a small cushion
+            expected_sec = max(3.0, min(120.0, (len(audio_data) / float(self.sample_rate)) + 1.0))
+        except Exception:
+            expected_sec = 15.0
+
+        self.playback_thread.join(timeout=expected_sec)
         if self.playback_thread.is_alive():
-            logger.warning("Audio playback thread did not terminate in time; forcing stop")
+            # Give one more grace period before forcing an interrupt
+            logger.warning(
+                f"Audio playback exceeded expected duration ({expected_sec:.1f}s); extending wait"
+            )
+            self.playback_thread.join(timeout=min(30.0, expected_sec))
+
+        if self.playback_thread.is_alive():
+            logger.warning("Audio playback still active; forcing interruption")
             self.interrupt_requested = True
             self._stop_current_playback()
 

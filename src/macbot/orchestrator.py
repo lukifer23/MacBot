@@ -137,37 +137,54 @@ class MacBotOrchestrator:
         return result
     
     def get_default_config(self) -> dict:
-        """Default configuration if none exists"""
+        """Default configuration if none exists.
+
+        This mirrors the YAML schema used by macbot.config to avoid key
+        mismatches between services.
+        """
         return {
-            'llama': {
-                'server_url': 'http://localhost:8080/v1/chat/completions',
-                'temperature': 0.4,
-                'max_tokens': 200,
-                'context_size': 4096,
-                'threads': 4,
-                'gpu_layers': 999
+            'models': {
+                'llm': {
+                    'server_url': 'http://localhost:8080/v1/chat/completions',
+                    'path': 'models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+                    'temperature': 0.4,
+                    'max_tokens': 200,
+                    'context_length': 4096,
+                    'threads': -1,
+                },
+                'stt': {
+                    'model': 'models/whisper.cpp/models/ggml-base.en.bin',
+                    'bin': 'models/whisper.cpp/build/bin/whisper-cli',
+                    'language': 'en'
+                },
+                'tts': {
+                    'voice': 'af_heart',
+                    'speed': 1.0,
+                }
             },
-            'whisper': {
-                'model': 'models/whisper.cpp/models/ggml-base.en.bin',
-                'language': 'en'
-            },
-            'tts': {
-                'voice': 'af_heart',
-                'speed': 1.0
-            },
-            'web_gui': {
-                'port': 3000,
-                'host': '0.0.0.0'
-            },
-            'rag': {
-                'enabled': True,
-                'vector_db': 'chromadb',
-                'embedding_model': 'sentence-transformers/all-MiniLM-L6-v2'
+            'services': {
+                'web_dashboard': {
+                    'host': '0.0.0.0',
+                    'port': 3000
+                },
+                'rag_server': {
+                    'host': 'localhost',
+                    'port': 8001
+                },
+                'voice_assistant': {
+                    'host': 'localhost',
+                    'port': 8123
+                },
+                'orchestrator': {
+                    'host': '127.0.0.1',
+                    'port': 8090
+                }
             },
             'tools': {
-                'web_search': True,
-                'browser_automation': True,
-                'file_operations': True
+                'enabled': ['web_search', 'screenshot', 'app_launcher', 'system_monitor', 'weather', 'rag_search'],
+                'app_launcher': {
+                    'allowed_apps': ['Safari', 'Terminal', 'Finder', 'Calculator']
+                }
             }
         }
     

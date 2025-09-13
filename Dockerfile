@@ -33,15 +33,15 @@ RUN mkdir -p rag_data rag_database logs
 
 # Build whisper.cpp and llama.cpp (if models are included)
 # Note: In production, models should be mounted as volumes
-RUN if [ -d "whisper.cpp" ]; then \
-        cd whisper.cpp && \
+RUN if [ -d "models/whisper.cpp" ]; then \
+        cd models/whisper.cpp && \
         cmake -S . -B build -DWHISPER_COREML=0 && \
         cmake --build build -j$(nproc) && \
         cd ..; \
     fi
 
-RUN if [ -d "llama.cpp" ]; then \
-        cd llama.cpp && \
+RUN if [ -d "models/llama.cpp" ]; then \
+        cd models/llama.cpp && \
         cmake -S . -B build -DLLAMA_METAL=OFF && \
         cmake --build build -j$(nproc) && \
         cd ..; \
@@ -53,11 +53,11 @@ RUN chown -R macbot:macbot /app
 USER macbot
 
 # Expose ports
-EXPOSE 3000 8080 8081
+EXPOSE 3000 8080 8001 8123 8090 8082
 
-# Health check
+# Health check (prefer orchestrator overall system health)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:3000/api/stats')" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8090/health')" || exit 1
 
 # Default command
-CMD ["python", "orchestrator.py"]
+CMD ["python", "-m", "macbot.orchestrator"]

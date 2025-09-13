@@ -20,6 +20,7 @@ try:
 except Exception as _sf_imp_err:
     sf = None  # type: ignore
 import requests
+import hashlib
 import psutil
 import logging
 from .logging_utils import setup_logger
@@ -45,15 +46,30 @@ _WD_HOST, _WD_PORT = CFG.get_web_dashboard_host_port()
 VA_HOST, VA_PORT = CFG.get_voice_assistant_host_port()
 
 def _notify_dashboard_state(event_type: str, message: str = "") -> None:
-    """Best-effort POST to dashboard to inform of assistant state changes."""
+    """Non-blocking notify with small retry/backoff to improve reliability."""
+    url = f"http://{_WD_HOST}:{_WD_PORT}/api/assistant-event"
+    payload = {"type": event_type}
+    if message:
+        payload["message"] = message
+
+    def _send():
+        delay = 0.15
+        for _ in range(3):
+            try:
+                requests.post(url, json=payload, timeout=0.8)
+                return
+            except Exception as e:
+                try:
+                    time.sleep(delay)
+                except Exception:
+                    pass
+                delay *= 2
+        logger.debug("Dashboard notify dropped after retries")
+
     try:
-        url = f"http://{_WD_HOST}:{_WD_PORT}/api/assistant-event"
-        payload = {"type": event_type}
-        if message:
-            payload["message"] = message
-        requests.post(url, json=payload, timeout=1.0)
+        threading.Thread(target=_send, daemon=True).start()
     except Exception as e:
-        logger.debug(f"Dashboard notify failed: {e}")
+        logger.debug(f"Notify thread failed: {e}")
 
 # No heavy optional deps needed here; RAG is handled via HTTP client.
 
@@ -334,6 +350,8 @@ class StreamingTranscriber:
         self._transcription_cache = {}
         self._cache_size = CFG.get_transcription_cache_size()
         self._min_chunk_size = int(CFG.get_min_chunk_duration() * sample_rate)
+        cwin_sec = CFG.get_transcription_cache_window_sec()
+        self._cache_window_samples = int(max(1.0, cwin_sec) * sample_rate)
         
         # Performance tracking
         self._transcription_count = 0
@@ -354,10 +372,15 @@ class StreamingTranscriber:
         if (len(self._buffer) >= self._min_chunk_size and 
             current_time - self._last_transcription_time > self._transcription_interval):
             
-            # Check cache first
-            buffer_hash = hash(self._buffer.tobytes())
-            if buffer_hash in self._transcription_cache:
-                text = self._transcription_cache[buffer_hash]
+            # Check cache using a digest of the last 2s window to reduce hashing cost
+            try:
+                win = self._buffer[-self._cache_window_samples:] if len(self._buffer) > self._cache_window_samples else self._buffer
+                digest = hashlib.sha1(win.tobytes()).hexdigest()
+            except Exception:
+                digest = str(len(self._buffer))
+
+            if digest in self._transcription_cache:
+                text = self._transcription_cache[digest]
             else:
                 text = transcribe(self._buffer)
                 # Cache the result
@@ -365,7 +388,7 @@ class StreamingTranscriber:
                     # Remove oldest entry
                     oldest_key = next(iter(self._transcription_cache))
                     del self._transcription_cache[oldest_key]
-                self._transcription_cache[buffer_hash] = text
+                self._transcription_cache[digest] = text
                 self._transcription_count += 1
                 self._last_transcription_time = current_time
             

@@ -167,6 +167,17 @@ def _validate_config(config: Dict[str, Any]) -> None:
                     elif tool not in valid_tools:
                         warnings.append(f"Unknown tool in tools.enabled: {tool}")
     
+    # Validate performance tuning
+    try:
+        va_cfg = config.get("voice_assistant", {}) or {}
+        perf = va_cfg.get("performance", {}) if isinstance(va_cfg, dict) else {}
+        if isinstance(perf, dict) and "transcription_cache_window_sec" in perf:
+            tw = perf.get("transcription_cache_window_sec")
+            if not isinstance(tw, (int, float)) or tw <= 0 or tw > 10:
+                errors.append("voice_assistant.performance.transcription_cache_window_sec must be in (0, 10]")
+    except Exception:
+        pass
+
     # Report errors and warnings
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
@@ -346,6 +357,13 @@ def get_transcription_interval() -> float:
         return float(get("voice_assistant.performance.transcription_interval", 0.3))
     except Exception:
         return 0.3
+
+def get_transcription_cache_window_sec() -> float:
+    """Window size (seconds) used to key streaming transcription cache."""
+    try:
+        return float(get("voice_assistant.performance.transcription_cache_window_sec", 2.0))
+    except Exception:
+        return 2.0
 
 
 def get_tts_buffer_size() -> int:

@@ -21,6 +21,7 @@ from flask import Flask, render_template, jsonify, request, Response, stream_wit
 from flask_socketio import SocketIO, emit  # type: ignore
 import logging
 from .logging_utils import setup_logger
+from . import tools as tools_mod
 
 from .health_monitor import get_health_monitor
 
@@ -78,6 +79,26 @@ service_status = {
     'web_gui': {'status': 'running', 'port': wd_port, 'endpoint': f'http://{wd_host}:{wd_port}'}
 }
 
+# Small helper to improve resiliency of proxied HTTP calls
+def _request_with_retry(method: str, url: str, *, json_body=None, timeout: float = 5.0, retries: int = 2, backoff: float = 0.2):
+    last_exc = None
+    for i in range(max(1, retries + 1)):
+        try:
+            if method == 'GET':
+                return requests.get(url, timeout=timeout)
+            elif method == 'POST':
+                return requests.post(url, json=json_body or {}, timeout=timeout)
+            else:
+                raise ValueError('unsupported method')
+        except Exception as e:
+            last_exc = e
+            try:
+                time.sleep(backoff)
+            except Exception:
+                pass
+            backoff *= 2
+    raise last_exc if last_exc else RuntimeError('request failed')
+
 # API response helpers (non-breaking): include normalized fields while preserving legacy keys
 def _api_ok(payload: dict | None = None, message: str = "OK", extra: dict | None = None, status: int = 200):
     resp = {
@@ -130,7 +151,7 @@ def check_service_health():
     try:
         orchestrator_ok = False
         try:
-            orc_resp = requests.get(f"http://{orc_host}:{orc_port}/services", timeout=1.5)
+            orc_resp = _request_with_retry('GET', f"http://{orc_host}:{orc_port}/services", timeout=1.5, retries=1)
             if orc_resp.status_code == 200:
                 data = orc_resp.json().get('services', {})
                 for name in service_status.keys():
@@ -200,7 +221,7 @@ def api_metrics():
     try:
         host, port = CFG.get_orchestrator_host_port()
         # Allow a slightly higher timeout due to process introspection
-        r = requests.get(f"http://{host}:{port}/metrics", timeout=5)
+        r = _request_with_retry('GET', f"http://{host}:{port}/metrics", timeout=5, retries=1)
         if r.ok:
             return jsonify(r.json())
         return jsonify({'success': False, 'error': f'orc responded {r.status_code}'}), 502
@@ -213,7 +234,7 @@ def api_pipeline_check():
     """Proxy orchestrator pipeline-check for UI."""
     try:
         host, port = CFG.get_orchestrator_host_port()
-        r = requests.get(f"http://{host}:{port}/pipeline-check", timeout=5)
+        r = _request_with_retry('GET', f"http://{host}:{port}/pipeline-check", timeout=5, retries=1)
         if r.ok:
             return jsonify(r.json())
         return jsonify({'success': False, 'error': f'orc responded {r.status_code}'}), 502
@@ -227,7 +248,7 @@ def api_service_restart(name: str):
     """Proxy restart requests to orchestrator."""
     try:
         host, port = CFG.get_orchestrator_host_port()
-        r = requests.post(f"http://{host}:{port}/service/{name}/restart", timeout=10)
+        r = _request_with_retry('POST', f"http://{host}:{port}/service/{name}/restart", timeout=10, retries=1)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         logger.error(f"Service restart proxy error: {e}")
@@ -299,7 +320,7 @@ def api_mic_check():
     """Proxy mic check to the voice assistant control server.
     Helps trigger OS mic permission prompt and report status to UI."""
     try:
-        r = requests.post(f"http://{va_host}:{va_port}/mic-check", timeout=3)
+        r = _request_with_retry('POST', f"http://{va_host}:{va_port}/mic-check", timeout=3, retries=1)
         return (jsonify(r.json()), r.status_code)
     except Exception as e:
         logger.warning(f"Mic check proxy failed: {e}")
@@ -313,7 +334,7 @@ def api_assistant_speak():
         text = (data.get('text') or '').strip()
         if not text:
             return jsonify({'success': False, 'error': 'text required', 'code': 'validation_error'}), 400
-        r = requests.post(f"http://{va_host}:{va_port}/speak", json={'text': text}, timeout=5)
+        r = _request_with_retry('POST', f"http://{va_host}:{va_port}/speak", json_body={'text': text}, timeout=5, retries=1)
         return jsonify(r.json()), r.status_code
     except Exception as e:
         logger.warning(f"assistant speak proxy failed: {e}")
@@ -885,7 +906,7 @@ def process_with_llm(message: str) -> str:
                 {"role": "user", "content": message}
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": int(CFG.get_llm_max_tokens())
         }
         
         chat_endpoint = CFG.get_llm_chat_endpoint()
@@ -909,76 +930,50 @@ def process_with_llm(message: str) -> str:
         return f"LLM processing error: {str(e)}"
 
 def process_tools(message: str) -> Optional[str]:
-    """Process message for tool usage"""
-    message_lower = message.lower()
-    
+    """Process message for tool usage via shared tools module.
+
+    This avoids duplicating macOS integration logic here and keeps behavior
+    consistent with the voice assistant.
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return None
+
+    ml = msg.lower()
     try:
-        # Web search
-        if "search" in message_lower and ("weather" in message_lower or "for" in message_lower):
-            # Extract search query
-            if "weather" in message_lower:
-                # Extract location from weather search
-                if "st louis" in message_lower or "st. louis" in message_lower:
-                    location = "St. Louis, MO"
-                elif "weather for" in message_lower:
-                    location = message_lower.split("weather for")[-1].strip()
-                else:
-                    location = "current location"
-                
-                # Use Safari to search weather
-                search_url = f"https://www.google.com/search?q=weather+{location.replace(' ', '+')}"
-                subprocess.run(['open', '-a', 'Safari', search_url], check=True)  # type: ignore
-                return f"I've opened Safari and searched for weather in {location}. The results should be displayed in your browser."
-            
-            # General web search
-            query = message_lower.replace("search", "").replace("for", "").replace("the", "").strip()
-            search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            subprocess.run(['open', '-a', 'Safari', search_url], check=True)  # type: ignore
-            return f"I've opened Safari and searched for '{query}'. The results should be displayed in your browser."
-        
+        # Weather-specific search
+        if "weather" in ml and "search" in ml:
+            # Delegate to search; tools.get_weather uses configured default location
+            return tools_mod.get_weather()
+
+        # Generic web search
+        if "search" in ml and ("for" in ml or "web" in ml):
+            q = ml.replace("search", "").replace("for", "").replace("web", "").strip()
+            return tools_mod.web_search(q)
+
         # Website browsing
-        elif "browse" in message_lower or "open website" in message_lower or "go to" in message_lower:
-            # Extract URL
-            words = message.split()
-            for word in words:
+        if any(k in ml for k in ["browse", "open website", "go to"]):
+            for word in msg.split():
                 if word.startswith(("http://", "https://", "www.")):
-                    subprocess.run(['open', '-a', 'Safari', word], check=True)  # type: ignore
-                    return f"I've opened {word} in Safari for you to browse."
-            
-            # If no URL found, try to construct one
-            if "weather.com" in message_lower:
-                subprocess.run(['open', '-a', 'Safari', 'https://www.weather.com'], check=True)  # type: ignore
-                return "I've opened Weather.com in Safari for you."
-            elif "accuweather" in message_lower:
-                subprocess.run(['open', '-a', 'Safari', 'https://www.accuweather.com'], check=True)  # type: ignore
-                return "I've opened AccuWeather in Safari for you."
-        
+                    return tools_mod.browse_website(word)
+            # If no explicit URL, fall back to search
+            return tools_mod.web_search(msg.replace("browse", "").replace("open website", "").replace("go to", "").strip())
+
         # App opening
-        elif "open app" in message_lower or "launch" in message_lower:
-            app_name = message_lower.replace("open app", "").replace("launch", "").strip()
-            subprocess.run(['open', '-a', app_name], check=True)  # type: ignore
-            return f"I've opened {app_name} for you."
-        
+        if ("open app" in ml) or (ml.startswith("open ") and " app" in ml):
+            app_name = ml.replace("open app", "").strip()
+            return tools_mod.open_app(app_name)
+
         # Screenshot
-        elif "screenshot" in message_lower or "take picture" in message_lower:
-            import time
-            timestamp = int(time.time())
-            filename = f"screenshot_{timestamp}.png"
-            filepath = os.path.expanduser(f"~/Desktop/{filename}")
-            subprocess.run(['screencapture', filepath], check=True)  # type: ignore
-            return f"I've taken a screenshot and saved it to your Desktop as {filename}"
-        
+        if ("screenshot" in ml) or ("take picture" in ml):
+            return tools_mod.take_screenshot()
+
         # System info
-        elif "system info" in message_lower or "system status" in message_lower:
-            import psutil
-            cpu_percent = psutil.cpu_percent(interval=1)
-            memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            return f"System Status: CPU {cpu_percent}%, RAM {memory.percent}%, Disk {disk.percent}%"
-        
+        if "system info" in ml or "system status" in ml or ("system" in ml and "info" in ml):
+            return tools_mod.get_system_info()
+
         # No tool match found
         return None
-        
     except Exception as e:
         logger.error(f"Tool processing error: {e}")
         return f"Tool execution failed: {str(e)}"
