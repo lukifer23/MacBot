@@ -57,17 +57,24 @@ class MessageBus:
             del self.clients[client_id]
             logger.info(f"Client unregistered: {client_id}")
 
+    def touch_client(self, client_id: str) -> None:
+        """Refresh client's last_seen timestamp"""
+        if client_id in self.clients:
+            self.clients[client_id]['last_seen'] = datetime.now()
+
     def send_message(self, message: dict, target_client: Optional[str] = None, target_service: Optional[str] = None):
         """Send a message to specific client or service type"""
         if target_client and target_client in self.clients:
             # Send to specific client
             self.clients[target_client]['message_queue'].put(message)
+            self.touch_client(target_client)
         elif target_service:
             # Send to all clients of specific service type
             sent = 0
             for client_id, client_info in self.clients.items():
                 if client_info['service_type'] == target_service:
                     client_info['message_queue'].put(message)
+                    self.touch_client(client_id)
                     sent += 1
             if sent == 0:
                 logger.warning(f"No clients found for service type: {target_service}")
@@ -75,12 +82,14 @@ class MessageBus:
             # Broadcast to all clients
             for client_id, client_info in self.clients.items():
                 client_info['message_queue'].put(message)
+                self.touch_client(client_id)
 
     def broadcast(self, message: dict, exclude_client: Optional[str] = None):
         """Broadcast message to all clients except excluded one"""
         for client_id, client_info in self.clients.items():
             if client_id != exclude_client:
                 client_info['message_queue'].put(message)
+                self.touch_client(client_id)
 
     def _process_messages(self):
         """Process messages in the background"""
@@ -98,15 +107,24 @@ class MessageBus:
 
     def get_service_status(self) -> Dict[str, Any]:
         """Get status of all services"""
-        status = {}
-        for service_type in set(info['service_type'] for info in self.clients.values()):
-            clients = self.get_clients_by_service_type(service_type)
-            status[service_type] = {
-                'count': len(clients),
-                'clients': clients,
-                'last_seen': max((info['last_seen'] for info in self.clients.values() 
-                                if info['service_type'] == service_type), default=None)
-            }
+        status: Dict[str, Any] = {}
+        for client_id, info in self.clients.items():
+            service_type = info['service_type']
+            if service_type not in status:
+                status[service_type] = {
+                    'count': 0,
+                    'clients': {},
+                    'last_seen': None,
+                }
+
+            service_entry = status[service_type]
+            service_entry['count'] += 1
+            service_entry['clients'][client_id] = info['last_seen']
+
+            if (service_entry['last_seen'] is None or
+                    info['last_seen'] > service_entry['last_seen']):
+                service_entry['last_seen'] = info['last_seen']
+
         return status
 
 
