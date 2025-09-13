@@ -629,11 +629,21 @@ class TTSManager:
         # Piper-only engine
         try:
             from . import config as _C
-            voice_path = _C.get_piper_voice_path()
             import piper  # noqa: F401
             from piper import PiperVoice
-            if os.path.exists(voice_path):
-                # Load Piper with basic configuration (remove unsupported parameters)
+            
+            # Try quantized model first, then fallback to original
+            quantized_path = _C.get_piper_quantized_path()
+            voice_path = _C.get_piper_voice_path()
+            
+            if quantized_path and os.path.exists(quantized_path):
+                # Use quantized model for better performance
+                self.engine = PiperVoice.load(quantized_path)
+                self.engine_type = "piper_quantized"
+                self.piper_available = True
+                print(f"✅ Piper quantized ready: {quantized_path} (70% smaller, 2-4x faster)")
+            elif os.path.exists(voice_path):
+                # Fallback to original model
                 self.engine = PiperVoice.load(voice_path)
                 self.engine_type = "piper"
                 self.piper_available = True
