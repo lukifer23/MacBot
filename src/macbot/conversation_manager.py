@@ -189,19 +189,28 @@ class ConversationManager:
                     self._add_response_to_history(new_text)
 
     def interrupt_response(self):
-        """Handle response interruption"""
+        """Handle response interruption with optimized state management"""
         should_update = False
         with self.lock:
-            if self.current_context:
+            if self.current_context and self.current_context.response_state != ResponseState.INTERRUPTED:
                 # Buffer the current response for potential resumption
                 if self.current_context.ai_response:
                     self.current_context.buffered_response = self.current_context.ai_response
                     self.current_context.response_state = ResponseState.INTERRUPTED
                     self.current_context.interrupted_at = time.time()
+                else:
+                    # Even if no response yet, mark as interrupted to stop further processing
+                    self.current_context.response_state = ResponseState.INTERRUPTED
+                    self.current_context.interrupted_at = time.time()
+                
+                # Update state immediately to minimize lock time
+                self.current_context.current_state = ConversationState.INTERRUPTED
+                self.current_context.last_activity = time.time()
                 should_update = True
 
         if should_update:
-            self.update_state(ConversationState.INTERRUPTED)
+            # Notify without acquiring lock again
+            self._notify_state_change()
             logger.info("Response interrupted and buffered")
 
     def resume_response(self) -> Optional[str]:

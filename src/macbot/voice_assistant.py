@@ -222,32 +222,26 @@ audio_q = queue.Queue()
 def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
     if status:
         print(status, file=sys.stderr)
-    # Optionally ignore mic while TTS is speaking to avoid feedback loops
+    
+    # Fast path: check if we should process audio at all
     try:
         if CFG.mic_mute_while_tts() and tts_manager and tts_manager.audio_handler and getattr(tts_manager.audio_handler, 'is_playing', False):
             return
     except Exception:
         pass
     
-    # Optimize: avoid unnecessary copy by using a view for the queue
-    # The queue will handle the copy internally if needed
+    # Put audio data in queue for processing
     audio_q.put(indata)
 
-    if (
-        INTERRUPTION_ENABLED
-        and tts_manager.audio_handler
-        and conversation_manager
-    ):
-        # Check if we should interrupt - do this atomically
-        should_interrupt = False
-        with conversation_manager.lock:
-            if (conversation_manager.current_context
-                and conversation_manager.current_context.current_state
-                == ConversationState.SPEAKING):
-                should_interrupt = True
-        
-        # Optimize: use the same data for VAD check without additional reshape
-        if should_interrupt and tts_manager.audio_handler.check_voice_activity(indata.flatten()):
+    # Optimized interruptibility check - minimize lock time
+    if INTERRUPTION_ENABLED and tts_manager.audio_handler and conversation_manager:
+        # Quick state check without holding lock
+        current_context = conversation_manager.current_context
+        if (current_context and 
+            current_context.current_state == ConversationState.SPEAKING and
+            tts_manager.audio_handler.check_voice_activity(indata.flatten())):
+            
+            # Only acquire lock for the actual interrupt
             conversation_manager.interrupt_response()
 
 # ---- Whisper transcription ----
@@ -320,13 +314,22 @@ def transcribe(wav_f32: np.ndarray) -> str:
 
 
 class StreamingTranscriber:
-    """Maintain streaming state for real-time transcription."""
+    """Optimized streaming transcriber with intelligent buffering and caching."""
 
     def __init__(self, max_buffer_duration: float = 30.0, sample_rate: int = 16000) -> None:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._last_text: str = ""
         self._max_buffer_samples = int(max_buffer_duration * sample_rate)
         self._sample_rate = sample_rate
+        
+        # Optimization: cache for recent transcriptions to avoid redundant processing
+        self._transcription_cache = {}
+        self._cache_size = 10
+        self._min_chunk_size = int(0.5 * sample_rate)  # 0.5 seconds minimum
+        
+        # Performance tracking
+        self._transcription_count = 0
+        self._last_transcription_time = 0
 
     def add_chunk(self, chunk: np.ndarray) -> str:
         # Add new chunk to buffer
@@ -334,19 +337,40 @@ class StreamingTranscriber:
         
         # Prevent memory leak by limiting buffer size
         if len(self._buffer) > self._max_buffer_samples:
-            # Keep only the most recent audio data
             self._buffer = self._buffer[-self._max_buffer_samples:]
             logger.debug(f"Audio buffer trimmed to {self._max_buffer_samples} samples")
         
-        text = transcribe(self._buffer)
-        delta = text[len(self._last_text) :]
-        self._last_text = text
-        return delta.strip()
+        # Only transcribe if we have enough audio and enough time has passed
+        current_time = time.time()
+        if (len(self._buffer) >= self._min_chunk_size and 
+            current_time - self._last_transcription_time > 0.3):  # 300ms minimum between transcriptions
+            
+            # Check cache first
+            buffer_hash = hash(self._buffer.tobytes())
+            if buffer_hash in self._transcription_cache:
+                text = self._transcription_cache[buffer_hash]
+            else:
+                text = transcribe(self._buffer)
+                # Cache the result
+                if len(self._transcription_cache) >= self._cache_size:
+                    # Remove oldest entry
+                    oldest_key = next(iter(self._transcription_cache))
+                    del self._transcription_cache[oldest_key]
+                self._transcription_cache[buffer_hash] = text
+                self._transcription_count += 1
+                self._last_transcription_time = current_time
+            
+            delta = text[len(self._last_text) :]
+            self._last_text = text
+            return delta.strip()
+        
+        return ""
 
     def flush(self) -> str:
         text = self._last_text.strip()
         self._buffer = np.array([], dtype=np.float32)
         self._last_text = ""
+        self._transcription_cache.clear()  # Clear cache on flush
         return text
 
 # ---- Enhanced LLM chat with tool calling ----
@@ -457,14 +481,25 @@ def llama_chat(user_text: str) -> str:
                     if INTERRUPTION_ENABLED and conversation_manager:
                         conversation_manager.update_response(full_response)
 
-                    # Buffer and flush at sentence boundaries or size threshold for smoother TTS
+                    # Optimized TTS streaming with better sentence boundary detection
                     tts_buf += delta
-                    flush_now = any(p in delta for p in [".", "?", "!", "\n"]) or len(tts_buf) > 220
+                    
+                    # More intelligent sentence boundary detection
+                    sentence_endings = [".", "?", "!", "\n", ":", ";"]
+                    flush_now = (any(p in delta for p in sentence_endings) or 
+                               len(tts_buf) > 180 or  # Reduced from 220 for faster response
+                               (len(tts_buf) > 100 and any(p in tts_buf for p in [",", "and", "but", "so"])))
+                    
                     if flush_now and tts_buf.strip():
                         to_say = tts_buf.strip()
                         tts_buf = ""
                         TTS_STREAMED = True
-                        threading.Thread(target=lambda: tts_manager.speak(to_say, interruptible=True, notify=False), daemon=True).start()
+                        
+                        # Check if we should still speak (not interrupted)
+                        if (INTERRUPTION_ENABLED and conversation_manager and 
+                            conversation_manager.current_context and
+                            conversation_manager.current_context.response_state != ResponseState.INTERRUPTED):
+                            threading.Thread(target=lambda: tts_manager.speak(to_say, interruptible=True, notify=False), daemon=True).start()
 
             if tts_buf.strip():
                 TTS_STREAMED = True
@@ -783,31 +818,47 @@ else:
     bus_client = None
 
 def speak(text: str):
-    """Speak text using the unified TTS system"""
-    if INTERRUPTION_ENABLED and conversation_manager:
-        # Start conversation response tracking
-        conversation_manager.start_response(text)
+    """Speak text using the unified TTS system with enhanced error handling"""
+    if not text.strip():
+        logger.warning("Empty text provided to speak function")
+        return
+        
+    try:
+        if INTERRUPTION_ENABLED and conversation_manager:
+            # Start conversation response tracking
+            conversation_manager.start_response(text)
 
-        # Use interruptible TTS
-        _notify_dashboard_state('speaking_started')
-        completed = tts_manager.speak(text, interruptible=True, notify=False)
+            # Use interruptible TTS
+            _notify_dashboard_state('speaking_started')
+            completed = tts_manager.speak(text, interruptible=True, notify=False)
 
-        if completed:
-            conversation_manager.update_response(text, is_complete=True)
-            _notify_dashboard_state('speaking_ended')
+            if completed:
+                conversation_manager.update_response(text, is_complete=True)
+                _notify_dashboard_state('speaking_ended')
+            else:
+                # TTS was interrupted - only interrupt if not already interrupted
+                with conversation_manager.lock:
+                    if (conversation_manager.current_context and
+                        conversation_manager.current_context.current_state != ConversationState.INTERRUPTED):
+                        conversation_manager.interrupt_response()
+                _notify_dashboard_state('speaking_interrupted')
+
         else:
-            # TTS was interrupted - only interrupt if not already interrupted
-            with conversation_manager.lock:
-                if (conversation_manager.current_context and
-                    conversation_manager.current_context.current_state != ConversationState.INTERRUPTED):
-                    conversation_manager.interrupt_response()
-            _notify_dashboard_state('speaking_interrupted')
-
-    else:
-        # Use non-interruptible TTS
-        _notify_dashboard_state('speaking_started')
-        tts_manager.speak(text, interruptible=False, notify=False)
+            # Use non-interruptible TTS
+            _notify_dashboard_state('speaking_started')
+            tts_manager.speak(text, interruptible=False, notify=False)
+            _notify_dashboard_state('speaking_ended')
+            
+    except Exception as e:
+        logger.error(f"Error in speak function: {e}")
         _notify_dashboard_state('speaking_ended')
+        # Try to recover by reinitializing TTS if needed
+        try:
+            if tts_manager and tts_manager.engine is None:
+                logger.info("Attempting to reinitialize TTS engine after error")
+                tts_manager.init_engine()
+        except Exception as recovery_error:
+            logger.error(f"Failed to recover TTS engine: {recovery_error}")
 
 """Web GUI removed from voice_assistant; use web_dashboard service instead."""
 
@@ -1127,6 +1178,13 @@ def main():
             # is_voiced can handle multi-dimensional arrays
             v = is_voiced(block)
             now = time.time()
+            
+            # Performance optimization: skip processing if we're in a speaking state and not interrupted
+            if (INTERRUPTION_ENABLED and conversation_manager and 
+                conversation_manager.current_context and
+                conversation_manager.current_context.current_state == ConversationState.SPEAKING and
+                conversation_manager.current_context.response_state != ResponseState.INTERRUPTED):
+                continue
 
             if v:
                 voiced = True
