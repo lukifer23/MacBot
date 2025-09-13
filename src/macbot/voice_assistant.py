@@ -1075,6 +1075,8 @@ def speak(text: str):
 # ---- Main loop ----
 def main():
     global TTS_STREAMED
+    # Ensure ResponseState is available
+    from .conversation_manager import ResponseState
     print("🚀 Starting MacBot Voice Assistant...")
     print("Local Voice AI ready. Speak after the beep. (Ctrl+C to quit)")
     print("💡 Try saying:")
