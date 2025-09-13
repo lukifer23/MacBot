@@ -9,6 +9,7 @@ import sys
 import signal
 import uuid
 import numpy as np
+import psutil
 try:
     import sounddevice as sd
 except Exception as _sd_imp_err:
@@ -29,6 +30,7 @@ from .conversation_manager import (
     ConversationManager,
     ConversationContext,
     ConversationState,
+    ResponseState,
 )
 from .message_bus_client import MessageBusClient
 from . import config as CFG
@@ -86,6 +88,11 @@ HEALTH_CHECK_TIMEOUT = 2  # Health check timeout in seconds
 TURNING_DELAY = 0.35  # Delay for turn detection in seconds
 TTS_SAMPLE_RATE = 24000  # TTS audio sample rate
 TTS_RATE_MULTIPLIER = 180  # TTS rate multiplier for pyttsx3
+
+# Performance optimization constants
+MAX_CONCURRENT_TTS = 2  # Maximum concurrent TTS operations
+TTS_QUEUE_TIMEOUT = 5.0  # TTS queue timeout in seconds
+PERFORMANCE_LOG_INTERVAL = 10  # Log performance every N requests
 
 # Optional Python bindings for whisper.cpp / whisper
 try:
@@ -569,11 +576,28 @@ class TTSManager:
         self.audio_handler = None
         self.voices = []  # available voice names/ids for the active engine
         self.kokoro_available = False
+        
+        # Performance monitoring
+        self.performance_stats = {
+            'total_requests': 0,
+            'total_duration': 0.0,
+            'avg_duration': 0.0,
+            'max_duration': 0.0,
+            'min_duration': float('inf'),
+            'errors': 0,
+            'last_request_time': 0.0
+        }
+        self.performance_lock = threading.Lock()
         self.pyttsx3_available = False
         self.piper_available = False
         self.say_available = False
         self._speak_lock = threading.Lock()
         self._initialized = False  # lazy init to avoid crashes on import
+        
+        # TTS queue system for resource management
+        self._tts_queue = queue.Queue(maxsize=MAX_CONCURRENT_TTS)
+        self._active_tts_count = 0
+        self._tts_count_lock = threading.Lock()
         self._reload_sec = CFG.get_piper_reload_sec()
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
@@ -594,10 +618,17 @@ class TTSManager:
             import piper  # noqa: F401
             from piper import PiperVoice
             if os.path.exists(voice_path):
-                self.engine = PiperVoice.load(voice_path)
+                # Optimize Piper configuration for better performance
+                self.engine = PiperVoice.load(
+                    voice_path,
+                    use_cuda=False,  # Disable CUDA for stability
+                    num_threads=4,   # Limit threads to prevent resource contention
+                    length_penalty=1.0,  # Optimize for speed
+                    repetition_penalty=1.0
+                )
                 self.engine_type = "piper"
                 self.piper_available = True
-                print(f"✅ Piper ready: {voice_path}")
+                print(f"✅ Piper ready: {voice_path} (optimized for performance)")
             else:
                 raise ImportError(f"Piper voice model not found at {voice_path}")
         except Exception as e:
@@ -790,6 +821,36 @@ class TTSManager:
         if self.audio_handler:
             self.audio_handler.interrupt_playback()
             logger.info("TTS playback interrupted")
+    
+    def _log_performance(self, duration: float, success: bool = True):
+        """Log TTS performance metrics"""
+        with self.performance_lock:
+            self.performance_stats['total_requests'] += 1
+            self.performance_stats['last_request_time'] = time.time()
+            
+            if success:
+                self.performance_stats['total_duration'] += duration
+                self.performance_stats['max_duration'] = max(self.performance_stats['max_duration'], duration)
+                self.performance_stats['min_duration'] = min(self.performance_stats['min_duration'], duration)
+                self.performance_stats['avg_duration'] = self.performance_stats['total_duration'] / self.performance_stats['total_requests']
+            else:
+                self.performance_stats['errors'] += 1
+    
+    def get_performance_stats(self) -> dict:
+        """Get current performance statistics"""
+        with self.performance_lock:
+            stats = self.performance_stats.copy()
+            # Add system resource usage
+            try:
+                process = psutil.Process()
+                stats['cpu_percent'] = process.cpu_percent()
+                stats['memory_mb'] = process.memory_info().rss / 1024 / 1024
+                stats['memory_percent'] = process.memory_percent()
+            except Exception:
+                stats['cpu_percent'] = 0
+                stats['memory_mb'] = 0
+                stats['memory_percent'] = 0
+            return stats
 
 # Initialize TTS manager
 tts_manager = TTSManager()
@@ -820,12 +881,17 @@ else:
     bus_client = None
 
 def speak(text: str):
-    """Speak text using the unified TTS system with enhanced error handling"""
+    """Speak text using the unified TTS system with enhanced error handling and performance monitoring"""
     if not text.strip():
         logger.warning("Empty text provided to speak function")
         return
-        
+    
+    start_time = time.time()
+    success = False
+    
     try:
+        logger.info(f"🎤 TTS Request: '{text[:50]}{'...' if len(text) > 50 else ''}' (length: {len(text)} chars)")
+        
         if INTERRUPTION_ENABLED and conversation_manager:
             # Start conversation response tracking
             conversation_manager.start_response(text)
@@ -837,6 +903,7 @@ def speak(text: str):
             if completed:
                 conversation_manager.update_response(text, is_complete=True)
                 _notify_dashboard_state('speaking_ended')
+                success = True
             else:
                 # TTS was interrupted - only interrupt if not already interrupted
                 with conversation_manager.lock:
@@ -848,8 +915,9 @@ def speak(text: str):
         else:
             # Use non-interruptible TTS
             _notify_dashboard_state('speaking_started')
-            tts_manager.speak(text, interruptible=False, notify=False)
+            completed = tts_manager.speak(text, interruptible=False, notify=False)
             _notify_dashboard_state('speaking_ended')
+            success = completed
             
     except Exception as e:
         logger.error(f"Error in speak function: {e}")
@@ -861,6 +929,21 @@ def speak(text: str):
                 tts_manager.init_engine()
         except Exception as recovery_error:
             logger.error(f"Failed to recover TTS engine: {recovery_error}")
+    finally:
+        # Log performance metrics
+        duration = time.time() - start_time
+        tts_manager._log_performance(duration, success)
+        
+        # Log performance stats every 10 requests
+        if tts_manager.performance_stats['total_requests'] % 10 == 0:
+            stats = tts_manager.get_performance_stats()
+            logger.info(f"📊 TTS Performance: Avg={stats['avg_duration']:.2f}s, "
+                       f"Max={stats['max_duration']:.2f}s, "
+                       f"CPU={stats['cpu_percent']:.1f}%, "
+                       f"RAM={stats['memory_mb']:.1f}MB, "
+                       f"Errors={stats['errors']}")
+        
+        logger.info(f"⏱️ TTS Duration: {duration:.2f}s ({'✅' if success else '❌'})")
 
 """Web GUI removed from voice_assistant; use web_dashboard service instead."""
 
@@ -958,6 +1041,21 @@ def main():
                 return jsonify({'ok': True})
             except Exception as e:
                 logger.error(f"Control speak error: {e}")
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
+        @control_app.route('/tts-performance')
+        def _control_tts_performance():
+            """Get TTS performance statistics"""
+            try:
+                stats = tts_manager.get_performance_stats()
+                return jsonify({
+                    'ok': True,
+                    'performance': stats,
+                    'engine_type': tts_manager.engine_type,
+                    'engine_loaded': tts_manager.engine is not None
+                })
+            except Exception as e:
+                logger.error(f"TTS performance error: {e}")
                 return jsonify({'ok': False, 'error': str(e)}), 500
 
         @control_app.route('/mic-check', methods=['POST'])
