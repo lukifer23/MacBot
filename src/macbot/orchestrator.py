@@ -16,7 +16,8 @@ import psutil
 import yaml
 import requests
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
 import logging
 from logging.handlers import RotatingFileHandler
 from .logging_utils import setup_logger
@@ -30,6 +31,17 @@ from . import config as CFG
 # Configure logging (unified)
 logger = setup_logger("macbot.orchestrator", "logs/macbot.log")
 
+
+@dataclass
+class ServiceDefinition:
+    """Definition for a managed service."""
+    name: str
+    command: List[str]
+    health_endpoint: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+    cwd: Optional[str] = None
+
+
 class MacBotOrchestrator:
     def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
@@ -39,6 +51,10 @@ class MacBotOrchestrator:
         self.processes: Dict[str, subprocess.Popen] = {}
         self.threads: Dict[str, threading.Thread] = {}
         self.running = False
+
+        # Service definitions will be populated based on config/paths
+        self.service_definitions: Dict[str, ServiceDefinition] = {}
+        self._build_service_definitions()
         
         # Message bus integration
         self.message_bus = None
@@ -57,6 +73,44 @@ class MacBotOrchestrator:
 
         # Control HTTP server (status/health)
         self.control_thread: Optional[threading.Thread] = None
+
+    def _build_service_definitions(self) -> None:
+        """Build service definitions for managed components."""
+        base_dir = os.path.join(os.path.dirname(__file__), '..', '..')
+        venv_python = os.path.join(base_dir, 'macbot_env', 'bin', 'python')
+        py = venv_python if os.path.exists(venv_python) else sys.executable
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.join(base_dir, 'src')
+
+        # Web dashboard
+        wd_host, wd_port = CFG.get_web_dashboard_host_port()
+        self.service_definitions['web_gui'] = ServiceDefinition(
+            name='web_gui',
+            command=[py, '-m', 'macbot.web_dashboard'],
+            health_endpoint=f"http://{wd_host}:{wd_port}",
+            env=env,
+            cwd=base_dir,
+        )
+
+        # RAG service
+        rag_host, rag_port = CFG.get_rag_host_port()
+        self.service_definitions['rag'] = ServiceDefinition(
+            name='rag',
+            command=[py, '-m', 'macbot.rag_server'],
+            health_endpoint=f"http://{rag_host}:{rag_port}/health",
+            env=env,
+            cwd=base_dir,
+        )
+
+        # Voice assistant
+        va_host, va_port = CFG.get_voice_assistant_host_port()
+        self.service_definitions['voice_assistant'] = ServiceDefinition(
+            name='voice_assistant',
+            command=[py, '-m', 'macbot.voice_assistant'],
+            health_endpoint=f"http://{va_host}:{va_port}/info",
+            env=env,
+            cwd=base_dir,
+        )
     
     def load_config(self) -> dict:
         """Load configuration from YAML file"""
@@ -260,9 +314,47 @@ class MacBotOrchestrator:
         service_type = data.get('service_type', 'unknown')
         
         logger.error(f"Error from {service_type}: {error}")
-        
+
         # Could implement error recovery logic here
-    
+    def start_service(self, service: ServiceDefinition, retries: int = 5, backoff: float = 1.0) -> Dict[str, Any]:
+        """Generic service starter with retry/backoff."""
+        result: Dict[str, Any] = {'service': service.name, 'success': False}
+        try:
+            logger.info(f"Starting {service.name}...")
+            process = subprocess.Popen(
+                service.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=service.env,
+                cwd=service.cwd,
+            )
+            self.processes[service.name] = process
+
+            if service.health_endpoint:
+                delay = backoff
+                for _ in range(retries):
+                    try:
+                        r = requests.get(service.health_endpoint, timeout=2)
+                        if r.status_code == 200:
+                            logger.info(f"✅ {service.name} ready")
+                            result['success'] = True
+                            return result
+                    except Exception as e:
+                        result['error'] = str(e)
+                    time.sleep(delay)
+                    delay *= 2
+                # Failed health check
+                result['error'] = result.get('error', 'health check failed')
+                logger.error(f"❌ {service.name} failed to start", extra=result)
+                return result
+
+            result['success'] = True
+            return result
+        except Exception as e:
+            result['error'] = str(e)
+            logger.error(f"Failed to start {service.name}: {e}")
+            return result
+
     def start_llama_server(self) -> bool:
         """Start the llama.cpp server"""
         try:
@@ -353,119 +445,6 @@ class MacBotOrchestrator:
             logger.error(f"Failed to start llama server: {e}")
             return False
     
-    def start_web_gui(self) -> bool:
-        """Start the web GUI dashboard"""
-        try:
-            # Use virtual environment if available
-            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
-            if os.path.exists(venv_python):
-                cmd = [venv_python, '-m', 'macbot.web_dashboard']
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
-            else:
-                cmd = ['python', '-m', 'macbot.web_dashboard']
-                env = None
-            
-            logger.info("Starting web GUI...")
-            process = subprocess.Popen(
-                cmd,
-                stdout=None,  # Don't capture stdout for web dashboard
-                stderr=None,  # Don't capture stderr for web dashboard
-                env=env,
-                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
-            )
-            self.processes['web_gui'] = process
-            
-            # Wait for web GUI to be ready
-            for _ in range(30):  # 30 second timeout (increased for dependencies)
-                try:
-                    host, port = CFG.get_web_dashboard_host_port()
-                    response = requests.get(f"http://{host}:{port}", timeout=1)
-                    if response.status_code == 200:
-                        logger.info("✅ Web GUI ready")
-                        return True
-                except (requests.exceptions.RequestException, ValueError) as e:
-                    logger.debug(f"Web GUI not ready yet: {e}")
-                    time.sleep(1)
-            
-            # Check if process is still running
-            if process.poll() is not None:
-                logger.error(f"Web GUI process exited with code {process.returncode}")
-                logger.error("❌ Web GUI failed to start")
-                return False
-            
-        except Exception as e:
-            logger.error(f"Failed to start web GUI: {e}")
-            return False
-    
-    def start_rag_service(self) -> bool:
-        """Start the RAG service"""
-        try:
-            # Use virtual environment if available
-            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
-            if os.path.exists(venv_python):
-                cmd = [venv_python, '-m', 'macbot.rag_server']
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
-            else:
-                cmd = ['python', '-m', 'macbot.rag_server']
-                env = None
-            logger.info("Starting RAG service...")
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
-            )
-            self.processes['rag'] = process
-            
-            # Wait for RAG service to be ready
-            for _ in range(30):  # 30 second timeout (increased for model loading)
-                try:
-                    host, port = CFG.get_rag_host_port()
-                    response = requests.get(f"http://{host}:{port}/health", timeout=1)
-                    if response.status_code == 200:
-                        logger.info("✅ RAG service ready")
-                        return True
-                except (requests.exceptions.RequestException, ValueError) as e:
-                    logger.debug(f"RAG service not ready yet: {e}")
-                    time.sleep(1)
-            
-            logger.error("❌ RAG service failed to start")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Failed to start RAG service: {e}")
-            return False
-    
-    def start_voice_assistant(self) -> bool:
-        """Start the enhanced voice assistant"""
-        try:
-            # Use virtual environment if available
-            venv_python = os.path.join(os.path.dirname(__file__), '..', '..', 'macbot_env', 'bin', 'python')
-            if os.path.exists(venv_python):
-                cmd = [venv_python, '-m', 'macbot.voice_assistant']
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
-            else:
-                cmd = ['python', '-m', 'macbot.voice_assistant']
-                env = None
-            logger.info("Starting enhanced voice assistant...")
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                cwd=os.path.join(os.path.dirname(__file__), '..', '..')
-            )
-            self.processes['voice_assistant'] = process
-            logger.info("✅ Voice assistant started")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to start voice assistant: {e}")
-            return False
     
     def check_web_dependencies(self) -> bool:
         """Check if web GUI dependencies are installed"""
@@ -516,39 +495,58 @@ class MacBotOrchestrator:
                 logger.warning(f"Process {name} died, restarting...")
                 self.restart_process(name)
     
-    def restart_process(self, name: str):
+    def restart_process(self, name: str) -> Dict[str, Any]:
         """Restart a specific process"""
+        proc = self.processes.get(name)
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
         if name == 'llama':
-            self.start_llama_server()
-        elif name == 'web_gui':
-            self.start_web_gui()
-        elif name == 'rag':
-            self.start_rag_service()
-        elif name == 'voice_assistant':
-            self.start_voice_assistant()
-    
+            success = self.start_llama_server()
+            return {'service': 'llama', 'success': success}
+
+        service = self.service_definitions.get(name)
+        if service:
+            return self.start_service(service)
+
+        return {'service': name, 'success': False, 'error': 'unknown service'}
+
     def start_all(self) -> bool:
         """Start all services"""
         logger.info("🚀 Starting MacBot Orchestrator...")
-        
-        # Start services in order
-        services = [
+
+        # Core services first
+        core_services = [
             ('ws_bus', self.start_ws_message_bus),
             ('llama', self.start_llama_server),
-            ('web_gui', self.start_web_gui),
-            ('rag', self.start_rag_service),
-            ('voice_assistant', self.start_voice_assistant)
         ]
-        
-        for name, start_func in services:
+
+        for name, start_func in core_services:
             if not start_func():
+                logger.error(f"Failed to start {name}, stopping all services")
+                self.stop_all()
+                return False
+
+        # Generic services
+        for name in ['web_gui', 'rag', 'voice_assistant']:
+            svc = self.service_definitions.get(name)
+            if not svc:
+                continue
+            result = self.start_service(svc)
+            if not result.get('success'):
                 if name == 'rag':
-                    logger.warning(f"RAG service failed to start, continuing without it")
+                    logger.warning("RAG service failed to start, continuing without it")
                     continue
-                else:
-                    logger.error(f"Failed to start {name}, stopping all services")
-                    self.stop_all()
-                    return False
+                logger.error(f"Failed to start {name}, stopping all services")
+                self.stop_all()
+                return False
         
         # Start health monitoring
         self.health_monitor.start_monitoring()
@@ -618,6 +616,31 @@ class MacBotOrchestrator:
                 }
             logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())}")
             return jsonify({'processes': procs, 'req_id': req_id})
+
+        @app.route('/services')
+        def services():
+            """List known services and their status."""
+            procs: Dict[str, Any] = {}
+            for name in self.service_definitions.keys():
+                proc = self.processes.get(name)
+                procs[name] = {
+                    'running': proc.poll() is None if proc else False,
+                    'pid': proc.pid if proc and proc.poll() is None else None,
+                }
+            # include llama if tracked separately
+            if 'llama' in self.processes:
+                p = self.processes['llama']
+                procs['llama'] = {
+                    'running': p.poll() is None,
+                    'pid': p.pid if p and p.poll() is None else None,
+                }
+            return jsonify({'services': procs})
+
+        @app.route('/service/<name>/restart', methods=['POST'])
+        def restart_service_endpoint(name: str):
+            result = self.restart_process(name)
+            status_code = 200 if result.get('success') else 500
+            return jsonify(result), status_code
 
         @app.route('/metrics')
         def metrics():
