@@ -2,11 +2,9 @@
 """
 MacBot Message Bus - Simplified real-time communication system for all services
 """
-import json
 import logging
 import threading
 import queue
-import time
 from typing import Dict, List, Callable, Any, Optional
 from datetime import datetime
 
@@ -91,12 +89,28 @@ class MessageBus:
                 client_info['message_queue'].put(message)
                 self.touch_client(client_id)
 
+    def publish(self, message: dict, target_client: Optional[str] = None, target_service: Optional[str] = None):
+        """Enqueue a message for asynchronous dispatch"""
+        self.message_queue.put({
+            'message': message,
+            'target_client': target_client,
+            'target_service': target_service
+        })
+
+    # Alias for backward compatibility / alternative naming
+    enqueue = publish
+
     def _process_messages(self):
         """Process messages in the background"""
         while self.running:
             try:
-                # Process any queued messages (for future use)
-                time.sleep(0.1)
+                item = self.message_queue.get(timeout=0.1)
+                message = item.get('message')
+                target_client = item.get('target_client')
+                target_service = item.get('target_service')
+                self.send_message(message, target_client=target_client, target_service=target_service)
+            except queue.Empty:
+                continue
             except Exception as e:
                 logger.error(f"Message processing error: {e}")
 
