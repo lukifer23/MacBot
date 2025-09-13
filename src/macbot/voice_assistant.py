@@ -759,17 +759,21 @@ class TTSManager:
             config.noise_w = 0.6      # Reduced for faster synthesis
             config.phoneme_silence_sec = 0.05  # Reduced silence for faster output
             
-            # Synthesize audio
+            # Synthesize audio (returns generator)
             audio_chunks = self.engine.synthesize(text, config)
             
-            # Optimize: pre-allocate array if we know the total size
-            # Otherwise, collect chunks more efficiently
+            # Process audio chunks from generator
             audio_arrays = []
             for ch in audio_chunks:
                 try:
-                    # Avoid copying if possible by using the array directly
+                    # Convert chunk to numpy array
                     if hasattr(ch, 'audio_float_array'):
                         audio_arrays.append(ch.audio_float_array)
+                    elif hasattr(ch, 'audio'):
+                        audio_arrays.append(np.array(ch.audio, dtype=np.float32))
+                    else:
+                        # Try to convert directly
+                        audio_arrays.append(np.array(ch, dtype=np.float32))
                 except Exception as e:
                     logger.warning(f"Failed to process audio chunk: {e}")
                     continue
@@ -780,7 +784,7 @@ class TTSManager:
                     _notify_dashboard_state('speaking_ended')
                 return False
             
-            # Optimize: concatenate arrays directly instead of extending a list
+            # Concatenate all audio arrays
             audio_arr = np.concatenate(audio_arrays).astype(np.float32)
             
             # Cache the audio for future use
