@@ -621,6 +621,9 @@ class TTSManager:
         """
         if not text.strip():
             return True
+        
+        # Log all TTS requests for debugging
+        logger.info(f"TTS request: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
         # Try TTS with retry mechanism
         max_retries = 3
@@ -1076,6 +1079,7 @@ def main():
     # Proactively init Piper so /info and /speak reflect ready state
     try:
         tts_manager.init_engine()
+        logger.info("TTS engine initialized successfully")
     except Exception as e:
         logger.warning(f"Piper init deferred: {e}")
 
@@ -1087,9 +1091,11 @@ def main():
         if sd is None:
             raise RuntimeError('sounddevice not available')
         try:
+            # Test audio system with silent output (no sound)
             sd.play(np.zeros(1200), samplerate=TTS_SAMPLE_RATE, blocking=True)
-        except Exception:
-            pass
+            logger.debug("Audio system test completed (silent)")
+        except Exception as e:
+            logger.debug(f"Audio system test failed: {e}")
         stream = sd.InputStream(
             channels=1,
             samplerate=SAMPLE_RATE,
