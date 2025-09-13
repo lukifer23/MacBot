@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import psutil
 import requests
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from . import config as cfg
 
@@ -23,7 +24,7 @@ def web_search(query: str) -> str:
         return "No search query provided."
     engine = "google"
     base = "https://www.google.com/search?q=" if engine == "google" else "https://duckduckgo.com/?q="
-    url = f"{base}{query.replace(' ', '+')}"
+    url = f"{base}{quote(query)}"
     try:
         subprocess.run(["open", "-a", "Safari", url], check=True)
         return f"Opened Safari to search for '{query}'."
@@ -37,9 +38,18 @@ def browse_website(url: str) -> str:
         return "No URL provided."
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
+    parts = urlsplit(url)
+    if not parts.netloc:
+        return "Invalid URL."
+
+    path = quote(parts.path)
+    query = quote(parts.query, safe="=&")
+    fragment = quote(parts.fragment)
+    normalized = urlunsplit((parts.scheme, parts.netloc, path, query, fragment))
     try:
-        subprocess.run(["open", "-a", "Safari", url], check=True)
-        return f"Opened {url} in Safari."
+        subprocess.run(["open", "-a", "Safari", normalized], check=True)
+        return f"Opened {normalized} in Safari."
     except Exception as e:
         return f"Website open failed: {e}"
 
