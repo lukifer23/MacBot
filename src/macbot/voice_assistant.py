@@ -624,10 +624,12 @@ class TTSManager:
 
     def init_engine(self):
         if self._initialized:
+            logger.info(f"🎤 TTS ENGINE ALREADY INITIALIZED: type={self.engine_type}")
             return
         self._initialized = True
         # Piper-only engine
         try:
+            logger.info(f"🎤 INITIALIZING TTS ENGINE...")
             from . import config as _C
             import piper  # noqa: F401
             from piper import PiperVoice
@@ -636,21 +638,30 @@ class TTSManager:
             voice_path = _C.get_piper_voice_path()
             fallback_path = _C.get_piper_fallback_path()
             
+            logger.info(f"🎤 VOICE PATHS: primary={voice_path}, fallback={fallback_path}")
+            logger.info(f"🎤 PATH EXISTS: primary={os.path.exists(voice_path)}, fallback={os.path.exists(fallback_path) if fallback_path else False}")
+            
             if os.path.exists(voice_path):
                 # Use quantized model (now primary)
+                logger.info(f"🎤 LOADING QUANTIZED MODEL: {voice_path}")
                 self.engine = PiperVoice.load(voice_path)
                 self.engine_type = "piper_quantized"
                 self.piper_available = True
+                logger.info(f"✅ Piper quantized ready: {voice_path} (70% smaller, 2-3x faster)")
                 print(f"✅ Piper quantized ready: {voice_path} (70% smaller, 2-3x faster)")
             elif fallback_path and os.path.exists(fallback_path):
                 # Fallback to original model
+                logger.info(f"🎤 LOADING FALLBACK MODEL: {fallback_path}")
                 self.engine = PiperVoice.load(fallback_path)
                 self.engine_type = "piper"
                 self.piper_available = True
+                logger.info(f"✅ Piper fallback ready: {fallback_path} (original model)")
                 print(f"✅ Piper fallback ready: {fallback_path} (original model)")
             else:
+                logger.error(f"🎤 NO VOICE MODEL FOUND: primary={voice_path}, fallback={fallback_path}")
                 raise ImportError(f"Piper voice model not found at {voice_path} or {fallback_path}")
         except Exception as e:
+            logger.error(f"🎤 PIPER INIT FAILED: {e}")
             print(f"❌ Piper init failed: {e}")
             self.engine = None
             self.engine_type = None
@@ -709,22 +720,29 @@ class TTSManager:
         if not text.strip():
             return True
         
-        # Log all TTS requests for debugging
-        logger.info(f"TTS request: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        # Enhanced debugging for TTS requests
+        logger.info(f"🎤 TTS SPEAK START: '{text[:50]}{'...' if len(text) > 50 else ''}' (length: {len(text)} chars)")
+        logger.info(f"🎤 TTS ENGINE STATUS: type={self.engine_type}, loaded={self.engine is not None}, initialized={self._initialized}")
+        logger.info(f"🎤 TTS PARAMS: interruptible={interruptible}, notify={notify}")
 
         # Try TTS with retry mechanism
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                return self._speak_attempt(text, interruptible, notify)
+                logger.info(f"🎤 TTS ATTEMPT {attempt + 1}/{max_retries}")
+                result = self._speak_attempt(text, interruptible, notify)
+                logger.info(f"🎤 TTS ATTEMPT {attempt + 1} RESULT: {result}")
+                return result
             except Exception as e:
-                logger.warning(f"TTS attempt {attempt + 1} failed: {e}")
+                logger.warning(f"🎤 TTS ATTEMPT {attempt + 1} FAILED: {e}")
                 if attempt < max_retries - 1:
                     # Try to reinitialize engine on failure
                     try:
+                        logger.info(f"🎤 TTS REINITIALIZING ENGINE (attempt {attempt + 1})")
                         self._initialized = False
                         self.init_engine()
                         time.sleep(0.5)  # Brief delay before retry
+                        logger.info(f"🎤 TTS REINITIALIZATION COMPLETE: type={self.engine_type}, loaded={self.engine is not None}")
                     except Exception as reinit_error:
                         logger.error(f"Failed to reinitialize TTS engine: {reinit_error}")
                 else:
@@ -733,22 +751,36 @@ class TTSManager:
 
     def _speak_attempt(self, text: str, interruptible: bool, notify: bool) -> bool:
         """Single TTS attempt with proper error handling"""
+        logger.info(f"🎤 _speak_attempt START: text='{text[:30]}...', interruptible={interruptible}, notify={notify}")
+        
         if not self._initialized:
+            logger.info(f"🎤 TTS NOT INITIALIZED, initializing...")
             self.init_engine()
+        
         if not self.engine:
+            logger.error(f"🎤 TTS ENGINE NOT LOADED after init attempt")
             raise RuntimeError("TTS engine not loaded")
         
+        logger.info(f"🎤 TTS ENGINE READY: type={self.engine_type}, engine={type(self.engine)}")
+        
         if notify:
+            logger.info(f"🎤 NOTIFYING DASHBOARD: speaking_started")
             _notify_dashboard_state('speaking_started')
 
-        if self.engine_type == "piper":
-            return self._speak_with_piper(text, interruptible, notify)
+        if self.engine_type in ["piper", "piper_quantized"]:
+            logger.info(f"🎤 USING PIPER TTS: type={self.engine_type}")
+            result = self._speak_with_piper(text, interruptible, notify)
+            logger.info(f"🎤 PIPER TTS RESULT: {result}")
+            return result
         else:
+            logger.error(f"🎤 UNSUPPORTED TTS ENGINE TYPE: {self.engine_type}")
             raise RuntimeError("No TTS engine available")
 
     def _speak_with_piper(self, text: str, interruptible: bool, notify: bool) -> bool:
         """Speak using Piper TTS with error recovery and caching"""
         try:
+            logger.info(f"🎤 PIPER TTS START: text='{text[:50]}...', interruptible={interruptible}, notify={notify}")
+            
             # Check cache first
             cached_audio = self._get_cached_audio(text)
             if cached_audio is not None:
@@ -769,46 +801,67 @@ class TTSManager:
             config.noise_w = 0.6      # Reduced for faster synthesis
             config.phoneme_silence_sec = 0.05  # Reduced silence for faster output
             
+            logger.info(f"🎤 PIPER CONFIG: length_scale={config.length_scale}, noise_scale={config.noise_scale}, noise_w={config.noise_w}")
+            
             # Synthesize audio (returns generator)
+            logger.info(f"🎤 CALLING PIPER SYNTHESIZE...")
             audio_chunks = self.engine.synthesize(text, config)
+            logger.info(f"🎤 PIPER SYNTHESIZE RETURNED: {type(audio_chunks)}")
             
             # Process audio chunks from generator
             audio_arrays = []
+            chunk_count = 0
             for ch in audio_chunks:
+                chunk_count += 1
+                logger.info(f"🎤 PROCESSING CHUNK {chunk_count}: {type(ch)}")
                 try:
                     # Convert chunk to numpy array
                     if hasattr(ch, 'audio_float_array'):
                         audio_arrays.append(ch.audio_float_array)
+                        logger.info(f"🎤 CHUNK {chunk_count}: audio_float_array, shape={ch.audio_float_array.shape}")
                     elif hasattr(ch, 'audio'):
                         audio_arrays.append(np.array(ch.audio, dtype=np.float32))
+                        logger.info(f"🎤 CHUNK {chunk_count}: audio, shape={np.array(ch.audio).shape}")
                     else:
                         # Try to convert directly
                         audio_arrays.append(np.array(ch, dtype=np.float32))
+                        logger.info(f"🎤 CHUNK {chunk_count}: direct conversion, shape={np.array(ch).shape}")
                 except Exception as e:
-                    logger.warning(f"Failed to process audio chunk: {e}")
+                    logger.warning(f"🎤 CHUNK {chunk_count} PROCESSING FAILED: {e}")
                     continue
             
+            logger.info(f"🎤 PROCESSED {chunk_count} CHUNKS, {len(audio_arrays)} SUCCESSFUL")
+            
             if not audio_arrays:
-                logger.warning("No audio generated from Piper")
+                logger.warning("🎤 NO AUDIO GENERATED FROM PIPER")
                 if notify:
                     _notify_dashboard_state('speaking_ended')
                 return False
             
             # Concatenate all audio arrays
+            logger.info(f"🎤 CONCATENATING {len(audio_arrays)} AUDIO ARRAYS...")
             audio_arr = np.concatenate(audio_arrays).astype(np.float32)
+            logger.info(f"🎤 CONCATENATED AUDIO SHAPE: {audio_arr.shape}, DURATION: {len(audio_arr) / sr:.2f}s")
             
             # Cache the audio for future use
             self._cache_audio(text, audio_arr)
             
             # Play audio
+            logger.info(f"🎤 PLAYING AUDIO: interruptible={interruptible}, audio_handler={self.audio_handler is not None}")
             if self.audio_handler and interruptible:
+                logger.info(f"🎤 USING INTERRUPTIBLE AUDIO HANDLER")
                 audio_arr = self._ensure_rate(audio_arr, sr, TTS_SAMPLE_RATE)
+                logger.info(f"🎤 AUDIO RATE CONVERTED: {len(audio_arr)} samples at {TTS_SAMPLE_RATE}Hz")
                 ok = self.audio_handler.play_audio(audio_arr)
+                logger.info(f"🎤 INTERRUPTIBLE PLAYBACK RESULT: {ok}")
                 if notify:
                     _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
                 return ok
             else:
-                return self._play_audio_sounddevice(audio_arr, sr, notify)
+                logger.info(f"🎤 USING SOUNDDEVICE PLAYBACK")
+                result = self._play_audio_sounddevice(audio_arr, sr, notify)
+                logger.info(f"🎤 SOUNDDEVICE PLAYBACK RESULT: {result}")
+                return result
                 
         except ImportError as e:
             logger.error(f"Piper import failed: {e}")
@@ -820,9 +873,13 @@ class TTSManager:
     def _play_audio_sounddevice(self, audio_arr: np.ndarray, sample_rate: int, notify: bool) -> bool:
         """Play audio using sounddevice with error recovery"""
         try:
+            logger.info(f"🎤 SOUNDDEVICE PLAY START: shape={audio_arr.shape}, sample_rate={sample_rate}, notify={notify}")
             import sounddevice as sd
+            logger.info(f"🎤 CALLING sd.play()...")
             sd.play(audio_arr, samplerate=sample_rate)
+            logger.info(f"🎤 CALLING sd.wait()...")
             sd.wait()
+            logger.info(f"🎤 SOUNDDEVICE PLAY COMPLETE")
             if notify:
                 _notify_dashboard_state('speaking_ended')
             return True
@@ -1015,21 +1072,27 @@ def speak(text: str):
     success = False
     
     try:
-        logger.info(f"🎤 TTS Request: '{text[:50]}{'...' if len(text) > 50 else ''}' (length: {len(text)} chars)")
+        logger.info(f"🎤 SPEAK FUNCTION START: '{text[:50]}{'...' if len(text) > 50 else ''}' (length: {len(text)} chars)")
+        logger.info(f"🎤 INTERRUPTION_ENABLED: {INTERRUPTION_ENABLED}, conversation_manager: {conversation_manager is not None}")
         
         if INTERRUPTION_ENABLED and conversation_manager:
+            logger.info(f"🎤 USING INTERRUPTIBLE TTS PATH")
             # Start conversation response tracking
             conversation_manager.start_response(text)
 
             # Use interruptible TTS
             _notify_dashboard_state('speaking_started')
+            logger.info(f"🎤 CALLING tts_manager.speak() with interruptible=True")
             completed = tts_manager.speak(text, interruptible=True, notify=False)
+            logger.info(f"🎤 tts_manager.speak() RESULT: {completed}")
 
             if completed:
+                logger.info(f"🎤 TTS COMPLETED SUCCESSFULLY")
                 conversation_manager.update_response(text, is_complete=True)
                 _notify_dashboard_state('speaking_ended')
                 success = True
             else:
+                logger.info(f"🎤 TTS WAS INTERRUPTED")
                 # TTS was interrupted - only interrupt if not already interrupted
                 with conversation_manager.lock:
                     if (conversation_manager.current_context and
@@ -1038,9 +1101,12 @@ def speak(text: str):
                 _notify_dashboard_state('speaking_interrupted')
 
         else:
+            logger.info(f"🎤 USING NON-INTERRUPTIBLE TTS PATH")
             # Use non-interruptible TTS
             _notify_dashboard_state('speaking_started')
+            logger.info(f"🎤 CALLING tts_manager.speak() with interruptible=False")
             completed = tts_manager.speak(text, interruptible=False, notify=False)
+            logger.info(f"🎤 tts_manager.speak() RESULT: {completed}")
             _notify_dashboard_state('speaking_ended')
             success = completed
             
