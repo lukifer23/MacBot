@@ -587,7 +587,9 @@ class MacBotOrchestrator:
         
         logger.info("🎉 All services started successfully!")
         host, port = CFG.get_web_dashboard_host_port()
-        logger.info(f"🌐 Web GUI: http://{host}:{port}")
+        # Display user-friendly URL (localhost instead of 0.0.0.0)
+        display_host = "127.0.0.1" if host == "0.0.0.0" else host
+        logger.info(f"🌐 Web GUI: http://{display_host}:{port}")
         logger.info(f"🤖 Voice Assistant: Ready")
         logger.info(f"🔍 RAG Service: {'Ready' if self.config.get('rag', {}).get('enabled', True) else 'Disabled'}")
 
@@ -829,7 +831,9 @@ class MacBotOrchestrator:
         
         # Service URLs
         host, port = CFG.get_web_dashboard_host_port()
-        print(f"\n🌐 Web GUI: http://{host}:{port}")
+        # Display user-friendly URL (localhost instead of 0.0.0.0)
+        display_host = "127.0.0.1" if host == "0.0.0.0" else host
+        print(f"\n🌐 Web GUI: http://{display_host}:{port}")
         print(f"🤖 LLM API: {CFG.get_llm_models_endpoint().rsplit('/v1',1)[0]}")
 
 def main():
