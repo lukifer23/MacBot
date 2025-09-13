@@ -99,3 +99,9 @@ voice_assistant:
   speaker_device: 0
   vad_threshold: 0.005
   wake_word: hey macbot
+  # Performance optimizations (optional tuning)
+  performance:
+    transcription_cache_size: 10
+    min_chunk_duration: 0.5
+    transcription_interval: 0.3
+    tts_buffer_size: 180

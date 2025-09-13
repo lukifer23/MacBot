@@ -323,6 +323,39 @@ def get_audio_silence_hang() -> float:
         return 0.6
 
 
+# Performance optimization settings
+def get_transcription_cache_size() -> int:
+    """Get transcription cache size"""
+    try:
+        return int(get("voice_assistant.performance.transcription_cache_size", 10))
+    except Exception:
+        return 10
+
+
+def get_min_chunk_duration() -> float:
+    """Get minimum chunk duration for transcription"""
+    try:
+        return float(get("voice_assistant.performance.min_chunk_duration", 0.5))
+    except Exception:
+        return 0.5
+
+
+def get_transcription_interval() -> float:
+    """Get minimum interval between transcriptions"""
+    try:
+        return float(get("voice_assistant.performance.transcription_interval", 0.3))
+    except Exception:
+        return 0.3
+
+
+def get_tts_buffer_size() -> int:
+    """Get TTS buffer size for streaming"""
+    try:
+        return int(get("voice_assistant.performance.tts_buffer_size", 180))
+    except Exception:
+        return 180
+
+
 def interruption_enabled() -> bool:
     return bool(get("voice_assistant.interruption.enabled", True))
 

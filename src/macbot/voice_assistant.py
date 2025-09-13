@@ -324,12 +324,13 @@ class StreamingTranscriber:
         
         # Optimization: cache for recent transcriptions to avoid redundant processing
         self._transcription_cache = {}
-        self._cache_size = 10
-        self._min_chunk_size = int(0.5 * sample_rate)  # 0.5 seconds minimum
+        self._cache_size = CFG.get_transcription_cache_size()
+        self._min_chunk_size = int(CFG.get_min_chunk_duration() * sample_rate)
         
         # Performance tracking
         self._transcription_count = 0
         self._last_transcription_time = 0
+        self._transcription_interval = CFG.get_transcription_interval()
 
     def add_chunk(self, chunk: np.ndarray) -> str:
         # Add new chunk to buffer
@@ -343,7 +344,7 @@ class StreamingTranscriber:
         # Only transcribe if we have enough audio and enough time has passed
         current_time = time.time()
         if (len(self._buffer) >= self._min_chunk_size and 
-            current_time - self._last_transcription_time > 0.3):  # 300ms minimum between transcriptions
+            current_time - self._last_transcription_time > self._transcription_interval):
             
             # Check cache first
             buffer_hash = hash(self._buffer.tobytes())
@@ -486,8 +487,9 @@ def llama_chat(user_text: str) -> str:
                     
                     # More intelligent sentence boundary detection
                     sentence_endings = [".", "?", "!", "\n", ":", ";"]
+                    tts_buffer_size = CFG.get_tts_buffer_size()
                     flush_now = (any(p in delta for p in sentence_endings) or 
-                               len(tts_buf) > 180 or  # Reduced from 220 for faster response
+                               len(tts_buf) > tts_buffer_size or
                                (len(tts_buf) > 100 and any(p in tts_buf for p in [",", "and", "but", "so"])))
                     
                     if flush_now and tts_buf.strip():
