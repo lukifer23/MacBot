@@ -46,7 +46,8 @@ def browse_website(url: str) -> str:
 
 def get_system_info() -> str:
     try:
-        cpu = psutil.cpu_percent(interval=1)
+        # Use non-blocking call to get instantaneous CPU usage
+        cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory().percent
         disk = psutil.disk_usage("/").percent
         return f"System Status: CPU {cpu}%, RAM {mem}%, Disk {disk}%"
