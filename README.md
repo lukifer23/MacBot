@@ -11,7 +11,7 @@
 - **🎤 Advanced Offline Voice Pipeline**: VAD + Whisper Large v3 STT (Metal accelerated) + Neural TTS
 - **🧠 High-Performance LLM**: Local inference with llama.cpp, optimized for Apple Silicon
 - **🔊 Superior Text-to-Speech**: Piper neural TTS with 70% smaller models, 2-3x faster synthesis, intelligent caching, and hardware acceleration
-- **⚡ Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, 2-3s TTS processing (quantized), instant cached playback
+- **⚡ Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, 2-3s TTS processing (quantized), instant cached playback, ambient noise filtering
 - **🔧 Enhanced macOS Integration**: Web search, screenshots, app launching, system monitoring
 - **🌐 Modern Web Dashboard**: Real-time monitoring with WebSocket live updates
 - **📚 Advanced RAG System**: Document ingestion and semantic search with ChromaDB

@@ -172,6 +172,7 @@ MacBot's TTS system has been significantly optimized for production use with mul
 - **Speed Enhancement**: 2-3x faster synthesis with quantized model
 - **Memory Efficiency**: 24% memory reduction (501MB → 379MB)
 - **Fallback Support**: Automatic fallback to original model if quantized fails
+- **Ambient Noise Filtering**: VAD threshold optimized to prevent false triggers from background noise
 
 #### **Intelligent Caching System**
 - **100-Phrase Cache**: LRU cache for instant playback of repeated phrases
@@ -245,6 +246,8 @@ voice_assistant:
 - **Efficient Array Operations**: Optimized numpy array operations for better performance
 - **Memory Pre-allocation**: Pre-allocated audio arrays when possible to reduce garbage collection
 - **View Operations**: Used array views instead of copies where possible
+- **Ambient Noise Filtering**: VAD threshold increased from 0.005 to 0.1 (20x less sensitive)
+- **Silence Detection**: Silence hang increased from 0.6s to 2.0s to prevent false triggers
 
 ## �🚀 Getting Started
 
