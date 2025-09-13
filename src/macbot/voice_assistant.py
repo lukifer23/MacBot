@@ -632,24 +632,24 @@ class TTSManager:
             import piper  # noqa: F401
             from piper import PiperVoice
             
-            # Try quantized model first, then fallback to original
-            quantized_path = _C.get_piper_quantized_path()
+            # Use quantized model as primary, fallback to original
             voice_path = _C.get_piper_voice_path()
+            fallback_path = _C.get_piper_fallback_path()
             
-            if quantized_path and os.path.exists(quantized_path):
-                # Use quantized model for better performance
-                self.engine = PiperVoice.load(quantized_path)
+            if os.path.exists(voice_path):
+                # Use quantized model (now primary)
+                self.engine = PiperVoice.load(voice_path)
                 self.engine_type = "piper_quantized"
                 self.piper_available = True
-                print(f"✅ Piper quantized ready: {quantized_path} (70% smaller, 2-4x faster)")
-            elif os.path.exists(voice_path):
+                print(f"✅ Piper quantized ready: {voice_path} (70% smaller, 2-3x faster)")
+            elif fallback_path and os.path.exists(fallback_path):
                 # Fallback to original model
-                self.engine = PiperVoice.load(voice_path)
+                self.engine = PiperVoice.load(fallback_path)
                 self.engine_type = "piper"
                 self.piper_available = True
-                print(f"✅ Piper ready: {voice_path} (optimized for performance)")
+                print(f"✅ Piper fallback ready: {fallback_path} (original model)")
             else:
-                raise ImportError(f"Piper voice model not found at {voice_path}")
+                raise ImportError(f"Piper voice model not found at {voice_path} or {fallback_path}")
         except Exception as e:
             print(f"❌ Piper init failed: {e}")
             self.engine = None

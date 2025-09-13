@@ -399,6 +399,14 @@ def get_piper_coreml_path() -> Optional[str]:
     except Exception:
         return None
 
+def get_piper_fallback_path() -> Optional[str]:
+    """Get fallback Piper model path"""
+    try:
+        path = get("models.tts.piper.fallback_path")
+        return path if path and os.path.exists(path) else None
+    except Exception:
+        return None
+
 
 def interruption_enabled() -> bool:
     return bool(get("voice_assistant.interruption.enabled", True))

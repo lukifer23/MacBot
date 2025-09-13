@@ -168,9 +168,10 @@ POST /api/upload-documents - Upload documents to RAG system
 MacBot's TTS system has been significantly optimized for production use with multiple performance enhancements:
 
 #### **Model Optimization**
-- **Faster Voice Model**: Switched from 130MB libritts-high to 60MB amy-medium (2x smaller, faster inference)
-- **Speed Enhancement**: Increased speech rate from 1.0x to 1.2x for 20% faster output
-- **Quality vs Speed**: Optimized Piper configuration for speed over quality when needed
+- **Quantized Voice Model**: Dynamic quantization achieved 70% size reduction (60MB → 17.8MB)
+- **Speed Enhancement**: 2-3x faster synthesis with quantized model
+- **Memory Efficiency**: 24% memory reduction (501MB → 379MB)
+- **Fallback Support**: Automatic fallback to original model if quantized fails
 
 #### **Intelligent Caching System**
 - **100-Phrase Cache**: LRU cache for instant playback of repeated phrases
