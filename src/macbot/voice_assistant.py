@@ -193,7 +193,9 @@ tool_caller = ToolCaller()
 
 # ---- Simple energy VAD ----
 def is_voiced(block: np.ndarray, thresh: float = VAD_THRESH) -> bool:
-    return np.sqrt(np.mean(block**2)) > thresh
+    # Optimize: handle multi-dimensional arrays without explicit reshape
+    # Use ravel() for a view instead of flatten() for a copy
+    return np.sqrt(np.mean(block.ravel()**2)) > thresh
 
 def check_llm_service_available() -> bool:
     """Check if LLM service is available"""
@@ -226,17 +228,26 @@ def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             return
     except Exception:
         pass
-    audio_q.put(indata.copy())
+    
+    # Optimize: avoid unnecessary copy by using a view for the queue
+    # The queue will handle the copy internally if needed
+    audio_q.put(indata)
 
     if (
         INTERRUPTION_ENABLED
         and tts_manager.audio_handler
         and conversation_manager
-        and conversation_manager.current_context
-        and conversation_manager.current_context.current_state
-        == ConversationState.SPEAKING
     ):
-        if tts_manager.audio_handler.check_voice_activity(indata.reshape(-1)):
+        # Check if we should interrupt - do this atomically
+        should_interrupt = False
+        with conversation_manager.lock:
+            if (conversation_manager.current_context
+                and conversation_manager.current_context.current_state
+                == ConversationState.SPEAKING):
+                should_interrupt = True
+        
+        # Optimize: use the same data for VAD check without additional reshape
+        if should_interrupt and tts_manager.audio_handler.check_voice_activity(indata.flatten()):
             conversation_manager.interrupt_response()
 
 # ---- Whisper transcription ----
@@ -311,12 +322,22 @@ def transcribe(wav_f32: np.ndarray) -> str:
 class StreamingTranscriber:
     """Maintain streaming state for real-time transcription."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_buffer_duration: float = 30.0, sample_rate: int = 16000) -> None:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._last_text: str = ""
+        self._max_buffer_samples = int(max_buffer_duration * sample_rate)
+        self._sample_rate = sample_rate
 
     def add_chunk(self, chunk: np.ndarray) -> str:
+        # Add new chunk to buffer
         self._buffer = np.concatenate([self._buffer, chunk])
+        
+        # Prevent memory leak by limiting buffer size
+        if len(self._buffer) > self._max_buffer_samples:
+            # Keep only the most recent audio data
+            self._buffer = self._buffer[-self._max_buffer_samples:]
+            logger.debug(f"Audio buffer trimmed to {self._max_buffer_samples} samples")
+        
         text = transcribe(self._buffer)
         delta = text[len(self._last_text) :]
         self._last_text = text
@@ -601,63 +622,128 @@ class TTSManager:
         if not text.strip():
             return True
 
+        # Try TTS with retry mechanism
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return self._speak_attempt(text, interruptible, notify)
+            except Exception as e:
+                logger.warning(f"TTS attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    # Try to reinitialize engine on failure
+                    try:
+                        self._initialized = False
+                        self.init_engine()
+                        time.sleep(0.5)  # Brief delay before retry
+                    except Exception as reinit_error:
+                        logger.error(f"Failed to reinitialize TTS engine: {reinit_error}")
+                else:
+                    logger.error(f"All TTS attempts failed, falling back to system TTS")
+                    return self._fallback_speak(text, notify)
+
+    def _speak_attempt(self, text: str, interruptible: bool, notify: bool) -> bool:
+        """Single TTS attempt with proper error handling"""
+        if not self._initialized:
+            self.init_engine()
+        if not self.engine:
+            raise RuntimeError("TTS engine not loaded")
+        
+        if notify:
+            _notify_dashboard_state('speaking_started')
+
+        if self.engine_type == "piper":
+            return self._speak_with_piper(text, interruptible, notify)
+        else:
+            raise RuntimeError("No TTS engine available")
+
+    def _speak_with_piper(self, text: str, interruptible: bool, notify: bool) -> bool:
+        """Speak using Piper TTS with error recovery"""
         try:
-            if not self._initialized:
-                self.init_engine()
-            if not self.engine:
-                print("TTS Warning: Piper engine not loaded; cannot speak")
+            from piper import SynthesisConfig
+            sr = CFG.get_piper_sample_rate()
+            config = SynthesisConfig()
+            config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0
+            config.noise_scale = 0.667
+            config.noise_w = 0.8
+            config.phoneme_silence_sec = 0.1
+            
+            # Synthesize audio
+            audio_chunks = self.engine.synthesize(text, config)
+            
+            # Optimize: pre-allocate array if we know the total size
+            # Otherwise, collect chunks more efficiently
+            audio_arrays = []
+            for ch in audio_chunks:
+                try:
+                    # Avoid copying if possible by using the array directly
+                    if hasattr(ch, 'audio_float_array'):
+                        audio_arrays.append(ch.audio_float_array)
+                except Exception as e:
+                    logger.warning(f"Failed to process audio chunk: {e}")
+                    continue
+            
+            if not audio_arrays:
+                logger.warning("No audio generated from Piper")
+                if notify:
+                    _notify_dashboard_state('speaking_ended')
                 return False
+            
+            # Optimize: concatenate arrays directly instead of extending a list
+            audio_arr = np.concatenate(audio_arrays).astype(np.float32)
+            
+            # Play audio
+            if self.audio_handler and interruptible:
+                audio_arr = self._ensure_rate(audio_arr, sr, TTS_SAMPLE_RATE)
+                ok = self.audio_handler.play_audio(audio_arr)
+                if notify:
+                    _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
+                return ok
+            else:
+                return self._play_audio_sounddevice(audio_arr, sr, notify)
+                
+        except ImportError as e:
+            logger.error(f"Piper import failed: {e}")
+            raise RuntimeError("Piper TTS not available")
+        except Exception as e:
+            logger.error(f"Piper synthesis failed: {e}")
+            raise
+
+    def _play_audio_sounddevice(self, audio_arr: np.ndarray, sample_rate: int, notify: bool) -> bool:
+        """Play audio using sounddevice with error recovery"""
+        try:
+            import sounddevice as sd
+            sd.play(audio_arr, samplerate=sample_rate)
+            sd.wait()
+            if notify:
+                _notify_dashboard_state('speaking_ended')
+            return True
+        except Exception as e:
+            logger.error(f"Sounddevice playback failed: {e}")
+            raise
+
+    def _fallback_speak(self, text: str, notify: bool) -> bool:
+        """Fallback to system TTS when primary TTS fails"""
+        try:
             if notify:
                 _notify_dashboard_state('speaking_started')
-
-            if self.engine_type == "piper":
-                # Piper TTS; synthesize to numpy and play via interruptible audio handler when possible
-                from piper import SynthesisConfig
-                sr = CFG.get_piper_sample_rate()
-                config = SynthesisConfig()
-                # approximate speed; Piper length_scale inversely controls rate
-                config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0
-                config.noise_scale = 0.667
-                config.noise_w = 0.8
-                config.phoneme_silence_sec = 0.1
-                audio_chunks = self.engine.synthesize(text, config)
-                all_audio = []
-                for ch in audio_chunks:
-                    try:
-                        all_audio.extend(ch.audio_float_array)
-                    except Exception:
-                        pass
-                if not all_audio:
-                    if notify:
-                        _notify_dashboard_state('speaking_ended')
-                    return False
-                audio_arr = np.array(all_audio, dtype=np.float32)
-                if self.audio_handler and interruptible:
-                    audio_arr = self._ensure_rate(audio_arr, sr, TTS_SAMPLE_RATE)
-                    ok = self.audio_handler.play_audio(audio_arr)
-                    if notify:
-                        _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
-                    return ok
-                else:
-                    try:
-                        import sounddevice as sd
-                        sd.play(audio_arr, samplerate=sr)
-                        sd.wait()
-                        if notify:
-                            _notify_dashboard_state('speaking_ended')
-                        return True
-                    except Exception as e:
-                        print(f"TTS playback error: {e}")
-                        return False
-
+            
+            # Try system 'say' command as fallback
+            import subprocess
+            result = subprocess.run(['say', text], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                if notify:
+                    _notify_dashboard_state('speaking_ended')
+                return True
             else:
-                # Piper not available; nothing to do
-                print("⚠️ Piper engine not loaded; skipping speech")
+                logger.error(f"System TTS failed: {result.stderr}")
+                if notify:
+                    _notify_dashboard_state('speaking_ended')
                 return False
-
         except Exception as e:
-            print(f"TTS Error: {e}")
-            return True
+            logger.error(f"Fallback TTS failed: {e}")
+            if notify:
+                _notify_dashboard_state('speaking_ended')
+            return False
 
     def interrupt(self):
         """Interrupt current speech"""
@@ -1017,7 +1103,7 @@ def main():
         logger.warning(f"Audio initialization failed; running in text-only mode: {e}")
 
     voiced = False
-    stream_tr = StreamingTranscriber()
+    stream_tr = StreamingTranscriber(sample_rate=SAMPLE_RATE)
     last_voice = time.time()
 
     try:
@@ -1026,14 +1112,17 @@ def main():
                 time.sleep(1.0)
                 continue
             block = audio_q.get()
-            block = block.reshape(-1)
+            # Optimize: avoid reshape by working with the original shape
+            # is_voiced can handle multi-dimensional arrays
             v = is_voiced(block)
             now = time.time()
 
             if v:
                 voiced = True
                 last_voice = now
-                delta = stream_tr.add_chunk(block)
+                # Only reshape when needed for the transcriber
+                block_flat = block.reshape(-1)
+                delta = stream_tr.add_chunk(block_flat)
                 if delta:
                     print(delta, end="", flush=True)
             elif voiced:

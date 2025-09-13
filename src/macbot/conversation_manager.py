@@ -305,14 +305,23 @@ class ConversationManager:
 
     def _notify_state_change(self):
         """Notify registered callbacks of state change"""
+        # Create a deep copy of context and callbacks while holding the lock
         with self.lock:
             context = self.current_context
             callbacks = list(self.state_change_callbacks)
+            
+            # Create a deep copy of the context to prevent race conditions
+            if context:
+                from copy import deepcopy
+                context_copy = deepcopy(context)
+            else:
+                context_copy = None
 
-        if context:
+        # Call callbacks outside the lock to prevent deadlocks
+        if context_copy:
             for callback in callbacks:
                 try:
-                    callback(context)
+                    callback(context_copy)
                 except Exception as e:
                     logger.error(f"State change callback error: {e}")
 

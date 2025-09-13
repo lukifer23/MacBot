@@ -7,8 +7,10 @@ with the documented schema (models.*, services.*, tools.*, prompts.*, voice_assi
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+from pathlib import Path
 
 import yaml
 
@@ -27,7 +29,172 @@ def _load() -> None:
             _CFG = yaml.safe_load(f) or {}
     else:
         _CFG = {}
+    
+    # Validate configuration after loading
+    _validate_config(_CFG)
     _LOADED = True
+
+
+def _validate_config(config: Dict[str, Any]) -> None:
+    """Validate configuration values and provide helpful error messages"""
+    errors = []
+    warnings = []
+    
+    # Validate models section
+    if "models" in config:
+        models_config = config["models"]
+        
+        # LLM validation
+        if "llm" in models_config:
+            llm_config = models_config["llm"]
+            
+            # Validate model path
+            if "path" in llm_config:
+                model_path = llm_config["path"]
+                if not isinstance(model_path, str):
+                    errors.append("models.llm.path must be a string")
+                elif not os.path.exists(model_path):
+                    warnings.append(f"LLM model file not found: {model_path}")
+            
+            # Validate context length
+            if "context_length" in llm_config:
+                ctx_len = llm_config["context_length"]
+                if not isinstance(ctx_len, (int, float)) or ctx_len <= 0:
+                    errors.append("models.llm.context_length must be a positive number")
+                elif ctx_len > 32768:
+                    warnings.append("models.llm.context_length is very large, may cause memory issues")
+            
+            # Validate temperature
+            if "temperature" in llm_config:
+                temp = llm_config["temperature"]
+                if not isinstance(temp, (int, float)) or temp < 0 or temp > 2:
+                    errors.append("models.llm.temperature must be between 0 and 2")
+            
+            # Validate max tokens
+            if "max_tokens" in llm_config:
+                max_tokens = llm_config["max_tokens"]
+                if not isinstance(max_tokens, (int, float)) or max_tokens <= 0:
+                    errors.append("models.llm.max_tokens must be a positive number")
+        
+        # STT validation
+        if "stt" in models_config:
+            stt_config = models_config["stt"]
+            
+            if "model" in stt_config:
+                model_path = stt_config["model"]
+                if not isinstance(model_path, str):
+                    errors.append("models.stt.model must be a string")
+                elif not os.path.exists(model_path):
+                    warnings.append(f"STT model file not found: {model_path}")
+            
+            if "bin" in stt_config:
+                bin_path = stt_config["bin"]
+                if not isinstance(bin_path, str):
+                    errors.append("models.stt.bin must be a string")
+                elif not os.path.exists(bin_path):
+                    warnings.append(f"STT binary not found: {bin_path}")
+        
+        # TTS validation
+        if "tts" in models_config:
+            tts_config = models_config["tts"]
+            
+            if "piper" in tts_config and "voice_path" in tts_config["piper"]:
+                voice_path = tts_config["piper"]["voice_path"]
+                if not isinstance(voice_path, str):
+                    errors.append("models.tts.piper.voice_path must be a string")
+                elif not os.path.exists(voice_path):
+                    warnings.append(f"Piper voice model not found: {voice_path}")
+    
+    # Validate services section
+    if "services" in config:
+        services_config = config["services"]
+        
+        # Validate port numbers
+        for service_name, service_config in services_config.items():
+            if isinstance(service_config, dict) and "port" in service_config:
+                port = service_config["port"]
+                if not isinstance(port, (int, float)) or port < 1 or port > 65535:
+                    errors.append(f"services.{service_name}.port must be between 1 and 65535")
+        
+        # Validate host addresses
+        for service_name, service_config in services_config.items():
+            if isinstance(service_config, dict) and "host" in service_config:
+                host = service_config["host"]
+                if not isinstance(host, str):
+                    errors.append(f"services.{service_name}.host must be a string")
+                elif not _is_valid_host(host):
+                    errors.append(f"services.{service_name}.host is not a valid host address")
+    
+    # Validate voice assistant section
+    if "voice_assistant" in config:
+        va_config = config["voice_assistant"]
+        
+        # Validate audio settings
+        if "sample_rate" in va_config:
+            sr = va_config["sample_rate"]
+            if not isinstance(sr, (int, float)) or sr <= 0:
+                errors.append("voice_assistant.sample_rate must be a positive number")
+            elif sr not in [8000, 16000, 22050, 44100, 48000]:
+                warnings.append("voice_assistant.sample_rate should be a standard rate (8000, 16000, 22050, 44100, 48000)")
+        
+        # Validate interruption settings
+        if "interruption" in va_config:
+            int_config = va_config["interruption"]
+            
+            if "interrupt_threshold" in int_config:
+                threshold = int_config["interrupt_threshold"]
+                if not isinstance(threshold, (int, float)) or threshold < 0 or threshold > 1:
+                    errors.append("voice_assistant.interruption.interrupt_threshold must be between 0 and 1")
+            
+            if "conversation_timeout" in int_config:
+                timeout = int_config["conversation_timeout"]
+                if not isinstance(timeout, (int, float)) or timeout <= 0:
+                    errors.append("voice_assistant.interruption.conversation_timeout must be a positive number")
+    
+    # Validate tools section
+    if "tools" in config:
+        tools_config = config["tools"]
+        
+        if "enabled" in tools_config:
+            enabled_tools = tools_config["enabled"]
+            if not isinstance(enabled_tools, list):
+                errors.append("tools.enabled must be a list")
+            else:
+                valid_tools = {"web_search", "screenshot", "app_launcher", "system_monitor", "weather", "rag_search"}
+                for tool in enabled_tools:
+                    if not isinstance(tool, str):
+                        errors.append("tools.enabled items must be strings")
+                    elif tool not in valid_tools:
+                        warnings.append(f"Unknown tool in tools.enabled: {tool}")
+    
+    # Report errors and warnings
+    if errors:
+        error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+        raise ValueError(error_msg)
+    
+    if warnings:
+        for warning in warnings:
+            print(f"Config warning: {warning}")
+
+
+def _is_valid_host(host: str) -> bool:
+    """Validate host address format"""
+    if not host or not isinstance(host, str):
+        return False
+    
+    # Check for localhost variants
+    if host in ["localhost", "127.0.0.1", "0.0.0.0"]:
+        return True
+    
+    # Check for valid IP address
+    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if re.match(ip_pattern, host):
+        parts = host.split('.')
+        return all(0 <= int(part) <= 255 for part in parts)
+    
+    # Check for valid hostname
+    hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+    return bool(re.match(hostname_pattern, host))
 
 
 def get(path: str, default: Any = None) -> Any:
@@ -299,3 +466,26 @@ def get_orchestrator_host_port() -> tuple[str, int]:
     except Exception:
         port = 8090
     return host, port
+
+
+def validate_config_silent() -> tuple[bool, List[str]]:
+    """Validate configuration without raising exceptions
+    
+    Returns:
+        tuple: (is_valid, list_of_warnings)
+    """
+    try:
+        _validate_config(_CFG)
+        return True, []
+    except ValueError as e:
+        return False, [str(e)]
+    except Exception as e:
+        return False, [f"Validation error: {e}"]
+
+
+def reload_config() -> None:
+    """Reload configuration from file"""
+    global _CFG, _LOADED
+    _LOADED = False
+    _CFG = {}
+    _load()
