@@ -17,6 +17,9 @@ models:
   tts:
     piper:
       voice_path: /Users/admin/Downloads/MacBot/piper_voices/en_US-amy-medium/model.onnx
+      # Quantized model options (uncomment to use)
+      # quantized_path: /Users/admin/Downloads/MacBot/optimized_models/piper_dynamic_quantized.onnx
+      # coreml_path: /Users/admin/Downloads/MacBot/optimized_models/piper_model.mlpackage
     speed: 1.2
     voice: en_US-amy-medium
 performance:

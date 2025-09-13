@@ -383,6 +383,22 @@ def get_tts_optimize_for_speed() -> bool:
     except Exception:
         return True
 
+def get_piper_quantized_path() -> Optional[str]:
+    """Get quantized Piper model path"""
+    try:
+        path = get("models.tts.piper.quantized_path")
+        return path if path and os.path.exists(path) else None
+    except Exception:
+        return None
+
+def get_piper_coreml_path() -> Optional[str]:
+    """Get CoreML Piper model path"""
+    try:
+        path = get("models.tts.piper.coreml_path")
+        return path if path and os.path.exists(path) else None
+    except Exception:
+        return None
+
 
 def interruption_enabled() -> bool:
     return bool(get("voice_assistant.interruption.enabled", True))
