@@ -1087,6 +1087,13 @@ def main():
     print("   • 'system info' - System status")
     print("🌐 Tip: Start the web dashboard via 'macbot-dashboard' for UI.")
 
+    # Initialize TTS engine in main process
+    try:
+        tts_manager.init_engine()
+        print(f"✅ TTS engine ready: {tts_manager.engine_type}")
+    except Exception as e:
+        print(f"❌ TTS engine init failed: {e}")
+
     # Initialize message bus client for interruption signals (if enabled)
     global bus_client
     if INTERRUPTION_ENABLED and bus_client is None:
