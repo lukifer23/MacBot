@@ -340,6 +340,57 @@ def api_assistant_speak():
         logger.warning(f"assistant speak proxy failed: {e}")
         return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
 
+@app.route('/api/llm-settings')
+def api_llm_settings():
+    """Return current LLM settings from config."""
+    try:
+        payload = {
+            'model_path': CFG.get_llm_model_path(),
+            'context_length': CFG.get_llm_context_length(),
+            'threads': CFG.get_llm_threads(),
+            'temperature': CFG.get_llm_temperature(),
+            'max_tokens': CFG.get_llm_max_tokens(),
+        }
+        return jsonify({'success': True, 'data': payload})
+    except Exception as e:
+        logger.error(f"llm-settings error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/set-llm-max-tokens', methods=['POST'])
+def api_set_llm_max_tokens():
+    """Set max_tokens in config and nudge voice assistant to apply at runtime."""
+    try:
+        data = request.get_json() or {}
+        mt = int(data.get('max_tokens', 0))
+        if mt <= 0 or mt > 8192:
+            return jsonify({'success': False, 'error': 'max_tokens must be in (0, 8192]'}), 400
+        # persist
+        try:
+            import yaml
+            cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml'))
+            y = {}
+            if os.path.exists(cfg_path):
+                with open(cfg_path) as f:
+                    y = yaml.safe_load(f) or {}
+            y.setdefault('models', {}).setdefault('llm', {})['max_tokens'] = mt
+            with open(cfg_path, 'w') as f:
+                yaml.safe_dump(y, f)
+            try:
+                CFG.reload_config()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"Failed to persist max_tokens: {e}")
+        # ask VA to update runtime if available
+        try:
+            _request_with_retry('POST', f"http://{va_host}:{va_port}/set-llm-max-tokens", json_body={'max_tokens': mt}, timeout=3, retries=1)
+        except Exception as e:
+            logger.debug(f"VA set-llm-max-tokens failed: {e}")
+        return jsonify({'success': True, 'max_tokens': mt})
+    except Exception as e:
+        logger.error(f"set-llm-max-tokens error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/assistant-event', methods=['POST'])
 def api_assistant_event():
     """Internal endpoint for the Voice Assistant to push state events.

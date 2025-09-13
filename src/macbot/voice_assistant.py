@@ -1387,6 +1387,40 @@ def main():
             except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
 
+        @control_app.route('/set-llm-max-tokens', methods=['POST'])
+        def _control_set_llm_max_tokens():
+            try:
+                data = request.get_json() or {}
+                mt = int(data.get('max_tokens', 0))
+                if mt <= 0 or mt > 8192:
+                    return jsonify({'ok': False, 'error': 'max_tokens must be in (0, 8192]'}), 400
+                # persist
+                try:
+                    import yaml
+                    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml'))
+                    y = {}
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path) as f:
+                            y = yaml.safe_load(f) or {}
+                    y.setdefault('models', {}).setdefault('llm', {})['max_tokens'] = mt
+                    with open(cfg_path, 'w') as f:
+                        yaml.safe_dump(y, f)
+                    try:
+                        CFG.reload_config()
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"Failed to persist max_tokens: {e}")
+                # set runtime
+                try:
+                    global LLAMA_MAXTOK
+                    LLAMA_MAXTOK = mt
+                except Exception:
+                    pass
+                return jsonify({'ok': True, 'max_tokens': mt})
+            except Exception as e:
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
         @control_app.route('/preview-voice', methods=['POST'])
         def _control_preview_voice():
             try:

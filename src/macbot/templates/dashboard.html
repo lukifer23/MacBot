@@ -515,6 +515,15 @@
         <!-- Bottom: Document Input/RAG -->
         <div class="document-section">
             <div class="voice-settings">
+                <h3>🧠 Model Settings</h3>
+                <div class="voice-settings-controls">
+                    <label for="max-tokens-input" style="font-size:0.9em;color:#6e6e73;">Max tokens:</label>
+                    <input type="number" id="max-tokens-input" min="1" max="8192" class="voice-select" style="width:140px;" />
+                    <span id="max-tokens-current" style="font-size:0.9em; color:#6e6e73;">Current: —</span>
+                    <button class="browse-btn" id="apply-max-tokens-btn" style="background:#5856d6;">Apply</button>
+                </div>
+            </div>
+            <div class="voice-settings">
                 <h3>🎙️ Voice Settings</h3>
                 <div class="voice-settings-controls">
                     <select id="voice-select" class="voice-select"></select>

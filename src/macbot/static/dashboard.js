@@ -179,6 +179,19 @@
     if (selfCheckBtn) selfCheckBtn.addEventListener('click', runSelfCheck);
     const prevBtn = byId('preview-voice-btn');
     const applyBtn = byId('apply-voice-btn');
+    const applyMaxBtn = byId('apply-max-tokens-btn');
+    if (applyMaxBtn) applyMaxBtn.addEventListener('click', async ()=>{
+      const inp = byId('max-tokens-input');
+      const v = parseInt(inp && inp.value ? inp.value : '0', 10);
+      if (!v || v <= 0 || v > 8192) { addChatMessage('Please enter a valid max tokens (1..8192)', 'system'); return; }
+      try {
+        const r = await fetch('/api/set-llm-max-tokens', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ max_tokens: v })});
+        const j = await r.json();
+        if (!r.ok || !j.success) { addChatMessage('❌ Failed to apply max tokens', 'system'); return; }
+        addChatMessage('✅ Max tokens updated to ' + j.max_tokens, 'system');
+        loadLLMSettings();
+      } catch (e) { addChatMessage('❌ Error updating max tokens: ' + e.message, 'system'); }
+    });
     if (prevBtn) prevBtn.addEventListener('click', async ()=>{
       const sel = byId('voice-select'); if (!sel || !sel.value) return;
       try { await fetch('http://localhost:8123/preview-voice', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text: 'Hey there, how can I help?' })}); } catch(_){}
@@ -508,6 +521,7 @@
     setInterval(updateServiceStatus, 5000);
     setInterval(updateMetrics, 10000);
     loadVoices();
+    loadLLMSettings();
   }
   function isSecureOrigin() {
     // Browsers allow mic on https or on localhost/127.0.0.1
@@ -520,6 +534,20 @@
   } else {
     boot();
   }
+  async function loadLLMSettings() {
+    try {
+      const r = await fetch('/api/llm-settings');
+      if (!r.ok) return;
+      const j = await r.json();
+      const d = j && j.data ? j.data : null;
+      if (!d) return;
+      const inp = byId('max-tokens-input');
+      const cur = byId('max-tokens-current');
+      if (inp) inp.value = d.max_tokens || 512;
+      if (cur) cur.textContent = 'Current: ' + (d.max_tokens || '—');
+    } catch (_) {}
+  }
+
   async function updateMetrics() {
     try {
       const r = await fetch('/api/metrics');

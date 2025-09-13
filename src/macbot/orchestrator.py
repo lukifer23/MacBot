@@ -706,6 +706,10 @@ class MacBotOrchestrator:
                 llm['context'] = CFG.get_llm_context_length()
                 llm['threads'] = CFG.get_llm_threads()
                 llm['gpu_layers'] = 999
+                try:
+                    llm['max_tokens'] = CFG.get_llm_max_tokens()
+                except Exception:
+                    pass
                 # process RSS
                 p = self.processes.get('llama')
                 if p and p.poll() is None:

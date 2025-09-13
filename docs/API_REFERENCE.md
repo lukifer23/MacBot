@@ -102,6 +102,12 @@ MacBot provides several API endpoints for interacting with the system programmat
   { "text": "Hey there, how can I help?" }
   ```
 
+### New LLM Control Endpoint
+- `POST /set-llm-max-tokens` → Update max completion tokens at runtime and persist to config
+  ```json
+  { "max_tokens": 1024 }
+  ```
+
 ## Web Dashboard API
 **Base URL:** `http://localhost:3000`
 
@@ -437,3 +443,6 @@ Error responses include:
 ## Authentication
 
 Currently, no authentication is required as all services run locally.
+### LLM Settings API (Dashboard)
+- `GET /api/llm-settings` → Current model path, context_length, temperature, threads, max_tokens
+- `POST /api/set-llm-max-tokens` → Persist `models.llm.max_tokens` and nudge VA to apply at runtime
