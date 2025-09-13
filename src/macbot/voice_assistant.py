@@ -10,6 +10,7 @@ import signal
 import uuid
 import numpy as np
 import psutil
+import platform
 try:
     import sounddevice as sd
 except Exception as _sd_imp_err:
@@ -598,6 +599,20 @@ class TTSManager:
         self._tts_queue = queue.Queue(maxsize=MAX_CONCURRENT_TTS)
         self._active_tts_count = 0
         self._tts_count_lock = threading.Lock()
+        
+        # Async TTS processing
+        self._tts_thread_pool = []
+        self._tts_cache = {}  # Cache for common phrases
+        self._cache_max_size = CFG.get_tts_cache_size()
+        self._cache_enabled = CFG.get_tts_cache_enabled()
+        self._parallel_processing = CFG.get_tts_parallel_processing()
+        self._optimize_for_speed = CFG.get_tts_optimize_for_speed()
+        self._cache_lock = threading.Lock()
+        
+        # Hardware acceleration detection
+        self._mps_available = self._detect_mps_support()
+        self._coreml_available = self._detect_coreml_support()
+        logger.info(f"🚀 Hardware acceleration: MPS={self._mps_available}, CoreML={self._coreml_available}")
         self._reload_sec = CFG.get_piper_reload_sec()
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
@@ -722,15 +737,27 @@ class TTSManager:
             raise RuntimeError("No TTS engine available")
 
     def _speak_with_piper(self, text: str, interruptible: bool, notify: bool) -> bool:
-        """Speak using Piper TTS with error recovery"""
+        """Speak using Piper TTS with error recovery and caching"""
         try:
+            # Check cache first
+            cached_audio = self._get_cached_audio(text)
+            if cached_audio is not None:
+                logger.info(f"🎯 TTS Cache HIT for: '{text[:30]}...'")
+                self._log_cache_stats(True)
+                return self._play_cached_audio(cached_audio, interruptible, notify)
+            
+            logger.info(f"🔄 TTS Cache MISS for: '{text[:30]}...'")
+            self._log_cache_stats(False)
+            
             from piper import SynthesisConfig
             sr = CFG.get_piper_sample_rate()
             config = SynthesisConfig()
+            
+            # Optimize for speed over quality
             config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0
-            config.noise_scale = 0.667
-            config.noise_w = 0.8
-            config.phoneme_silence_sec = 0.1
+            config.noise_scale = 0.5  # Reduced for faster synthesis
+            config.noise_w = 0.6      # Reduced for faster synthesis
+            config.phoneme_silence_sec = 0.05  # Reduced silence for faster output
             
             # Synthesize audio
             audio_chunks = self.engine.synthesize(text, config)
@@ -755,6 +782,9 @@ class TTSManager:
             
             # Optimize: concatenate arrays directly instead of extending a list
             audio_arr = np.concatenate(audio_arrays).astype(np.float32)
+            
+            # Cache the audio for future use
+            self._cache_audio(text, audio_arr)
             
             # Play audio
             if self.audio_handler and interruptible:
@@ -844,7 +874,94 @@ class TTSManager:
                 stats['cpu_percent'] = 0
                 stats['memory_mb'] = 0
                 stats['memory_percent'] = 0
+            
+            # Add cache statistics
+            with self._cache_lock:
+                stats['cache_size'] = len(self._tts_cache)
+                stats['cache_hits'] = self.performance_stats.get('cache_hits', 0)
+                stats['cache_misses'] = self.performance_stats.get('cache_misses', 0)
+            
             return stats
+    
+    def _get_cached_audio(self, text: str) -> Optional[np.ndarray]:
+        """Get cached audio for text if available"""
+        if not self._cache_enabled:
+            return None
+        with self._cache_lock:
+            return self._tts_cache.get(text)
+    
+    def _cache_audio(self, text: str, audio: np.ndarray) -> None:
+        """Cache audio for text"""
+        if not self._cache_enabled:
+            return
+        with self._cache_lock:
+            # Simple LRU: remove oldest if cache is full
+            if len(self._tts_cache) >= self._cache_max_size:
+                # Remove first item (oldest)
+                oldest_key = next(iter(self._tts_cache))
+                del self._tts_cache[oldest_key]
+            
+            self._tts_cache[text] = audio.copy()
+    
+    def _log_cache_stats(self, hit: bool) -> None:
+        """Log cache hit/miss statistics"""
+        with self.performance_lock:
+            if hit:
+                self.performance_stats['cache_hits'] = self.performance_stats.get('cache_hits', 0) + 1
+            else:
+                self.performance_stats['cache_misses'] = self.performance_stats.get('cache_misses', 0) + 1
+    
+    def _play_cached_audio(self, audio: np.ndarray, interruptible: bool, notify: bool) -> bool:
+        """Play cached audio with optimized performance"""
+        try:
+            sr = CFG.get_piper_sample_rate()
+            
+            # Play audio
+            if self.audio_handler and interruptible:
+                audio = self._ensure_rate(audio, sr, TTS_SAMPLE_RATE)
+                ok = self.audio_handler.play_audio(audio)
+                if notify:
+                    _notify_dashboard_state('speaking_ended' if ok else 'speaking_interrupted')
+                return ok
+            else:
+                return self._play_audio_sounddevice(audio, sr, notify)
+        except Exception as e:
+            logger.error(f"Error playing cached audio: {e}")
+            return False
+    
+    def _detect_mps_support(self) -> bool:
+        """Detect if Metal Performance Shaders (MPS) is available"""
+        try:
+            if platform.system() != "Darwin":
+                return False
+            
+            # Check for Apple Silicon
+            import subprocess
+            result = subprocess.run(['uname', '-m'], capture_output=True, text=True)
+            if result.returncode == 0 and 'arm' in result.stdout.lower():
+                # Check if MPS is available in PyTorch (if installed)
+                try:
+                    import torch
+                    return torch.backends.mps.is_available()
+                except ImportError:
+                    return False
+            return False
+        except Exception:
+            return False
+    
+    def _detect_coreml_support(self) -> bool:
+        """Detect if CoreML is available for optimization"""
+        try:
+            if platform.system() != "Darwin":
+                return False
+            
+            # Check for CoreML framework
+            import subprocess
+            result = subprocess.run(['python', '-c', 'import coremltools'], 
+                                  capture_output=True, text=True)
+            return result.returncode == 0
+        except Exception:
+            return False
 
 # Initialize TTS manager
 tts_manager = TTSManager()

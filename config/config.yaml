@@ -16,9 +16,9 @@ models:
     model: models/whisper.cpp/models/ggml-base.en.bin
   tts:
     piper:
-      voice_path: /Users/admin/Downloads/MacBot/piper_voices/en_US-libritts-high/model.onnx
-    speed: 1.0
-    voice: en_US-libritts-high
+      voice_path: /Users/admin/Downloads/MacBot/piper_voices/en_US-amy-medium/model.onnx
+    speed: 1.2
+    voice: en_US-amy-medium
 performance:
   cpu_limit_percent: 80
   max_concurrent_requests: 3
@@ -105,3 +105,7 @@ voice_assistant:
     min_chunk_duration: 0.5
     transcription_interval: 0.3
     tts_buffer_size: 180
+    tts_cache_size: 100
+    tts_cache_enabled: true
+    tts_parallel_processing: true
+    tts_optimize_for_speed: true

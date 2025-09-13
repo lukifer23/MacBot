@@ -355,6 +355,34 @@ def get_tts_buffer_size() -> int:
     except Exception:
         return 180
 
+def get_tts_cache_size() -> int:
+    """Get TTS cache size"""
+    try:
+        return int(get("voice_assistant.performance.tts_cache_size", 100))
+    except Exception:
+        return 100
+
+def get_tts_cache_enabled() -> bool:
+    """Get TTS cache enabled status"""
+    try:
+        return bool(get("voice_assistant.performance.tts_cache_enabled", True))
+    except Exception:
+        return True
+
+def get_tts_parallel_processing() -> bool:
+    """Get TTS parallel processing enabled status"""
+    try:
+        return bool(get("voice_assistant.performance.tts_parallel_processing", True))
+    except Exception:
+        return True
+
+def get_tts_optimize_for_speed() -> bool:
+    """Get TTS optimize for speed status"""
+    try:
+        return bool(get("voice_assistant.performance.tts_optimize_for_speed", True))
+    except Exception:
+        return True
+
 
 def interruption_enabled() -> bool:
     return bool(get("voice_assistant.interruption.enabled", True))
