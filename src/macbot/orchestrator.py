@@ -219,6 +219,13 @@ class MacBotOrchestrator:
             self.ws_bus_server = start_message_bus_server(host=host, port=port)
             logger.info("✅ WS message bus started")
             return True
+        except OSError as e:
+            if "Address already in use" in str(e):
+                logger.warning(f"Port {port} already in use, trying to continue without WS message bus")
+                return False
+            else:
+                logger.error(f"Failed to start WS message bus: {e}")
+                return False
         except Exception as e:
             logger.warning(f"Failed to start WS message bus: {e}")
             return False
@@ -333,6 +340,17 @@ class MacBotOrchestrator:
             if service.health_endpoint:
                 delay = backoff
                 for _ in range(retries):
+                    # Check if process is still alive
+                    if process.poll() is not None:
+                        stdout, stderr = process.communicate()
+                        logger.error(f"❌ {service.name} process died during startup")
+                        if stdout:
+                            logger.error(f"STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+                        if stderr:
+                            logger.error(f"STDERR: {stderr.decode('utf-8', errors='ignore')}")
+                        result['error'] = 'process died during startup'
+                        return result
+                    
                     try:
                         r = requests.get(service.health_endpoint, timeout=2)
                         if r.status_code == 200:
@@ -345,7 +363,7 @@ class MacBotOrchestrator:
                     delay *= 2
                 # Failed health check
                 result['error'] = result.get('error', 'health check failed')
-                logger.error(f"❌ {service.name} failed to start", extra=result)
+                logger.error(f"❌ {service.name} failed to start: {result['error']}")
                 return result
 
             result['success'] = True
@@ -493,6 +511,15 @@ class MacBotOrchestrator:
         for name, process in self.processes.items():
             if process.poll() is not None:
                 logger.warning(f"Process {name} died, restarting...")
+                # Try to capture any remaining output
+                try:
+                    stdout, stderr = process.communicate(timeout=1)
+                    if stdout:
+                        logger.error(f"{name} STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+                    if stderr:
+                        logger.error(f"{name} STDERR: {stderr.decode('utf-8', errors='ignore')}")
+                except Exception:
+                    pass  # Process already terminated
                 self.restart_process(name)
     
     def restart_process(self, name: str) -> Dict[str, Any]:
@@ -766,6 +793,11 @@ class MacBotOrchestrator:
         def run():
             try:
                 app.run(host=host, port=port, debug=False, use_reloader=False)
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    logger.warning(f"Port {port} already in use, skipping control server")
+                else:
+                    logger.warning(f"Control server failed: {e}")
             except Exception as e:
                 logger.warning(f"Control server failed: {e}")
 
