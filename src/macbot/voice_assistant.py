@@ -618,14 +618,8 @@ class TTSManager:
             import piper  # noqa: F401
             from piper import PiperVoice
             if os.path.exists(voice_path):
-                # Optimize Piper configuration for better performance
-                self.engine = PiperVoice.load(
-                    voice_path,
-                    use_cuda=False,  # Disable CUDA for stability
-                    num_threads=4,   # Limit threads to prevent resource contention
-                    length_penalty=1.0,  # Optimize for speed
-                    repetition_penalty=1.0
-                )
+                # Load Piper with basic configuration (remove unsupported parameters)
+                self.engine = PiperVoice.load(voice_path)
                 self.engine_type = "piper"
                 self.piper_available = True
                 print(f"✅ Piper ready: {voice_path} (optimized for performance)")
