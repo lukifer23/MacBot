@@ -359,6 +359,15 @@ def api_voice():
         # Process audio with Whisper
         transcription = process_voice_with_whisper(audio_data)
         
+        # Check if transcription is actually an error message
+        if transcription and transcription.startswith('Audio conversion failed'):
+            logger.error(f"FFmpeg error: {transcription}")
+            return jsonify({'success': False, 'error': 'Audio processing failed', 'code': 'audio_processing_error'}), 500
+        
+        if transcription and transcription.startswith('ffmpeg not found'):
+            logger.error(f"FFmpeg not found: {transcription}")
+            return jsonify({'success': False, 'error': 'Audio processing not available', 'code': 'ffmpeg_not_found'}), 503
+        
         # Update conversation state
         conversation_state['last_activity'] = datetime.now()
         conversation_state['current_speaker'] = 'user'

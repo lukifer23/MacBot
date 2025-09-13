@@ -447,7 +447,8 @@
           addChatMessage(data.content, 'assistant'); setStatus('Ready', 'info');
           if (isSpeakEnabled()) speakViaAssistant(data.content);
         } else if (data.type === 'user_message') {
-          addChatMessage(data.content, 'user');
+          // Don't add user messages here - they're already added when sent
+          // addChatMessage(data.content, 'user');
         } else if (data.type === 'error_message') {
           addChatMessage(data.content, 'system'); setStatus('Ready','info');
         }

@@ -1159,7 +1159,7 @@ def main():
                 if not text:
                     return jsonify({'ok': False, 'error': 'text required'}), 400
                 # ensure TTS is ready
-                if tts_manager.engine is None or tts_manager.engine_type != 'piper':
+                if tts_manager.engine is None or tts_manager.engine_type not in ['piper', 'piper_quantized']:
                     logger.info("TTS engine not ready, initializing...")
                     try:
                         tts_manager.init_engine()
@@ -1320,7 +1320,7 @@ def main():
 
                 # Piper-only reporting
                 planned_engine = 'piper' if os.path.exists(CFG.get_piper_voice_path()) else None
-                engine_loaded = (tts_manager.engine_type == 'piper' and tts_manager.engine is not None)
+                engine_loaded = (tts_manager.engine_type in ['piper', 'piper_quantized'] and tts_manager.engine is not None)
 
                 return jsonify({
                     'stt': {
