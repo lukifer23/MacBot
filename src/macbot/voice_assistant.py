@@ -149,62 +149,135 @@ except Exception as e:
 
 # ---- Tool calling system ----
 class ToolCaller:
+    """Dispatch helper that only exposes tools permitted by configuration."""
+
+    _METHOD_MAP = {
+        "web_search": ("web_search", tools.web_search),
+        "browse_website": ("web_search", tools.browse_website),
+        "get_system_info": ("system_monitor", tools.get_system_info),
+        "search_knowledge_base": ("rag_search", lambda q: tools.rag_search(q)),
+        "open_app": ("app_launcher", tools.open_app),
+        "take_screenshot": ("screenshot", tools.take_screenshot),
+        "get_weather": ("weather", lambda: tools.get_weather()),
+    }
+
     def __init__(self):
+        self._enabled_tools = set(CFG.get_enabled_tools())
+        self._method_to_feature = {
+            method: feature for method, (feature, _) in self._METHOD_MAP.items()
+        }
         self.tools = {
-            "web_search": tools.web_search,
-            "browse_website": tools.browse_website,
-            "get_system_info": tools.get_system_info,
-            "search_knowledge_base": lambda q: tools.rag_search(q),
-            "open_app": tools.open_app,
-            "take_screenshot": tools.take_screenshot,
-            "get_weather": lambda: tools.get_weather(),
+            method: func
+            for method, (feature, func) in self._METHOD_MAP.items()
+            if feature in self._enabled_tools
         }
 
+    def has_enabled_tools(self) -> bool:
+        return bool(self._enabled_tools)
+
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        return tool_name in self._enabled_tools
+
+    def _get_callable(self, method_name: str):
+        func = self.tools.get(method_name)
+        if func is None:
+            logger.debug(f"Tool callable '{method_name}' not available - check configuration")
+        return func
+
     def web_search(self, query: str) -> str:
+        if not self.is_tool_enabled("web_search"):
+            return "Web search is currently disabled."
+
+        func = self._get_callable("web_search")
+        if func is None:
+            return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
+
         try:
-            return tools.web_search(query)
+            return func(query)
         except Exception as e:
             logger.error(f"Web search failed: {e}")
             return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
 
     def browse_website(self, url: str) -> str:
+        if not self.is_tool_enabled("web_search"):
+            return "Web browsing is currently disabled."
+
+        func = self._get_callable("browse_website")
+        if func is None:
+            return f"I couldn't open {url} right now. The website browsing service might be unavailable."
+
         try:
-            return tools.browse_website(url)
+            return func(url)
         except Exception as e:
             logger.error(f"Website browsing failed: {e}")
             return f"I couldn't open {url} right now. The website browsing service might be unavailable."
 
     def get_system_info(self) -> str:
+        if not self.is_tool_enabled("system_monitor"):
+            return "System monitoring is currently disabled."
+
+        func = self._get_callable("get_system_info")
+        if func is None:
+            return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
+
         try:
-            return tools.get_system_info()
+            return func()
         except Exception as e:
             logger.error(f"System info retrieval failed: {e}")
             return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
 
     def search_knowledge_base(self, query: str) -> str:
+        if not self.is_tool_enabled("rag_search"):
+            return "Knowledge base search is currently disabled."
+
+        func = self._get_callable("search_knowledge_base")
+        if func is None:
+            return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
+
         try:
-            return tools.rag_search(query)
+            return func(query)
         except Exception as e:
             logger.error(f"Knowledge base search failed: {e}")
             return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
 
     def open_app(self, app_name: str) -> str:
+        if not self.is_tool_enabled("app_launcher"):
+            return "Application launching is currently disabled."
+
+        func = self._get_callable("open_app")
+        if func is None:
+            return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
+
         try:
-            return tools.open_app(app_name)
+            return func(app_name)
         except Exception as e:
             logger.error(f"App opening failed: {e}")
             return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
 
     def take_screenshot(self) -> str:
+        if not self.is_tool_enabled("screenshot"):
+            return "Screenshot capture is currently disabled."
+
+        func = self._get_callable("take_screenshot")
+        if func is None:
+            return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
+
         try:
-            return tools.take_screenshot()
+            return func()
         except Exception as e:
             logger.error(f"Screenshot failed: {e}")
             return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
 
     def get_weather(self) -> str:
+        if not self.is_tool_enabled("weather"):
+            return "Weather lookup is currently disabled."
+
+        func = self._get_callable("get_weather")
+        if func is None:
+            return "I couldn't get weather information right now. The weather service might be unavailable."
+
         try:
-            return tools.get_weather()
+            return func()
         except Exception as e:
             logger.error(f"Weather retrieval failed: {e}")
             return "I couldn't get weather information right now. The weather service might be unavailable."
@@ -409,48 +482,73 @@ TTS_STREAMED = False  # set true when llama_chat performs streaming TTS
 
 def llama_chat(user_text: str) -> str:
     # Check if user is requesting tool usage
-    if CFG.tools_enabled() and tool_caller:
+    tool_support = tool_caller if tool_caller and tool_caller.has_enabled_tools() else None
+    if tool_support:
         # Enhanced keyword-based tool detection
         user_text_lower = user_text.lower()
-        
+
         # Web search
-        if "search" in user_text_lower and ("web" in user_text_lower or "for" in user_text_lower):
+        if (
+            tool_support.is_tool_enabled("web_search")
+            and "search" in user_text_lower
+            and ("web" in user_text_lower or "for" in user_text_lower)
+        ):
             query = user_text_lower.replace("search", "").replace("for", "").replace("web", "").strip()
-            result = tool_caller.web_search(query)
+            result = tool_support.web_search(query)
             return f"I searched for '{query}'. {result}"
-        
+
         # Website browsing
-        elif "browse" in user_text_lower or "website" in user_text_lower or "open website" in user_text_lower:
+        elif (
+            tool_support.is_tool_enabled("web_search")
+            and (
+                "browse" in user_text_lower
+                or "website" in user_text_lower
+                or "open website" in user_text_lower
+            )
+        ):
             words = user_text.split()
             for word in words:
                 if word.startswith(("http://", "https://", "www.")):
-                    result = tool_caller.browse_website(word)
+                    result = tool_support.browse_website(word)
                     return f"I browsed {word}. {result}"
-        
+
         # App opening
-        elif "open" in user_text_lower and "app" in user_text_lower:
+        elif (
+            tool_support.is_tool_enabled("app_launcher")
+            and "open" in user_text_lower
+            and "app" in user_text_lower
+        ):
             app_name = user_text_lower.replace("open", "").replace("app", "").strip()
-            result = tool_caller.open_app(app_name)
+            result = tool_support.open_app(app_name)
             return result
-        
+
         # Screenshot
-        elif "screenshot" in user_text_lower or "take picture" in user_text_lower:
-            result = tool_caller.take_screenshot()
+        elif tool_support.is_tool_enabled("screenshot") and (
+            "screenshot" in user_text_lower or "take picture" in user_text_lower
+        ):
+            result = tool_support.take_screenshot()
             return result
-        
+
         # Weather
-        elif "weather" in user_text_lower:
-            result = tool_caller.get_weather()
+        elif tool_support.is_tool_enabled("weather") and "weather" in user_text_lower:
+            result = tool_support.get_weather()
             return result
-        
+
         # System info
-        elif "system" in user_text_lower and "info" in user_text_lower:
-            result = tool_caller.get_system_info()
+        elif (
+            tool_support.is_tool_enabled("system_monitor")
+            and "system" in user_text_lower
+            and "info" in user_text_lower
+        ):
+            result = tool_support.get_system_info()
             return f"Here's your system information: {result}"
-        
+
         # RAG search
-        elif any(keyword in user_text_lower for keyword in ["knowledge", "document", "file", "kb", "search kb", "search knowledge"]):
-            result = tool_caller.search_knowledge_base(user_text)
+        elif tool_support.is_tool_enabled("rag_search") and any(
+            keyword in user_text_lower
+            for keyword in ["knowledge", "document", "file", "kb", "search kb", "search knowledge"]
+        ):
+            result = tool_support.search_knowledge_base(user_text)
             return result
     
     # Regular chat if no tools needed
