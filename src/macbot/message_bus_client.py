@@ -30,7 +30,7 @@ except Exception:
     except Exception:
         pass
 
-from .message_bus import message_bus  # in-process fallback
+from . import message_bus as message_bus_module  # in-process fallback
 from .logging_utils import setup_logger
 
 
@@ -117,8 +117,8 @@ class MessageBusClient:
             pass
         # Unregister from in-proc bus if used
         try:
-            if self._inproc_queue is not None and self.client_id and message_bus:
-                message_bus.unregister_client(self.client_id)
+            if self._inproc_queue is not None and self.client_id and message_bus_module.message_bus:
+                message_bus_module.message_bus.unregister_client(self.client_id)
         except Exception:
             pass
         if self._thread:
@@ -177,7 +177,10 @@ class MessageBusClient:
         else:
             try:
                 # in-proc broadcast
-                message_bus.send_message(enriched)
+                if message_bus_module.message_bus is not None:
+                    message_bus_module.message_bus.send_message(enriched)
+                else:
+                    raise RuntimeError("message bus not available")
             except Exception as e:
                 logger.warning(f"In-proc send failed: {e}")
 
@@ -294,14 +297,14 @@ class MessageBusClient:
 
             # If not using WS, try in-proc bus (same-process only)
             if not self._use_ws and self.running:
-                if message_bus is None:
+                if message_bus_module.message_bus is None:
                     # No in-proc bus; wait and retry WS
                     time.sleep(min(backoff, self.reconnect_max))
                     backoff = min(backoff * 2, self.reconnect_max)
                     continue
                 # Register and poll from queue
                 try:
-                    self._inproc_queue = message_bus.register_client(
+                    self._inproc_queue = message_bus_module.message_bus.register_client(
                         self.client_id or f"{self.service_type}_{int(time.time())}",
                         self.service_type,
                     )
@@ -326,8 +329,9 @@ class MessageBusClient:
                 finally:
                     # On exit, unregister
                     try:
-                        if self._inproc_queue is not None and self.client_id and message_bus:
-                            message_bus.unregister_client(self.client_id)
+                        if (self._inproc_queue is not None and self.client_id and
+                                message_bus_module.message_bus):
+                            message_bus_module.message_bus.unregister_client(self.client_id)
                     except Exception:
                         pass
                     self._inproc_queue = None
