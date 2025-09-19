@@ -17,6 +17,27 @@ import requests
 from . import config as cfg
 
 
+def _get_rag_auth_token() -> Optional[str]:
+    """Return the first configured RAG API token, if present."""
+
+    try:
+        tokens = cfg.get_rag_api_tokens()
+    except Exception:
+        return None
+
+    if not tokens:
+        return None
+
+    for token in tokens:
+        if not token:
+            continue
+        token_str = str(token).strip()
+        if token_str and token_str.lower() != "change-me":
+            return token_str
+
+    return None
+
+
 def web_search(query: str) -> str:
     query = (query or "").strip()
     if not query:
@@ -111,13 +132,45 @@ def get_weather(location: Optional[str] = None) -> str:
 
 def rag_search(query: str, n_results: int = 3) -> str:
     base = cfg.get_rag_base_url()
+    token = _get_rag_auth_token()
+    headers = None
+    if token:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-API-Token": token,
+        }
     try:
         # quick health check
         try:
-            requests.get(f"{base}/health", timeout=2)
+            requests.get(f"{base}/health", timeout=2, headers=headers)
         except Exception:
             return "Knowledge base is unavailable"
-        r = requests.post(f"{base}/api/search", json={"query": query}, timeout=8)
+        r = requests.post(
+            f"{base}/api/search",
+            json={"query": query},
+            timeout=8,
+            headers=headers,
+        )
+        if token and r.status_code in {401, 403}:
+            detail = ""
+            try:
+                payload = r.json()
+                if isinstance(payload, dict):
+                    detail = payload.get("detail") or payload.get("message") or payload.get("error") or ""
+                elif isinstance(payload, list) and payload:
+                    detail = str(payload[0])
+            except Exception:
+                detail = (r.text or "").strip()
+
+            detail = (detail or "").strip()
+            if not detail:
+                detail = (r.text or "").strip()
+            if detail:
+                return f"Knowledge base authentication failed (HTTP {r.status_code}): {detail}"
+            return (
+                f"Knowledge base authentication failed (HTTP {r.status_code}). "
+                "Please check the configured API token."
+            )
         if r.status_code != 200:
             return f"Knowledge base search failed: HTTP {r.status_code}"
         data = r.json()
