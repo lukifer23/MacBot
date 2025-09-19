@@ -16,7 +16,7 @@ import psutil
 import yaml  # type: ignore
 import requests
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Awaitable, Callable
 from dataclasses import dataclass
 from .logging_utils import setup_logger
 
@@ -210,55 +210,42 @@ class MacBotOrchestrator:
         # Handle errors
         self.bus_client.register_handler('error', self._sync_handle_error)
     
+    def _run_async_handler(self, coro_factory: Callable[[], Awaitable[Any]], handler_name: str) -> None:
+        """Execute or schedule an async handler regardless of sync/async context."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(coro_factory())
+            except Exception as e:
+                logger.error(f"Error running {handler_name} handler: {e}")
+            return
+
+        try:
+            loop.create_task(coro_factory())
+        except Exception as e:
+            logger.error(f"Error scheduling {handler_name} handler: {e}")
+            try:
+                asyncio.run(coro_factory())
+            except Exception as inner:
+                logger.error(f"Fallback run failed for {handler_name} handler: {inner}")
+
     def _sync_handle_service_registered(self, data: Dict[str, Any]) -> None:
         """Synchronous wrapper for service registration handler"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're in an async context, schedule the coroutine
-                asyncio.create_task(self._handle_service_registered(data))
-            else:
-                # If not in async context, run it
-                asyncio.run(self._handle_service_registered(data))
-        except Exception as e:
-            logger.error(f"Error in service registration handler: {e}")
-    
+        self._run_async_handler(lambda: self._handle_service_registered(data), "service registration")
+
     def _sync_handle_status_update(self, data: Dict[str, Any]) -> None:
         """Synchronous wrapper for status update handler"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._handle_status_update(data))
-            else:
-                asyncio.run(self._handle_status_update(data))
-        except Exception as e:
-            logger.error(f"Error in status update handler: {e}")
-    
+        self._run_async_handler(lambda: self._handle_status_update(data), "status update")
+
     def _sync_handle_conversation_message(self, data: Dict[str, Any]) -> None:
         """Synchronous wrapper for conversation message handler"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._handle_conversation_message(data))
-            else:
-                asyncio.run(self._handle_conversation_message(data))
-        except Exception as e:
-            logger.error(f"Error in conversation message handler: {e}")
-    
+        self._run_async_handler(lambda: self._handle_conversation_message(data), "conversation message")
+
     def _sync_handle_error(self, data: Dict[str, Any]) -> None:
         """Synchronous wrapper for error handler"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._handle_error(data))
-            else:
-                asyncio.run(self._handle_error(data))
-        except Exception as e:
-            logger.error(f"Error in error handler: {e}")
+        self._run_async_handler(lambda: self._handle_error(data), "error")
     
     async def _handle_service_registered(self, data: dict):
         """Handle service registration messages"""
@@ -538,6 +525,12 @@ class MacBotOrchestrator:
         """Start all services"""
         logger.info("🚀 Starting MacBot Orchestrator...")
 
+        # Message bus must be available before any other core services
+        if not self.start_message_bus():
+            logger.error("Failed to start message bus, stopping all services")
+            self.stop_all()
+            return False
+
         # Core services first
         core_services = [
             ('ws_bus', self.start_ws_message_bus),
@@ -594,7 +587,12 @@ class MacBotOrchestrator:
         """Stop all services"""
         logger.info("🛑 Stopping all services...")
         self.running = False
-        
+
+        try:
+            self.health_monitor.stop_monitoring()
+        except Exception as e:
+            logger.error(f"Error stopping health monitor: {e}")
+
         # Stop all processes
         for name, process in self.processes.items():
             try:
@@ -606,9 +604,12 @@ class MacBotOrchestrator:
                 logger.warning(f"Force killed {name}")
             except Exception as e:
                 logger.error(f"Error stopping {name}: {e}")
-        
+
         self.processes.clear()
         logger.info("All services stopped")
+
+        # Ensure message bus components shut down
+        self.stop_message_bus()
 
     def start_control_server(self):
         """Start a lightweight HTTP server exposing /health and /status"""
