@@ -13,7 +13,7 @@ import uuid
 # Add src/ to path for imports if run directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import psutil
-import yaml
+import yaml  # type: ignore
 import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -229,9 +229,10 @@ class MacBotOrchestrator:
 
     def start_ws_message_bus(self) -> bool:
         """Start the WebSocket message bus server (cross-process)."""
+        host = CFG.get('communication.message_bus.host', '127.0.0.1')
+        port = int(CFG.get('communication.message_bus.port', 8082))
+        
         try:
-            host = CFG.get('communication.message_bus.host', '127.0.0.1')
-            port = int(CFG.get('communication.message_bus.port', 8082))
             logger.info(f"Starting WS message bus on ws://{host}:{port} ...")
             self.ws_bus_server = start_message_bus_server(host=host, port=port)
             logger.info("✅ WS message bus started")
@@ -277,16 +278,66 @@ class MacBotOrchestrator:
             return
             
         # Handle service registration
-        self.bus_client.register_handler('service_registered', self._handle_service_registered)
+        self.bus_client.register_handler('service_registered', self._sync_handle_service_registered)
         
         # Handle status updates
-        self.bus_client.register_handler('status_update', self._handle_status_update)
+        self.bus_client.register_handler('status_update', self._sync_handle_status_update)
         
         # Handle conversation messages
-        self.bus_client.register_handler('conversation_message', self._handle_conversation_message)
+        self.bus_client.register_handler('conversation_message', self._sync_handle_conversation_message)
         
         # Handle errors
-        self.bus_client.register_handler('error', self._handle_error)
+        self.bus_client.register_handler('error', self._sync_handle_error)
+    
+    def _sync_handle_service_registered(self, data: Dict[str, Any]) -> None:
+        """Synchronous wrapper for service registration handler"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're in an async context, schedule the coroutine
+                asyncio.create_task(self._handle_service_registered(data))
+            else:
+                # If not in async context, run it
+                asyncio.run(self._handle_service_registered(data))
+        except Exception as e:
+            logger.error(f"Error in service registration handler: {e}")
+    
+    def _sync_handle_status_update(self, data: Dict[str, Any]) -> None:
+        """Synchronous wrapper for status update handler"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._handle_status_update(data))
+            else:
+                asyncio.run(self._handle_status_update(data))
+        except Exception as e:
+            logger.error(f"Error in status update handler: {e}")
+    
+    def _sync_handle_conversation_message(self, data: Dict[str, Any]) -> None:
+        """Synchronous wrapper for conversation message handler"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._handle_conversation_message(data))
+            else:
+                asyncio.run(self._handle_conversation_message(data))
+        except Exception as e:
+            logger.error(f"Error in conversation message handler: {e}")
+    
+    def _sync_handle_error(self, data: Dict[str, Any]) -> None:
+        """Synchronous wrapper for error handler"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._handle_error(data))
+            else:
+                asyncio.run(self._handle_error(data))
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
     
     async def _handle_service_registered(self, data: dict):
         """Handle service registration messages"""
@@ -484,7 +535,7 @@ class MacBotOrchestrator:
     def check_web_dependencies(self) -> bool:
         """Check if web GUI dependencies are installed"""
         try:
-            import flask
+            import flask  # type: ignore
             import psutil
             import requests
             return True
@@ -640,7 +691,12 @@ class MacBotOrchestrator:
 
     def start_control_server(self):
         """Start a lightweight HTTP server exposing /health and /status"""
-        from flask import Flask, jsonify
+        try:
+            from flask import Flask, jsonify  # type: ignore
+        except ImportError:
+            logger.warning("Flask not available, skipping control server")
+            return
+            
         from . import config as CFG
 
         app = Flask("macbot_orchestrator")
@@ -749,7 +805,7 @@ class MacBotOrchestrator:
         @app.route('/pipeline-check')
         def pipeline_check():
             """Lightweight end-to-end readiness check across components."""
-            results = {'timestamp': time.time()}
+            results: Dict[str, Any] = {'timestamp': time.time()}
             # LLM quick chat
             try:
                 chat_ep = CFG.get_llm_chat_endpoint()
