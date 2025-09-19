@@ -13,8 +13,8 @@ from typing import Dict, List, Optional, Callable
 from datetime import datetime, timedelta
 from enum import Enum
 
-# Add src/ to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from .utils import setup_path
+setup_path()
 from . import config as CFG
 from .logging_utils import setup_logger
 

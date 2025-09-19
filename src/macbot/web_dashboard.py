@@ -15,7 +15,8 @@ from datetime import datetime
 from typing import Optional
 
 # Add src/ to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from .utils import setup_path
+setup_path()
 import requests
 from flask import Flask, render_template, jsonify, request, Response, stream_with_context
 from flask_socketio import SocketIO, emit  # type: ignore

@@ -586,6 +586,12 @@ def validate_config_silent() -> tuple[bool, List[str]]:
         return False, [f"Validation error: {e}"]
 
 
+def get_all() -> Dict[str, Any]:
+    """Get the entire configuration dictionary"""
+    _load()
+    return _CFG.copy()
+
+
 def reload_config() -> None:
     """Reload configuration from file"""
     global _CFG, _LOADED

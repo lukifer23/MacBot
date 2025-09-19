@@ -10,16 +10,14 @@ import subprocess
 import threading
 import uuid
 
-# Add src/ to path for imports if run directly
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from .utils import setup_path
+setup_path()
 import psutil
 import yaml  # type: ignore
 import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
-import logging
-from logging.handlers import RotatingFileHandler
 from .logging_utils import setup_logger
 
 from .message_bus import MessageBus, start_message_bus, stop_message_bus
@@ -44,10 +42,8 @@ class ServiceDefinition:
 
 class MacBotOrchestrator:
     def __init__(self, config_path: Optional[str] = None):
-        if config_path is None:
-            config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml')
-        self.config_path = config_path
-        self.config = self.load_config()
+        # Use centralized config system instead of duplicate logic
+        self.config = CFG.get_all()
         self.processes: Dict[str, subprocess.Popen] = {}
         self.threads: Dict[str, threading.Thread] = {}
         self.running = False
@@ -112,81 +108,6 @@ class MacBotOrchestrator:
             cwd=base_dir,
         )
     
-    def load_config(self) -> dict:
-        """Load configuration from YAML file"""
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-                    # Merge with defaults to ensure all keys exist
-                    default_config = self.get_default_config()
-                    return self.merge_configs(default_config, config)
-            except Exception as e:
-                logger.warning(f"Failed to load config file: {e}, using defaults")
-                return self.get_default_config()
-        return self.get_default_config()
-    
-    def merge_configs(self, default: dict, user: dict) -> dict:
-        """Merge user config with defaults"""
-        result = default.copy()
-        for key, value in user.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self.merge_configs(result[key], value)
-            else:
-                result[key] = value
-        return result
-    
-    def get_default_config(self) -> dict:
-        """Default configuration if none exists.
-
-        This mirrors the YAML schema used by macbot.config to avoid key
-        mismatches between services.
-        """
-        return {
-            'models': {
-                'llm': {
-                    'server_url': 'http://localhost:8080/v1/chat/completions',
-                    'path': 'models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
-                    'temperature': 0.4,
-                    'max_tokens': 200,
-                    'context_length': 4096,
-                    'threads': -1,
-                },
-                'stt': {
-                    'model': 'models/whisper.cpp/models/ggml-base.en.bin',
-                    'bin': 'models/whisper.cpp/build/bin/whisper-cli',
-                    'language': 'en'
-                },
-                'tts': {
-                    'voice': 'af_heart',
-                    'speed': 1.0,
-                }
-            },
-            'services': {
-                'web_dashboard': {
-                    'host': '0.0.0.0',
-                    'port': 3000
-                },
-                'rag_server': {
-                    'host': 'localhost',
-                    'port': 8001
-                },
-                'voice_assistant': {
-                    'host': 'localhost',
-                    'port': 8123
-                },
-                'orchestrator': {
-                    'host': '127.0.0.1',
-                    'port': 8090
-                }
-            },
-            'tools': {
-                'enabled': ['web_search', 'screenshot', 'app_launcher', 'system_monitor', 'weather', 'rag_search'],
-                'app_launcher': {
-                    'allowed_apps': ['Safari', 'Terminal', 'Finder', 'Calculator']
-                }
-            }
-        }
     
     def start_message_bus(self) -> bool:
         """Start the message bus system"""

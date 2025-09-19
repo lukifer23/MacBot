@@ -21,7 +21,6 @@ except Exception as _sf_imp_err:
     sf = None  # type: ignore
 import requests
 import hashlib
-import psutil
 import logging
 from .logging_utils import setup_logger
 from typing import Dict, List, Optional
