@@ -217,19 +217,30 @@ class MacBotOrchestrator:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             try:
-                asyncio.run(coro_factory())
+                # Create a new event loop for this thread
+                asyncio.run(self._ensure_coroutine(coro_factory()))
             except Exception as e:
                 logger.error(f"Error running {handler_name} handler: {e}")
             return
 
         try:
-            loop.create_task(coro_factory())
+            loop.create_task(self._ensure_coroutine(coro_factory()))
         except Exception as e:
             logger.error(f"Error scheduling {handler_name} handler: {e}")
             try:
-                asyncio.run(coro_factory())
+                asyncio.run(self._ensure_coroutine(coro_factory()))
             except Exception as inner:
                 logger.error(f"Fallback run failed for {handler_name} handler: {inner}")
+    
+    def _ensure_coroutine(self, awaitable: Awaitable[Any]) -> Any:
+        """Ensure the awaitable is properly handled as a coroutine."""
+        import asyncio
+        if asyncio.iscoroutine(awaitable):
+            return awaitable
+        # If it's not a coroutine, wrap it in a coroutine
+        async def wrapper():
+            return await awaitable
+        return wrapper()
 
     def _sync_handle_service_registered(self, data: Dict[str, Any]) -> None:
         """Synchronous wrapper for service registration handler"""
