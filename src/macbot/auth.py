@@ -9,6 +9,7 @@ import secrets
 from typing import Optional, Dict, Any, List
 from functools import wraps
 from flask import request, jsonify, current_app
+from . import config as cfg
 from .logging_utils import setup_logger
 
 logger = setup_logger("macbot.auth", "logs/macbot.log")
@@ -43,23 +44,74 @@ class AuthenticationManager:
             logger.warning("Using generated JWT secret. Set MACBOT_JWT_SECRET environment variable for production.")
         return secret
 
-    def _load_api_tokens(self) -> set:
-        """Load valid API tokens from environment"""
-        tokens_str = os.getenv("MACBOT_API_TOKENS", "")
-        if not tokens_str:
-            # Generate a default token for development
-            default_token = secrets.token_hex(16)
-            logger.warning(f"Using generated API token: {default_token}. Set MACBOT_API_TOKENS environment variable for production.")
-            default_token_hash = hashlib.sha256(default_token.encode()).hexdigest()
-            return {default_token_hash}
+    def _load_api_tokens(self) -> set[str]:
+        """Load valid API tokens from configuration and environment"""
 
-        tokens = set()
-        for token in tokens_str.split(","):
-            token = token.strip()
-            if token:
-                # Hash tokens for storage
-                tokens.add(hashlib.sha256(token.encode()).hexdigest())
-        return tokens
+        def _split_env_tokens(value: str) -> List[str]:
+            return [token.strip() for token in value.split(",") if token.strip()]
+
+        raw_tokens: List[str] = []
+
+        for env_var in ("MACBOT_API_TOKENS", "MACBOT_RAG_API_TOKENS"):
+            env_tokens = os.getenv(env_var, "")
+            if env_tokens:
+                raw_tokens.extend(_split_env_tokens(env_tokens))
+
+        try:
+            config_tokens = cfg.get_rag_api_tokens()
+        except Exception:
+            config_tokens = []
+
+        for token in config_tokens:
+            if isinstance(token, str):
+                stripped = token.strip()
+                if stripped:
+                    raw_tokens.append(stripped)
+
+        hashed_tokens = {
+            self.hash_api_token(token)
+            for token in raw_tokens
+            if token and not self._is_placeholder_token(token)
+        }
+
+        if hashed_tokens:
+            return hashed_tokens
+
+        default_token = secrets.token_hex(16)
+        logger.warning(
+            "Using generated API token: %s. Set MACBOT_API_TOKENS or MACBOT_RAG_API_TOKENS environment variables for production.",
+            default_token,
+        )
+        return {self.hash_api_token(default_token)}
+
+    @staticmethod
+    def _is_placeholder_token(token: str) -> bool:
+        """Return True when the provided token is a placeholder value"""
+
+        stripped = token.strip()
+        if not stripped:
+            return True
+
+        normalized = stripped.lower()
+        alnum_only = "".join(ch for ch in normalized if ch.isalnum())
+
+        placeholder_markers = {
+            "changeme",
+            "changethis",
+            "addtokenhere",
+            "yourtokenhere",
+            "yourapitoken",
+            "placeholder",
+            "exampletoken",
+            "replaceme",
+            "setsecuretoken",
+            "defaulttoken",
+        }
+
+        if alnum_only in placeholder_markers:
+            return True
+
+        return normalized.startswith("<") and normalized.endswith(">")
 
     def generate_token(self, user_id: str = "macbot", permissions: Optional[List[str]] = None) -> str:
         """Generate a new JWT token"""
