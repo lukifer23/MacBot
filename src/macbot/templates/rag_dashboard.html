@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MacBot RAG Server</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; margin: 40px; background: #f5f5f7; color: #1d1d1f; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 2em; font-weight: bold; color: #007aff; }
+        .doc-item { border: 1px solid #e0e0e0; padding: 15px; margin: 10px 0; border-radius: 6px; background: #fafafa; }
+        .search-box { width: 100%; padding: 10px; margin: 20px 0; border: 1px solid #ccc; border-radius: 4px; }
+        .search-results { margin-top: 20px; }
+        button { padding: 10px 16px; border-radius: 4px; border: none; background: #007aff; color: #fff; cursor: pointer; }
+        button:hover { background: #005bb5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 MacBot RAG Server</h1>
+
+        <div class="card">
+            <h2>System Statistics</h2>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">{{ stats.total_documents }}</div>
+                    <div>Documents</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{ stats.total_chunks }}</div>
+                    <div>Chunks</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{ stats.embedding_model }}</div>
+                    <div>Model</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Search Documents</h2>
+            <input type="text" class="search-box" id="searchInput" placeholder="Enter your search query...">
+            <button type="button" onclick="search()">Search</button>
+            <div id="searchResults" class="search-results"></div>
+        </div>
+
+        <div class="card">
+            <h2>Available Documents ({{ docs|length }})</h2>
+            {% if docs %}
+                {% for doc in docs %}
+                    <div class="doc-item">
+                        <strong>{{ doc.title }}</strong> ({{ doc.type }}) - {{ doc.length }} chars
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>No documents available.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+    function clearChildren(node) {
+        while (node.firstChild) {
+            node.removeChild(node.firstChild);
+        }
+    }
+
+    function createResultElement(result) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'doc-item';
+
+        const title = document.createElement('strong');
+        title.textContent = (result.metadata && result.metadata.title) || 'Untitled';
+        wrapper.appendChild(title);
+
+        wrapper.appendChild(document.createElement('br'));
+
+        const snippet = document.createElement('span');
+        const content = (result.content || '').substring(0, 200);
+        snippet.textContent = content ? content + '...' : '';
+        wrapper.appendChild(snippet);
+
+        return wrapper;
+    }
+
+    function search() {
+        const query = document.getElementById('searchInput').value;
+        if (!query) return;
+
+        fetch('/api/search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({query: query})
+        })
+        .then(response => response.json())
+        .then(data => {
+            const resultsDiv = document.getElementById('searchResults');
+            clearChildren(resultsDiv);
+
+            if (data.results && data.results.length > 0) {
+                const heading = document.createElement('h3');
+                heading.textContent = 'Search Results:';
+                resultsDiv.appendChild(heading);
+
+                data.results.forEach(result => {
+                    resultsDiv.appendChild(createResultElement(result));
+                });
+            } else {
+                const empty = document.createElement('p');
+                empty.textContent = 'No results found.';
+                resultsDiv.appendChild(empty);
+            }
+        });
+    }
+    </script>
+</body>
+</html>

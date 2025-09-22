@@ -15,7 +15,7 @@ from datetime import datetime
 import chromadb
 from sentence_transformers import SentenceTransformer
 import requests
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template
 import threading
 
 # Configure logging (unified)
@@ -202,15 +202,25 @@ class RAGServer:
             'last_updated': datetime.now().isoformat()
         }
 
-# Initialize RAG server
-rag_server = RAGServer()
+# Lazy RAG server instance
+_rag_server: Optional[RAGServer] = None
+
+
+def get_rag_server() -> RAGServer:
+    """Lazily initialize and return the shared RAG server instance."""
+    global _rag_server
+    if _rag_server is None:
+        _rag_server = RAGServer()
+    return _rag_server
 
 # Add some sample documents
 def add_sample_documents():
     """Add sample documents for testing"""
-    if not rag_server.documents:
+    server = get_rag_server()
+
+    if not server.documents:
         logger.info("Adding sample documents...")
-        
+
         # Sample documents
         samples = [
             {
@@ -245,7 +255,7 @@ def add_sample_documents():
         ]
         
         for sample in samples:
-            rag_server.add_document(
+            server.add_document(
                 content=sample['content'],
                 title=sample['title'],
                 doc_type=sample['type']
@@ -284,89 +294,11 @@ def _check_auth_and_rate_limit() -> Optional[Tuple[Dict[str, str], int]]:
 @app.route('/')
 def index():
     """RAG server status page"""
-    stats = rag_server.get_stats()
-    docs = rag_server.list_documents()
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>MacBot RAG Server</title>
-        <style>
-            body {{ font-family: -apple-system, sans-serif; margin: 40px; }}
-            .container {{ max-width: 800px; margin: 0 auto; }}
-            .card {{ background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-            .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
-            .stat {{ text-align: center; }}
-            .stat-value {{ font-size: 2em; font-weight: bold; color: #007aff; }}
-            .doc-item {{ border: 1px solid #e0e0e0; padding: 15px; margin: 10px 0; border-radius: 6px; }}
-            .search-box {{ width: 100%; padding: 10px; margin: 20px 0; border: 1px solid #ccc; border-radius: 4px; }}
-            .search-results {{ margin-top: 20px; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 MacBot RAG Server</h1>
-            
-            <div class="card">
-                <h2>System Statistics</h2>
-                <div class="stats">
-                    <div class="stat">
-                        <div class="stat-value">{stats['total_documents']}</div>
-                        <div>Documents</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-value">{stats['total_chunks']}</div>
-                        <div>Chunks</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-value">{stats['embedding_model']}</div>
-                        <div>Model</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h2>Search Documents</h2>
-                <input type="text" class="search-box" id="searchInput" placeholder="Enter your search query...">
-                <button onclick="search()">Search</button>
-                <div id="searchResults" class="search-results"></div>
-            </div>
-            
-            <div class="card">
-                <h2>Available Documents ({len(docs)})</h2>
-                {''.join([f'<div class="doc-item"><strong>{doc["title"]}</strong> ({doc["type"]}) - {doc["length"]} chars</div>' for doc in docs])}
-            </div>
-        </div>
-        
-        <script>
-        function search() {{
-            const query = document.getElementById('searchInput').value;
-            if (!query) return;
-            
-            fetch('/api/search', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{query: query}})
-            }})
-            .then(response => response.json())
-            .then(data => {{
-                const resultsDiv = document.getElementById('searchResults');
-                if (data.results && data.results.length > 0) {{
-                    resultsDiv.innerHTML = '<h3>Search Results:</h3>' + 
-                        data.results.map(r => 
-                            `<div class="doc-item"><strong>${{r.metadata.title}}</strong><br>${{r.content.substring(0, 200)}}...</div>`
-                        ).join('');
-                }} else {{
-                    resultsDiv.innerHTML = '<p>No results found.</p>';
-                }}
-            }});
-        }}
-        </script>
-    </body>
-    </html>
-    """
-    return html
+    server = get_rag_server()
+    stats = server.get_stats()
+    docs = server.list_documents()
+
+    return render_template('rag_dashboard.html', stats=stats, docs=docs)
 
 @app.route('/health')
 def health():
@@ -383,7 +315,7 @@ def api_search():
         if not query:
             return jsonify({'success': False, 'error': 'Query is required', 'code': 'validation_error'}), 400
         
-        results = rag_server.search(query, top_k=5)
+        results = get_rag_server().search(query, top_k=5)
         return jsonify({'query': query, 'results': results})
         
     except Exception as e:
@@ -394,7 +326,7 @@ def api_search():
 def api_documents():
     """List documents API endpoint"""
     try:
-        docs = rag_server.list_documents()
+        docs = get_rag_server().list_documents()
         return jsonify({'documents': docs})
     except Exception as e:
         logger.error(f"Documents API error: {e}")
@@ -413,7 +345,7 @@ def api_add_document():
         if not content:
             return jsonify({'success': False, 'error': 'Content is required', 'code': 'validation_error'}), 400
         
-        doc_id = rag_server.add_document(content, title, doc_type, metadata)
+        doc_id = get_rag_server().add_document(content, title, doc_type, metadata)
         return jsonify({'id': doc_id, 'message': 'Document added successfully'})
         
     except Exception as e:
@@ -424,7 +356,7 @@ def api_add_document():
 def api_get_document(doc_id):
     """Get document API endpoint"""
     try:
-        doc = rag_server.get_document(doc_id)
+        doc = get_rag_server().get_document(doc_id)
         if doc:
             return jsonify(doc)
         else:
@@ -437,7 +369,7 @@ def api_get_document(doc_id):
 def api_delete_document(doc_id):
     """Delete document API endpoint"""
     try:
-        success = rag_server.delete_document(doc_id)
+        success = get_rag_server().delete_document(doc_id)
         if success:
             return jsonify({'message': 'Document deleted successfully'})
         else:
@@ -450,7 +382,7 @@ def api_delete_document(doc_id):
 def api_stats():
     """Get RAG system statistics"""
     try:
-        stats = rag_server.get_stats()
+        stats = get_rag_server().get_stats()
         return jsonify(stats)
     except Exception as e:
         logger.error(f"Stats API error: {e}")
