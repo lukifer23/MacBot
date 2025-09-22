@@ -46,7 +46,7 @@ def test_rag_search_sends_authorization_header(monkeypatch):
 
         return _Response()
 
-    monkeypatch.setattr(tools.cfg, "get_rag_api_tokens", lambda: [token])
+    monkeypatch.setenv("MACBOT_RAG_API_TOKENS", token)
     monkeypatch.setattr(tools.requests, "get", fake_get)
     monkeypatch.setattr(tools.requests, "post", fake_post)
 

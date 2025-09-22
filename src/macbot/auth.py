@@ -45,20 +45,53 @@ class AuthenticationManager:
 
     def _load_api_tokens(self) -> set:
         """Load valid API tokens from environment"""
-        tokens_str = os.getenv("MACBOT_API_TOKENS", "")
-        if not tokens_str:
+
+        token_envs = {
+            "MACBOT_API_TOKENS": "MACBOT_API_TOKEN_",
+            "MACBOT_RAG_API_TOKENS": "MACBOT_RAG_API_TOKEN_",
+        }
+
+        hashed_tokens: set[str] = set()
+        plain_tokens: List[str] = []
+        seen_plain: set[str] = set()
+
+        def register(token: str) -> None:
+            token = (token or "").strip()
+            if not token or token in seen_plain:
+                return
+            seen_plain.add(token)
+            hashed_tokens.add(hashlib.sha256(token.encode()).hexdigest())
+            plain_tokens.append(token)
+
+        for env_name, numbered_prefix in token_envs.items():
+            tokens_str = os.getenv(env_name, "")
+            if tokens_str:
+                for token in tokens_str.split(","):
+                    register(token)
+
+            numbered_tokens: List[tuple[int, str]] = []
+            for key, value in os.environ.items():
+                if key.startswith(numbered_prefix):
+                    suffix = key[len(numbered_prefix):]
+                    if suffix and suffix.isdigit():
+                        numbered_tokens.append((int(suffix), value))
+
+            for _, token in sorted(numbered_tokens, key=lambda item: item[0]):
+                register(token)
+
+        if not plain_tokens:
             # Generate a default token for development
             default_token = secrets.token_hex(16)
-            logger.warning(f"Using generated API token: {default_token}. Set MACBOT_API_TOKENS environment variable for production.")
-            return {default_token}
+            logger.warning(
+                "Using generated API token: %s. Set MACBOT_API_TOKENS or MACBOT_RAG_API_TOKENS environment variable for production.",
+                default_token,
+            )
+            register(default_token)
 
-        tokens = set()
-        for token in tokens_str.split(","):
-            token = token.strip()
-            if token:
-                # Hash tokens for storage
-                tokens.add(hashlib.sha256(token.encode()).hexdigest())
-        return tokens
+        if plain_tokens:
+            logger.info("Active API tokens: %s", ", ".join(plain_tokens))
+
+        return hashed_tokens
 
     def generate_token(self, user_id: str = "macbot", permissions: Optional[List[str]] = None) -> str:
         """Generate a new JWT token"""

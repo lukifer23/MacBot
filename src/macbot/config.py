@@ -458,10 +458,34 @@ def get_llm_chat_endpoint() -> str:
 
 def get_rag_api_tokens() -> List[str]:
     """Return list of allowed RAG API tokens"""
-    # Check environment variable first for security
+    # Check environment variables first for security
+    seen: set[str] = set()
+    collected: List[str] = []
+
     env_tokens = os.getenv("MACBOT_RAG_API_TOKENS", "")
     if env_tokens:
-        return env_tokens.split(",")
+        for token in env_tokens.split(","):
+            value = token.strip()
+            if value and value not in seen:
+                collected.append(value)
+                seen.add(value)
+
+    numbered_tokens: List[tuple[int, str]] = []
+    prefix = "MACBOT_RAG_API_TOKEN_"
+    for key, value in os.environ.items():
+        if key.startswith(prefix):
+            suffix = key[len(prefix):]
+            if suffix and suffix.isdigit():
+                numbered_tokens.append((int(suffix), value))
+
+    for _, token in sorted(numbered_tokens, key=lambda item: item[0]):
+        value = (token or "").strip()
+        if value and value not in seen:
+            collected.append(value)
+            seen.add(value)
+
+    if collected:
+        return collected
 
     # Fallback to config file (deprecated)
     tokens = get("services.rag_server.api_tokens", [])
