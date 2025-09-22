@@ -247,7 +247,7 @@ def api_pipeline_check():
 
 
 @app.route('/api/service/<name>/restart', methods=['POST'])
-@require_auth
+@optional_auth
 def api_service_restart(name: str):
     """Proxy restart requests to orchestrator."""
     try:
@@ -281,7 +281,7 @@ def test_endpoint():
     return jsonify({"status": "ok", "message": "Web dashboard test endpoint working", "timestamp": datetime.now().isoformat()})
 
 @app.route('/api/chat', methods=['POST'])
-@require_auth
+@optional_auth
 def api_chat():
     """API endpoint for chat messages (legacy)"""
     try:
@@ -306,7 +306,7 @@ def api_chat():
         return jsonify({'success': False, 'error': 'Internal server error', 'code': 'internal_error'}), 500
 
 @app.route('/api/llm', methods=['POST'])
-@require_auth
+@optional_auth
 def api_llm():
     """API endpoint for LLM processing"""
     try:
@@ -335,7 +335,7 @@ def api_mic_check():
         return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
 
 @app.route('/api/assistant-speak', methods=['POST'])
-@require_auth
+@optional_auth
 def api_assistant_speak():
     """Proxy text-to-speech request to the voice assistant control server."""
     try:
@@ -368,7 +368,7 @@ def api_llm_settings():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/set-llm-max-tokens', methods=['POST'])
-@require_auth
+@optional_auth
 def api_set_llm_max_tokens():
     """Set max_tokens in config and nudge voice assistant to apply at runtime."""
     try:
@@ -431,7 +431,7 @@ def api_assistant_event():
         return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/voice', methods=['POST'])
-@require_auth
+@optional_auth
 def api_voice():
     """API endpoint for voice processing using Whisper"""
     try:
@@ -474,7 +474,7 @@ def api_voice():
         return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/upload-documents', methods=['POST'])
-@require_auth
+@optional_auth
 def upload_documents():
     """Upload documents and forward to RAG server.
     Supports .txt natively; attempts .pdf (PyPDF2) and .docx (python-docx) when available.
@@ -773,7 +773,7 @@ def handle_interrupt_conversation():
     })
 
 @app.route('/api/interrupt', methods=['POST'])
-@require_auth
+@optional_auth
 def api_interrupt():
     """HTTP fallback to request conversation interruption"""
     try:

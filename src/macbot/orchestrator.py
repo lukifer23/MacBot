@@ -677,7 +677,7 @@ class MacBotOrchestrator:
             return jsonify({'processes': procs, 'req_id': req_id, 'authenticated': authenticated})
 
         @app.route('/services')
-        @require_auth
+        @optional_auth
         def services():
             """List known services and their status."""
             procs: Dict[str, Any] = {}
@@ -697,14 +697,14 @@ class MacBotOrchestrator:
             return jsonify({'services': procs})
 
         @app.route('/service/<name>/restart', methods=['POST'])
-        @require_auth
+        @optional_auth
         def restart_service_endpoint(name: str):
             result = self.restart_process(name)
             status_code = 200 if result.get('success') else 500
             return jsonify(result), status_code
 
         @app.route('/metrics')
-        @require_auth
+        @optional_auth
         def metrics():
             req_id = str(uuid.uuid4())
             data = {'req_id': req_id, 'timestamp': time.time()}
@@ -796,7 +796,7 @@ class MacBotOrchestrator:
             return jsonify(data)
 
         @app.route('/pipeline-check')
-        @require_auth
+        @optional_auth
         def pipeline_check():
             """Lightweight end-to-end readiness check across components."""
             results: Dict[str, Any] = {'timestamp': time.time()}

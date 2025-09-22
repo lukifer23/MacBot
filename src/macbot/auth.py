@@ -154,10 +154,19 @@ def require_api_key(f):
     return decorated_function
 
 def optional_auth(f):
-    """Decorator for optional authentication"""
+    """Decorator for optional authentication with automatic local auth"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_manager = get_auth_manager()
+        from flask import g
+
+        # Auto-authenticate localhost requests (user-friendly for local usage)
+        if request.remote_addr in ['127.0.0.1', 'localhost', '::1']:
+            g.authenticated = True
+            g.user_id = 'localhost_user'
+            g.permissions = ['read', 'write']
+            g.local_auth = True
+            return f(*args, **kwargs)
 
         # Try JWT authentication first
         auth_header = request.headers.get('Authorization')
@@ -165,7 +174,6 @@ def optional_auth(f):
             token = auth_header.split(' ')[1]
             try:
                 payload = auth_manager.verify_token(token)
-                from flask import g
                 g.user_id = payload.get('user_id')
                 g.permissions = payload.get('permissions', [])
                 g.authenticated = True
@@ -176,13 +184,11 @@ def optional_auth(f):
         # Try API key authentication
         api_key = request.headers.get('X-API-Key')
         if api_key and auth_manager.verify_api_token(api_key):
-            from flask import g
             g.authenticated = True
             g.api_key = True
             return f(*args, **kwargs)
 
         # No authentication provided
-        from flask import g
         g.authenticated = False
         g.user_id = None
         g.permissions = []
