@@ -305,11 +305,12 @@ def _transcribe_cli(wav_f32: np.ndarray) -> str:
     """Fallback transcription via whisper.cpp CLI using temp files."""
     try:
         with managed_temp_file(suffix=".wav") as tmp_file:
+            txt_path = f"{tmp_file.name}.txt"
             try:
                 if sf is not None:
                     sf.write(tmp_file.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
                 else:
-                    import wave, struct
+                    import wave
                     with wave.open(tmp_file.name, 'wb') as wf:
                         wf.setnchannels(1)
                         wf.setsampwidth(2)  # 16-bit
@@ -322,26 +323,44 @@ def _transcribe_cli(wav_f32: np.ndarray) -> str:
                 logger.error(f"Failed to write WAV: {e}")
                 return ""
 
-        # call whisper.cpp
-        # -nt = no timestamps, -l language
-        # -otxt = output to text file
-        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp_file.name, "-l", WHISPER_LANG, "-nt", "-otxt", "-of", tmp_file.name]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if proc.returncode != 0:
-            logger.error(f"Whisper transcription failed: {proc.stderr}")
-            return ""
-        try:
-            with managed_temp_file(suffix=".txt", delete=False) as txt_file:
-                with open(txt_file.name, "r") as rf:
+            try:
+                # call whisper.cpp
+                # -nt = no timestamps, -l language
+                # -otxt = output to text file
+                cmd = [
+                    WHISPER_BIN,
+                    "-m",
+                    WHISPER_MODEL,
+                    "-f",
+                    tmp_file.name,
+                    "-l",
+                    WHISPER_LANG,
+                    "-nt",
+                    "-otxt",
+                    "-of",
+                    tmp_file.name,
+                ]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.error("Whisper transcription timed out")
+                return ""
+
+            try:
+                if proc.returncode != 0:
+                    logger.error(f"Whisper transcription failed: {proc.stderr}")
+                    return ""
+                if not os.path.exists(txt_path):
+                    logger.error("Whisper output file not found")
+                    return ""
+                with open(txt_path, "r") as rf:
                     text = rf.read().strip()
-        except FileNotFoundError:
-            logger.error("Whisper output file not found")
-            text = ""
-        # Temp files are automatically cleaned up by context managers
-        return text
-    except subprocess.TimeoutExpired:
-        logger.error("Whisper transcription timed out")
-        return ""
+                return text
+            finally:
+                try:
+                    if os.path.exists(txt_path):
+                        os.unlink(txt_path)
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup Whisper output file {txt_path}: {cleanup_err}")
     except Exception as e:  # pragma: no cover
         logger.error(f"Transcription error: {e}")
         return ""
