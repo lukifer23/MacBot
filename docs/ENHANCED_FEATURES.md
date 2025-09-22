@@ -1,59 +1,59 @@
-# 🚀 MacBot Enhanced Features Guide
+# MacBot Enhanced Features Guide
 
 ## Overview
-MacBot has been significantly enhanced with advanced tool calling, comprehensive monitoring, and a beautiful web dashboard. All features run entirely offline using native macOS capabilities.
+MacBot has been significantly enhanced with production-ready security, advanced tool calling, comprehensive monitoring, and a modern web dashboard. All features run entirely offline using native macOS capabilities with enterprise-grade reliability and security.
 
-## 🛠️ Enhanced Tool Calling System
+## Enhanced Tool Calling System
 
-### **Native macOS Tools (No API Keys Required!)**
+### Native macOS Tools (No API Keys Required)
 
-1. **🔍 Web Search**
+1. **Web Search**
    - **Command**: "search for [query]"
    - **Action**: Opens Safari with Google search results
    - **Example**: "search for weather forecast"
 
-2. **🌐 Website Browsing**
+2. **Website Browsing**
    - **Command**: "browse [url]" or "open website [url]"
    - **Action**: Opens any URL in Safari
    - **Example**: "browse example.com"
 
-3. **📱 App Launcher**
+3. **App Launcher**
    - **Command**: "open app [appname]"
    - **Supported Apps**: Safari, Chrome, Finder, Terminal, Mail, Messages, FaceTime, Photos, Music, Calendar, Notes, Calculator
    - **Example**: "open app calculator"
 
-4. **📸 Screenshot Tool**
+4. **Screenshot Tool**
    - **Command**: "take screenshot" or "take picture"
    - **Action**: Captures entire screen using macOS `screencapture`
    - **Output**: Saves to Desktop with timestamp
 
-5. **🌤️ Weather App**
+5. **Weather App**
    - **Command**: "weather"
    - **Action**: Opens macOS Weather app
    - **Example**: "what's the weather like"
 
-6. **💻 System Monitoring**
+6. **System Monitoring**
    - **Command**: "system info"
    - **Output**: Real-time CPU, RAM, and disk usage
 
-7. **🧠 RAG Knowledge Base**
+7. **RAG Knowledge Base**
    - **Command**: "search knowledge base for [query]"
    - **Features**: Document ingestion, semantic search, vector database
 
-## 🌐 Web Dashboard Features
+## Web Dashboard Features
 
-### **Real-Time WebSocket Communication**
+### Real-Time WebSocket Communication
 - **Bidirectional Communication**: Flask-SocketIO enables real-time, two-way communication between web clients and the MacBot backend
 - **Live Updates**: All conversation events, system stats, and state changes are broadcast instantly to connected clients
 - **Event-Driven Architecture**: WebSocket events handle chat messages, voice recording, conversation interruption, and system monitoring
 
-### **Real-Time Monitoring**
+### Real-Time Monitoring
 - **Live Stats**: CPU, RAM, Disk, Network usage with 5-second auto-refresh
 - **Service Status**: Visual indicators for all components with real-time health updates
 - **Conversation Tracking**: Live conversation state, message count, and interruption monitoring
 - **Endpoint URLs**: Direct links to all services with connection status
 
-### **Interactive Controls**
+### Interactive Controls
 - **Voice Recording**: Start/stop voice recording with real-time feedback (Spacebar for PTT)
 - **Auto Mic Pause**: Browser mic pauses automatically when the assistant is speaking
 - **Conversation Management**: Interrupt active conversations, clear conversation history
@@ -62,20 +62,20 @@ MacBot has been significantly enhanced with advanced tool calling, comprehensive
 - **Real-Time Feedback**: Instant visual feedback for all user actions
 - **Document Upload**: Upload documents to RAG knowledge base for enhanced search capabilities
 
-### **Service Cards**
+### Service Cards
 - **LLM Server**: llama.cpp status and endpoint
 - **Voice Assistant**: Process status and interface info
 - **RAG System**: Knowledge base availability
 - **Web Dashboard**: Self-monitoring status
 - **Model Status**: Includes STT impl/model and TTS engine/voice/loaded status
 
-### **Chat Interface**
+### Chat Interface
 - **Text Input**: Type messages directly
 - **Real-time Responses**: Instant feedback
 - **Message History**: Scrollable conversation log
 - **API Integration**: Ready for LLM integration
 
-### **API Endpoints**
+### API Endpoints
 ```
 GET  /api/stats           - System statistics
 GET  /api/services        - Service health status
@@ -83,83 +83,98 @@ POST /api/chat            - Chat interface
 POST /api/upload-documents - Upload documents to RAG system
 ```
 
-## 🎯 Central Orchestrator
+## Central Orchestrator
 
-### **Service Management**
+### Service Management
 - **Automatic Startup**: All services in correct order
 - **Health Monitoring**: Continuous service checking
 - **Graceful Shutdown**: Clean process termination
 - **Error Recovery**: Automatic restarts on failure
 
-### **Monitoring Features**
+### Monitoring Features
 - **Process Health**: Checks every 10 seconds
 - **Resource Usage**: CPU, RAM, disk monitoring
 - **Service URLs**: All endpoints displayed
 - **Status Reporting**: Real-time service status
 
-## �️ Health Monitoring & Resilience
+## Security & Authentication
 
-### **Circuit Breaker Pattern**
+### JWT-Based Authentication
+- **Token-Based Access**: JWT tokens for secure API access
+- **Role-Based Permissions**: Configurable user permissions
+- **Secure Token Storage**: Environment variable-based secrets
+- **Automatic Expiration**: Configurable token lifetimes
+
+### Input Validation & Sanitization
+- **XSS Protection**: Cross-site scripting prevention
+- **SQL Injection Prevention**: Safe query handling
+- **Command Injection Protection**: Secure command execution
+- **File Upload Validation**: Safe document processing
+
+### API Security
+- **Rate Limiting**: Configurable request limits
+- **Request Validation**: Comprehensive input checking
+- **Error Handling**: Secure error responses
+- **Audit Logging**: Security event tracking
+
+## Health Monitoring & Resilience
+
+### Circuit Breaker Pattern
 - **Automatic Failure Detection**: Monitors service health with configurable thresholds
 - **Intelligent Recovery**: Automatically retries failed services after timeout periods
 - **Service Isolation**: Prevents one failing service from affecting the entire system
 - **Configurable Thresholds**: Customizable failure counts and recovery timeouts
 
-### **Graceful Degradation**
+### Graceful Degradation
 - **Degraded Mode Responses**: Provides helpful responses even when LLM is unavailable
 - **Basic Query Support**: Time, date, and help queries work without external services
 - **Service Availability Checks**: Automatically detects and adapts to service failures
 - **User-Friendly Messaging**: Clear communication about service status and limitations
 
-### **Comprehensive Health Monitoring**
+### Comprehensive Health Monitoring
 - **Multi-Service Tracking**: Monitors LLM server, RAG server, web dashboard, and system resources
 - **Real-Time Status**: Live health status updates via WebSocket and REST API
 - **Alert System**: Configurable alerts for service failures and recoveries
 - **Health Endpoints**: REST API endpoints for programmatic health checking
 
-### **Automatic Recovery Mechanisms**
+### Automatic Recovery Mechanisms
 - **Service Restart**: Automatic restart of failed processes
 - **Dependency Management**: Proper startup order and dependency resolution
 - **Resource Monitoring**: System resource tracking to prevent overload
 - **Process Health Checks**: Continuous monitoring of all running processes
 
-### **Web Dashboard Health Integration**
+### Web Dashboard Health Integration
 - **Health Status Display**: Visual indicators for all service health states
 - **Real-Time Updates**: Live health status broadcasting via WebSocket
 - **Health API Endpoint**: `/health` REST endpoint for comprehensive status
 - **Service Cards**: Individual service health cards with detailed status
 
-## 🔒 Code Quality & Security Improvements
+## Code Quality & Security Improvements
 
-### **PEP8 Compliance & Code Standards**
-- **Import Organization**: Separated multi-line imports for better readability
-- **Duplicate Code Removal**: Eliminated redundant code across modules
-- **Type Hints**: Added comprehensive type annotations for better code documentation
-- **Constants Extraction**: Moved hardcoded values to named constants for maintainability
+### Production-Ready Security
+- **JWT Authentication**: Secure token-based authentication for all API endpoints
+- **Input Validation**: Comprehensive sanitization and validation of all user inputs
+- **XSS Protection**: Cross-site scripting prevention in all web interfaces
+- **Command Injection Prevention**: Secure handling of system commands
+- **Environment-Based Secrets**: Sensitive configuration moved to environment variables
 
-### **Enhanced Error Handling**
-- **Specific Exception Handling**: Replaced bare `except` clauses with specific exception types
-- **Input Validation**: Added robust input validation for all user inputs
-- **Graceful Error Recovery**: Improved error messages and recovery mechanisms
-- **Logging Improvements**: Enhanced logging with structured error information
+### Type Safety & Code Quality
+- **Zero Type Errors**: Complete type annotation coverage with mypy/pyright validation
+- **Structured Logging**: JSON-formatted logs with correlation IDs for debugging
+- **Error Handling**: Centralized error management with severity classification
+- **Resource Management**: Automatic cleanup of temporary files, threads, and processes
 
-### **Security Enhancements**
-- **Input Sanitization**: All user inputs are properly sanitized and validated
-- **Service Availability Checks**: Added checks for LLM and RAG service availability
-- **Resource Protection**: Implemented resource usage monitoring and limits
-- **Secure Configuration**: Environment-based configuration with secure defaults
+### Performance & Reliability
+- **Memory Leak Prevention**: Intelligent cache management and buffer trimming
+- **Circuit Breaker Pattern**: Automatic service isolation and recovery
+- **Backpressure Handling**: Message queue management to prevent overload
+- **Health Monitoring**: Real-time service health checks and automatic recovery
 
-### **Performance Optimizations**
-- **Import Optimization**: Removed duplicate and unnecessary imports
-- **Memory Management**: Improved memory usage patterns
-- **Process Efficiency**: Optimized service startup and communication
-- **Resource Monitoring**: Added comprehensive system resource tracking
-
-### **Code Maintainability**
-- **Modular Architecture**: Clean separation of concerns across modules
-- **Documentation Updates**: Comprehensive documentation for all new features
-- **Testing Framework**: Enhanced test coverage for critical functions
-- **Configuration Management**: Centralized configuration with validation
+### Code Architecture
+- **Modular Design**: Clean separation of authentication, validation, and resource management
+- **Singleton Patterns**: Efficient resource sharing across services
+- **Context Managers**: Automatic resource cleanup and error handling
+- **Decorator-Based Security**: Flask decorators for authentication and authorization
 
 ## ⚡ TTS Performance Optimizations
 
@@ -301,12 +316,16 @@ python -m macbot.web_dashboard
 
 ## 🔧 Configuration
 
-### **Key Files**
+### Key Files
 - `config.yaml` - Main configuration
 - `Makefile` - Build and run commands
 - `src/macbot/orchestrator.py` - Service management
 - `src/macbot/web_dashboard.py` - Web interface
 - `src/macbot/voice_assistant.py` - Enhanced voice assistant
+- `src/macbot/auth.py` - JWT authentication system
+- `src/macbot/validation.py` - Input validation and sanitization
+- `src/macbot/resource_manager.py` - Resource lifecycle management
+- `src/macbot/error_handler.py` - Centralized error handling
 
 ### **Model Configuration**
 - **LLM**: Qwen3-4B-Instruct-2507-Q4_K_M (2.3GB)

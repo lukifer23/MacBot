@@ -3,10 +3,13 @@
 ## Overview
 MacBot provides several API endpoints for interacting with the system programmatically. All services run locally on your machine.
 
-## Recent Updates (TTS & STT)
-- ✅ Piper-only neural TTS with voice preview/apply endpoints
-- ✅ Anti-feedback: mic can be auto-muted during TTS
-- ✅ Model Status includes STT/TTS info via orchestrator `/metrics`
+## Recent Updates
+- Production-ready hardening with JWT authentication and comprehensive security
+- Circuit breaker pattern for service resilience and automatic recovery
+- Advanced input validation and sanitization for all endpoints
+- Resource management with automatic cleanup and memory leak prevention
+- Structured logging with correlation IDs for better debugging
+- Zero type checker errors with comprehensive type annotations
 
 ## LLM Server (llama.cpp)
 **Base URL:** `http://localhost:8080`
@@ -161,6 +164,46 @@ The orchestrator provides a control and observability API for all services. By d
   }
   ```
 
+### Circuit Breaker Status
+- `GET /api/circuit-breakers` - Circuit breaker health and status
+  ```json
+  {
+    "llm_server": {
+      "state": "closed",
+      "failure_count": 0,
+      "last_failure_time": null,
+      "next_retry_time": null
+    },
+    "rag_server": {
+      "state": "closed",
+      "failure_count": 0,
+      "last_failure_time": null,
+      "next_retry_time": null
+    }
+  }
+  ```
+
+### Resource Management
+- `GET /api/resources` - System resource usage and limits
+  ```json
+  {
+    "memory": {
+      "used_mb": 1024,
+      "available_mb": 8192,
+      "percentage": 12.5
+    },
+    "cpu": {
+      "percentage": 15.2,
+      "cores": 8
+    },
+    "active_resources": {
+      "temp_files": 3,
+      "thread_pools": 2,
+      "managed_processes": 5
+    }
+  }
+  ```
+
 ### Health Monitoring
 - `GET /health` - Comprehensive system health status
   ```json
@@ -306,9 +349,75 @@ Note: When `speaking_started` is received, the dashboard pauses browser mic to p
   }
   ```
 
-## Internal APIs (Phase 6)
+## Internal APIs
 
 These APIs are used internally by MacBot components for inter-service communication and are not exposed externally.
+
+### Authentication Manager API
+Centralized JWT token management and validation.
+
+#### Core Methods
+- `AuthenticationManager.generate_token(user_id, permissions)` - Create JWT tokens
+- `AuthenticationManager.verify_token(token)` - Validate JWT tokens
+- `AuthenticationManager.verify_api_key(key)` - Validate API keys
+
+#### Configuration
+```yaml
+auth:
+  jwt_secret: "your-secret-key"  # Set via MACBOT_JWT_SECRET
+  token_expiry_hours: 24
+  api_keys: ["key1", "key2"]     # Set via MACBOT_API_TOKENS
+```
+
+### Input Validation API
+Comprehensive input sanitization and validation.
+
+#### Core Methods
+- `InputValidator.validate_text_input(text, max_length, required)` - Text validation
+- `InputValidator.validate_audio_data(data, max_size)` - Audio data validation
+- `InputValidator.validate_request_data(data, required_fields)` - Request validation
+- `InputValidator.sanitize_input(text)` - XSS prevention and sanitization
+
+#### Configuration
+```yaml
+validation:
+  max_text_length: 10000
+  max_audio_size: 10485760  # 10MB
+  xss_protection: true
+  sql_injection_protection: true
+```
+
+### Resource Manager API
+Automatic resource cleanup and lifecycle management.
+
+#### Core Methods
+- `ResourceManager.managed_temp_file()` - Temporary file context manager
+- `ResourceManager.managed_thread_pool()` - Thread pool lifecycle management
+- `ResourceManager.managed_resource()` - Generic resource cleanup
+- `ResourceManager.track_resource()` - Resource usage decorator
+
+#### Configuration
+```yaml
+resource_management:
+  temp_file_cleanup: true
+  thread_pool_timeout: 30
+  memory_monitoring: true
+  cleanup_interval: 300
+```
+
+### Error Handler API
+Structured error handling and logging.
+
+#### Core Methods
+- `ErrorHandler.handle_error(error, context)` - Structured error processing
+- `ErrorHandler.log_with_context(level, message, context)` - Context-aware logging
+- `ErrorHandler.get_error_context()` - Error context extraction
+
+#### Error Severity Levels
+- `CRITICAL` - System stability threatened
+- `HIGH` - Feature broken but system operational
+- `MEDIUM` - Degraded functionality
+- `LOW` - Minor issues
 
 ### TTSManager API
 The unified TTS management system provides reliable text-to-speech with interruption support.
@@ -319,15 +428,16 @@ The unified TTS management system provides reliable text-to-speech with interrup
 - `interrupt()` - Interrupt current speech playback
 
 #### Engine Priority
-1. **Kokoro** (interruptible, high quality, preferred)
+1. **Piper** (interruptible, high quality, preferred)
 2. **pyttsx3** (non-interruptible, fallback)
 
 #### Configuration
 ```yaml
 models:
   tts:
-    voice: "af_heart"  # Voice selection
-    speed: 1.0         # Speed multiplier
+    piper:
+      voice_path: "piper_voices/en_US-lessac-medium/model.onnx"
+      speed: 1.0
 ```
 
 ### Message Bus API
@@ -442,7 +552,61 @@ Error responses include:
 
 ## Authentication
 
-Currently, no authentication is required as all services run locally.
+MacBot implements JWT-based authentication for secure API access. Authentication is required for most endpoints.
+
+### JWT Authentication
+
+#### Token Generation
+```bash
+# Generate JWT token with permissions
+curl -X POST http://localhost:8090/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"permissions": ["read", "write"]}'
+```
+
+#### Using Tokens
+Include the JWT token in the Authorization header:
+```
+Authorization: Bearer <your-jwt-token>
+```
+
+### API Key Authentication (RAG Server)
+
+The RAG server uses API key authentication via environment variables:
+
+```bash
+export MACBOT_RAG_API_TOKENS="token1,token2,token3"
+```
+
+Include the API key in requests:
+```
+Authorization: Bearer your-api-key
+```
+
+### Authentication Required Endpoints
+- `POST /api/chat` - Chat interface
+- `POST /api/llm` - Direct LLM queries
+- `POST /api/assistant-speak` - TTS requests
+- `POST /api/upload-documents` - Document uploads
+- `POST /api/interrupt` - Conversation interruption
+- `POST /service/<name>/restart` - Service management
+- `GET /api/services` - Service status
+- `GET /metrics` - System metrics
+- `GET /pipeline-check` - Readiness checks
+
+### Optional Authentication Endpoints
+- `GET /health` - Health status (shows authenticated status if token provided)
+- `GET /status` - Basic service status
+
+### Authentication Errors
+```json
+{
+  "error": {
+    "message": "Authentication required",
+    "code": "AUTH_REQUIRED"
+  }
+}
+```
 ### LLM Settings API (Dashboard)
 - `GET /api/llm-settings` → Current model path, context_length, temperature, threads, max_tokens
 - `POST /api/set-llm-max-tokens` → Persist `models.llm.max_tokens` and nudge VA to apply at runtime

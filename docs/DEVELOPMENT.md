@@ -70,7 +70,12 @@ MacBot/
 │   ├── web_dashboard.py    # Web interface
 │   ├── health_monitor.py   # Health monitoring & resilience
 │   ├── rag_server.py      # RAG knowledge base
-│   └── config.py           # Configuration management
+│   ├── config.py           # Configuration management
+│   ├── auth.py             # JWT authentication system
+│   ├── validation.py       # Input validation and sanitization
+│   ├── resource_manager.py # Resource lifecycle management
+│   ├── error_handler.py    # Centralized error handling
+│   └── logging_utils.py    # Structured logging utilities
 ├── scripts/                # Shell scripts
 │   ├── bootstrap_mac.sh   # Bootstrap script
 │   └── start_macbot.sh    # Startup script
@@ -225,9 +230,22 @@ git push origin feature/your-feature-name
 
 ### Python Style
 - Follow PEP 8
-- Use type hints for function parameters and return values
-- Add docstrings to all public functions and classes
+- Use comprehensive type hints for all function parameters and return values
+- Add detailed docstrings to all public functions and classes
 - Use meaningful variable names
+- Zero type checker errors (mypy/pyright compliant)
+
+### Type Safety
+- **Complete Type Coverage**: All modules are fully typed with mypy/pyright validation
+- **Strict Type Checking**: No `Any` types except where absolutely necessary
+- **Type Imports**: Use proper typing imports (`from typing import List, Dict, Optional, etc.`)
+- **Generic Types**: Use appropriate generic types for collections and containers
+
+### Security Modules
+- **auth.py**: JWT token generation, validation, and Flask decorators
+- **validation.py**: Input sanitization, XSS prevention, and request validation
+- **resource_manager.py**: Automatic cleanup of temporary files, threads, and processes
+- **error_handler.py**: Centralized error handling with severity classification
 
 ### Example Function
 ```python

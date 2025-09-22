@@ -1,19 +1,19 @@
 # MacBot Troubleshooting Guide
 
-## Recent Updates (TTS & STT Enhancements)
+## Recent Updates
 
-**Last Updated:** TTS Integration & STT Performance Optimization
-**Status:** Advanced voice capabilities fully integrated
+**Last Updated:** Production Hardening & Security Implementation
+**Status:** Enterprise-grade reliability and security features fully integrated
 
-### ✅ **New Features & Improvements**
-- **Piper Neural TTS**: Superior voice quality with 178 WPM performance
-- **Whisper Large v3 Turbo**: Best-in-class STT with Metal acceleration (~0.2s latency)
-- **Kokoro Framework**: Ready for advanced interruptible TTS when compatible
-- **Enhanced Documentation**: Updated guides reflecting current capabilities
-- **Performance Metrics**: Comprehensive benchmarking and optimization
+### New Features & Improvements
+- **JWT Authentication**: Secure token-based authentication for all API endpoints
+- **Input Validation**: Comprehensive sanitization and XSS protection
+- **Circuit Breaker Pattern**: Automatic service isolation and recovery
+- **Resource Management**: Automatic cleanup and memory leak prevention
+- **Type Safety**: Zero type checker errors with complete type coverage
 
-### 🔧 **System Health**
-All voice systems operational with fallback mechanisms and comprehensive error handling.
+### System Health
+All systems operational with enterprise-grade security, comprehensive error handling, and automatic recovery mechanisms.
 
 ## View Logs
 
@@ -173,6 +173,125 @@ Services fail but don't automatically restart.
 3. **Manual process restart:**
    ```bash
    python orchestrator.py --restart all
+   ```
+
+## Authentication Issues
+
+### JWT Token Authentication Errors
+
+#### Symptom
+API endpoints return "Authentication required" or "Invalid token" errors.
+
+#### Solutions
+1. **Check JWT secret configuration:**
+   ```bash
+   # Verify environment variable is set
+   echo $MACBOT_JWT_SECRET
+
+   # If not set, configure it
+   export MACBOT_JWT_SECRET="your-very-secure-jwt-secret-key-here"
+   ```
+
+2. **Generate a valid token:**
+   ```bash
+   # Request a token from the orchestrator
+   curl -X POST http://localhost:8090/auth/token \
+     -H "Content-Type: application/json" \
+     -d '{"permissions": ["read", "write"]}'
+   ```
+
+3. **Use correct authorization header:**
+   ```bash
+   # Include token in API requests
+   curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+        http://localhost:3000/api/services
+   ```
+
+### API Key Authentication Errors
+
+#### Symptom
+RAG server returns "401 Unauthorized" for document uploads or searches.
+
+#### Solutions
+1. **Check RAG API tokens:**
+   ```bash
+   # Verify tokens are configured
+   echo $MACBOT_RAG_API_TOKENS
+
+   # Set tokens if missing
+   export MACBOT_RAG_API_TOKENS="token1,token2,token3"
+   ```
+
+2. **Use correct API key format:**
+   ```bash
+   # Include API key in requests
+   curl -H "Authorization: Bearer your-api-key" \
+        http://localhost:8081/search \
+        -d '{"query": "test query"}'
+   ```
+
+3. **Check token validity:**
+   ```bash
+   # Test with a simple request
+   curl -H "Authorization: Bearer invalid-token" \
+        http://localhost:8081/health
+   # Should return 401
+   ```
+
+### Input Validation Errors
+
+#### Symptom
+Requests are rejected with validation errors or sanitization warnings.
+
+#### Solutions
+1. **Check input length limits:**
+   ```yaml
+   # Verify validation configuration
+   validation:
+     max_text_length: 10000
+     max_audio_size: 10485760
+   ```
+
+2. **Review input sanitization:**
+   ```bash
+   # Check for XSS attempts in logs
+   grep -i "sanitization\|validation" logs/*.log
+   ```
+
+3. **Test with clean inputs:**
+   ```bash
+   # Use simple text without special characters
+   curl -X POST http://localhost:3000/api/chat \
+     -H "Authorization: Bearer YOUR_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Hello world"}'
+   ```
+
+### Resource Management Errors
+
+#### Symptom
+System reports resource exhaustion or cleanup failures.
+
+#### Solutions
+1. **Check resource limits:**
+   ```yaml
+   # Verify resource management config
+   resource_management:
+     max_temp_files: 100
+     max_thread_pools: 10
+     cleanup_interval: 300
+   ```
+
+2. **Monitor active resources:**
+   ```bash
+   # Check current resource usage
+   curl http://localhost:8090/api/resources
+   ```
+
+3. **Clear temporary resources:**
+   ```bash
+   # Force cleanup
+   find /tmp -name "macbot_*" -type f -mtime +1 -delete
    ```
 
 ## Common Issues

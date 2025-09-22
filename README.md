@@ -11,17 +11,18 @@
 - **🎤 Advanced Offline Voice Pipeline**: VAD + Whisper Large v3 STT (Metal accelerated) + Neural TTS
 - **🧠 High-Performance LLM**: Local inference with llama.cpp, optimized for Apple Silicon
 - **🔊 Superior Text-to-Speech**: Piper neural TTS with 70% smaller models, 2-3x faster synthesis, intelligent caching, and hardware acceleration
-- **⚡ Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, 2-3s TTS processing (quantized), instant cached playback, ambient noise filtering
+- **🔐 Enterprise Security**: JWT authentication, input validation, XSS protection, and secure API access
+- **⚡ Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, memory leak prevention, and intelligent caching
 - **🔧 Enhanced macOS Integration**: Web search, screenshots, app launching, system monitoring
-- **🌐 Modern Web Dashboard**: Real-time monitoring with WebSocket live updates
-- **📚 Advanced RAG System**: Document ingestion and semantic search with ChromaDB
-- **🐳 Production-Ready**: Docker deployment with orchestrator for reliable operation
-- **⚙️ Comprehensive Configuration**: YAML-based configuration with extensive customization
-- **🎯 Smart Interruptibility**: Natural conversation flow with voice activity detection
+- **🌐 Modern Web Dashboard**: Real-time monitoring with WebSocket live updates and circuit breaker status
+- **📚 Advanced RAG System**: Document ingestion and semantic search with ChromaDB and API key authentication
+- **🐳 Production-Ready**: Docker deployment with orchestrator, comprehensive health monitoring, and automatic recovery
+- **⚙️ Comprehensive Configuration**: YAML-based configuration with extensive customization and environment variable support
+- **🎯 Smart Interruptibility**: Natural conversation flow with voice activity detection and barge-in capability
 - **🔄 Real-Time Communication**: WebSocket bidirectional communication for live interaction
-- **🚀 Performance Optimized**: Memory leak fixes, race condition prevention, and resource management
-- **🛡️ Production Ready**: Comprehensive error handling, configuration validation, and stability improvements
-- **⚡ TTS Performance**: 70% smaller models, 2-3x faster synthesis, intelligent caching, MPS acceleration, and real-time monitoring
+- **🚀 Performance Optimized**: Circuit breaker pattern, resource management, and backpressure handling
+- **🛡️ Production Ready**: Zero type checker errors, structured logging, and enterprise-grade reliability
+- **⚡ TTS Performance**: 70% smaller models, 2-3x faster synthesis, MPS acceleration, and real-time monitoring
 
 ## 🚀 Quick Start
 
@@ -172,7 +173,12 @@ MacBot/
 │   ├── message_bus.py      # Real-time communication
 │   ├── orchestrator.py     # Service orchestration
 │   ├── web_dashboard.py    # Web interface
-│   └── rag_server.py      # RAG knowledge base
+│   ├── rag_server.py      # RAG knowledge base
+│   ├── auth.py             # JWT authentication system
+│   ├── validation.py       # Input validation and sanitization
+│   ├── resource_manager.py # Resource lifecycle management
+│   ├── error_handler.py    # Centralized error handling
+│   └── logging_utils.py    # Structured logging utilities
 ├── scripts/                # Shell scripts
 │   ├── bootstrap_mac.sh   # Bootstrap script
 │   └── start_macbot.sh    # Startup script
@@ -231,6 +237,26 @@ tools:
     default_engine: "google"
     timeout: 10
 
+### Security Configuration
+```yaml
+# Authentication (set via environment variables for security)
+auth:
+  enabled: true
+  jwt_secret: null  # Set MACBOT_JWT_SECRET environment variable
+  token_expiry_hours: 24
+
+# Input validation
+validation:
+  enabled: true
+  max_text_length: 10000
+  xss_protection: true
+
+# Resource management
+resource_management:
+  enabled: true
+  cleanup_interval: 300
+```
+
 ### Service Configuration
 ```yaml
 services:
@@ -240,6 +266,7 @@ services:
   rag_server:
     host: "localhost"
     port: 8001
+    api_tokens: null  # Set MACBOT_RAG_API_TOKENS environment variable
   voice_assistant:
     host: "localhost"   # Control server host
     port: 8123           # Control server port

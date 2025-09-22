@@ -117,6 +117,42 @@ health_monitor:
     email_enabled: false
     email_recipient: "admin@example.com"
 
+# Authentication Configuration
+auth:
+  enabled: true
+  jwt_secret: null  # Set via MACBOT_JWT_SECRET environment variable
+  token_expiry_hours: 24
+  algorithm: "HS256"
+  issuer: "macbot"
+  audience: "macbot-api"
+
+# Input Validation Configuration
+validation:
+  enabled: true
+  max_text_length: 10000
+  max_audio_size: 10485760  # 10MB
+  xss_protection: true
+  sql_injection_protection: true
+  command_injection_protection: true
+
+# Resource Management Configuration
+resource_management:
+  enabled: true
+  temp_file_cleanup: true
+  thread_pool_timeout: 30
+  memory_monitoring: true
+  cleanup_interval: 300
+  max_temp_files: 100
+  max_thread_pools: 10
+
+# Error Handling Configuration
+error_handling:
+  enabled: true
+  log_level: "INFO"
+  structured_logging: true
+  correlation_ids: true
+  max_error_context: 1000
+
 # Tool Configuration
 tools:
   enabled:
@@ -198,24 +234,27 @@ prompts:
 - **Port**: Port for the RAG service
 - **Host**: Bind address
 - **Collection Name**: Name for the vector database collection
-- **API Tokens**: List of allowed tokens for `/api/*` routes
+- **API Tokens**: List of allowed tokens for `/api/*` routes (set via environment variable)
 - **Rate Limit Per Minute**: Requests allowed per token each minute
 
 #### API Authentication
-Configure tokens to secure the RAG API:
+Configure tokens to secure the RAG API via environment variables:
 
-```yaml
-services:
-  rag_server:
-    api_tokens:
-      - "my-secret-token"
-    rate_limit_per_minute: 60
+```bash
+export MACBOT_RAG_API_TOKENS="token1,token2,token3"
+```
+
+Or set individual tokens:
+
+```bash
+export MACBOT_RAG_API_TOKEN_1="token1"
+export MACBOT_RAG_API_TOKEN_2="token2"
 ```
 
 Clients must include the token in an `Authorization` header:
 
 ```
-Authorization: Bearer my-secret-token
+Authorization: Bearer your-api-token
 ```
 
 Requests missing or using invalid tokens receive `401 Unauthorized`. Exceeding
@@ -272,12 +311,43 @@ app_launcher:
 
 ## Environment Variables
 
-You can override configuration values using environment variables:
+You can override configuration values using environment variables. Security-sensitive values should always be set via environment variables.
 
+### Authentication & Security
+```bash
+# JWT Authentication
+export MACBOT_JWT_SECRET="your-very-secure-jwt-secret-key-here"
+export MACBOT_JWT_EXPIRY_HOURS="24"
+
+# RAG API Tokens (comma-separated list)
+export MACBOT_RAG_API_TOKENS="token1,token2,token3"
+
+# Individual RAG tokens
+export MACBOT_RAG_API_TOKEN_1="token1"
+export MACBOT_RAG_API_TOKEN_2="token2"
+```
+
+### Model Paths
 ```bash
 export LLAMA_MODEL_PATH="/path/to/model.gguf"
-export WHISPER_MODEL="small.en"
-export MACBOT_PORT=3001
+export WHISPER_MODEL_PATH="/path/to/whisper-model.bin"
+export PIPER_VOICE_PATH="/path/to/piper-voice.onnx"
+```
+
+### Service Configuration
+```bash
+export MACBOT_WEB_PORT="3000"
+export MACBOT_VOICE_PORT="8123"
+export MACBOT_RAG_PORT="8081"
+export MACBOT_ORCHESTRATOR_PORT="8090"
+```
+
+### Logging & Debugging
+```bash
+export MACBOT_LOG_LEVEL="INFO"
+export MACBOT_STRUCTURED_LOGGING="true"
+export MACBOT_CORRELATION_IDS="true"
+export DEBUG="1"  # Enable debug mode
 ```
 
 ## Configuration Validation
