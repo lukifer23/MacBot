@@ -483,11 +483,13 @@ def get_orchestrator_host_port() -> tuple[str, int]:
 
 def validate_config_silent() -> tuple[bool, List[str]]:
     """Validate configuration without raising exceptions
-    
+
     Returns:
         tuple: (is_valid, list_of_warnings)
     """
     try:
+        if not _LOADED:
+            _load()
         _validate_config(_CFG)
         return True, []
     except ValueError as e:
