@@ -6,25 +6,25 @@
 
 **MacBot** is a comprehensive offline AI voice assistant for macOS that runs entirely on your local machine. It features a complete 5-model pipeline with voice activity detection, speech-to-text, large language model processing, text-to-speech, and native macOS tool integration.
 
-## ✨ Features
+## Features
 
-- **🎤 Advanced Offline Voice Pipeline**: VAD + Whisper Large v3 STT (Metal accelerated) + Neural TTS
-- **🧠 High-Performance LLM**: Local inference with llama.cpp, optimized for Apple Silicon
-- **🔊 Superior Text-to-Speech**: Piper neural TTS with 70% smaller models, 2-3x faster synthesis, intelligent caching, and hardware acceleration
-- **🔐 Enterprise Security**: JWT authentication, input validation, XSS protection, and secure API access
-- **⚡ Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, memory leak prevention, and intelligent caching
-- **🔧 Enhanced macOS Integration**: Web search, screenshots, app launching, system monitoring
-- **🌐 Modern Web Dashboard**: Real-time monitoring with WebSocket live updates and circuit breaker status
-- **📚 Advanced RAG System**: Document ingestion and semantic search with ChromaDB and API key authentication
-- **🐳 Production-Ready**: Docker deployment with orchestrator, comprehensive health monitoring, and automatic recovery
-- **⚙️ Comprehensive Configuration**: YAML-based configuration with extensive customization and environment variable support
-- **🎯 Smart Interruptibility**: Natural conversation flow with voice activity detection and barge-in capability
-- **🔄 Real-Time Communication**: WebSocket bidirectional communication for live interaction
-- **🚀 Performance Optimized**: Circuit breaker pattern, resource management, and backpressure handling
-- **🛡️ Production Ready**: Zero type checker errors, structured logging, and enterprise-grade reliability
-- **⚡ TTS Performance**: 70% smaller models, 2-3x faster synthesis, MPS acceleration, and real-time monitoring
+- **Advanced Offline Voice Pipeline**: VAD + Whisper Large v3 STT (Metal accelerated) + Neural TTS
+- **High-Performance LLM**: Local inference with llama.cpp, optimized for Apple Silicon
+- **Superior Text-to-Speech**: Piper neural TTS with 70% smaller models, 2-3x faster synthesis, intelligent caching, and hardware acceleration
+- **Enterprise Security**: JWT authentication, input validation, XSS protection, and secure API access
+- **Optimized Performance**: Metal GPU acceleration, ~0.2s STT latency, memory leak prevention, and intelligent caching
+- **Enhanced macOS Integration**: Web search, screenshots, app launching, system monitoring
+- **Modern Web Dashboard**: Real-time monitoring with WebSocket live updates and circuit breaker status
+- **Advanced RAG System**: Document ingestion and semantic search with ChromaDB and API key authentication
+- **Production-Ready**: Docker deployment with orchestrator, comprehensive health monitoring, and automatic recovery
+- **Comprehensive Configuration**: YAML-based configuration with extensive customization and environment variable support
+- **Smart Interruptibility**: Natural conversation flow with voice activity detection and barge-in capability
+- **Real-Time Communication**: WebSocket bidirectional communication for live interaction
+- **Performance Optimized**: Circuit breaker pattern, resource management, and backpressure handling
+- **Production Ready**: Zero type checker errors, structured logging, and enterprise-grade reliability
+- **TTS Performance**: 70% smaller models, 2-3x faster synthesis, MPS acceleration, and real-time monitoring
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -142,7 +142,7 @@ python scripts/verify_setup.py
 ```
 ```
 
-## 🐳 Docker Deployment
+## Docker Deployment
 
 ```bash
 # Build and run with docker-compose
@@ -152,7 +152,7 @@ docker-compose up --build
 docker-compose up macbot-orchestrator
 ```
 
-## 📖 Documentation
+## Documentation
 
 - **[docs/ENHANCED_FEATURES.md](docs/ENHANCED_FEATURES.md)** - Comprehensive feature guide
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API endpoint documentation
@@ -160,7 +160,7 @@ docker-compose up macbot-orchestrator
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup and contribution guide
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 MacBot/
@@ -206,7 +206,7 @@ MacBot/
 └── README.md
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 MacBot uses a comprehensive YAML configuration system. Key sections:
 
@@ -273,7 +273,7 @@ services:
 ```
 ```
 
-## 🎯 Voice Commands
+## Voice Commands
 
 MacBot supports various voice commands:
 
@@ -284,7 +284,7 @@ MacBot supports various voice commands:
 - **"browse github.com"** - Open websites
 - **"what's the weather"** - Weather app
 
-## 🎤 Interruptible Conversations
+## Interruptible Conversations
 
 MacBot features natural conversation flow with barge-in capability:
 
@@ -311,7 +311,7 @@ interruption:
 - Your new request will be processed immediately
 - Previous conversation context is preserved
 
-## 🔧 Development
+## Development
 
 ### Setup Development Environment
 
@@ -340,7 +340,7 @@ pip install -e .
 python -m build
 ```
 
-## 🐳 Docker Development
+## Docker Development
 
 ```bash
 # Build development image
@@ -350,7 +350,7 @@ docker build -t macbot:dev .
 docker run -v $(pwd):/app -p 3000:3000 macbot:dev
 ```
 
-## 📊 System Requirements
+## System Requirements
 
 ### Hardware
 - **CPU**: Apple Silicon (M1/M2/M3) or Intel x64
@@ -371,7 +371,7 @@ docker run -v $(pwd):/app -p 3000:3000 macbot:dev
 - **LLM Context**: 8192+ tokens (configurable)
 - **GPU Acceleration**: Metal framework on Apple Silicon
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -381,11 +381,11 @@ docker run -v $(pwd):/app -p 3000:3000 macbot:dev
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed contribution guidelines.
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **llama.cpp** - High-performance LLM inference engine
 - **Whisper.cpp** - Optimized speech recognition with Metal acceleration
@@ -396,7 +396,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **ONNX Runtime** - Cross-platform ML inference acceleration
 - **SYSTRAN** - FasterWhisper optimization research
 
-## 📞 Support
+## Support
 
 - **Issues**: [GitHub Issues](https://github.com/lukifer23/MacBot/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/lukifer23/MacBot/discussions)
@@ -404,4 +404,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**MacBot** - Your local AI assistant with the power of native macOS tools! 🚀
+**MacBot** - Your local AI assistant with the power of native macOS tools.
