@@ -19,6 +19,9 @@ _CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 _CFG: Dict[str, Any] = {}
 _LOADED = False
 
+_BOOL_TRUE_VALUES = frozenset({"true", "1", "yes", "y", "on"})
+_BOOL_FALSE_VALUES = frozenset({"false", "0", "no", "n", "off"})
+
 
 def _load() -> None:
     global _CFG, _LOADED
@@ -235,6 +238,25 @@ def get_typed(path: str, default: Any, cast_type: type) -> Any:
         The cast value or default
     """
     val = get(path, default)
+
+    if cast_type is bool:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            normalized = val.strip().lower()
+            if normalized in _BOOL_TRUE_VALUES:
+                return True
+            if normalized in _BOOL_FALSE_VALUES:
+                return False
+            return default
+        try:
+            return bool(val)
+        except (TypeError, ValueError):
+            return default
+
+    if isinstance(val, cast_type):
+        return val
+
     try:
         return cast_type(val)
     except (TypeError, ValueError):
