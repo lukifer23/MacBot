@@ -49,6 +49,9 @@ class MacBotOrchestrator:
         self.config = CFG.get_all()
         self.processes: Dict[str, subprocess.Popen] = {}
         self.threads: Dict[str, threading.Thread] = {}
+        self._process_log_threads: Dict[str, List[threading.Thread]] = {}
+        self._process_log_files: Dict[str, List[Any]] = {}
+        self._process_stream_strategy: Dict[str, str] = {}
         self.running = False
 
         # Service definitions will be populated based on config/paths
@@ -72,6 +75,152 @@ class MacBotOrchestrator:
 
         # Control HTTP server (status/health)
         self.control_thread: Optional[threading.Thread] = None
+
+    def _start_stream_thread(self, service_name: str, stream: Any, *, is_stderr: bool) -> threading.Thread:
+        """Drain a subprocess pipe on a background thread."""
+
+        stream_label = "STDERR" if is_stderr else "STDOUT"
+        log_func = logger.warning if is_stderr else logger.debug
+
+        def _drain() -> None:
+            try:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    try:
+                        text = chunk.decode("utf-8", errors="replace")
+                    except Exception:
+                        text = ""
+                    snippet = text.strip()
+                    if snippet:
+                        if len(snippet) > 200:
+                            snippet = snippet[:200] + "..."
+                        log_func(f"[{service_name}][{stream_label}] {snippet}")
+                    else:
+                        log_func(f"[{service_name}][{stream_label}] {len(chunk)} bytes")
+            except Exception as exc:
+                logger.debug(f"Stream reader for {service_name} {stream_label} exited: {exc}")
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(
+            target=_drain,
+            name=f"{service_name}-{stream_label.lower()}-drain",
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def _cleanup_process_streams(self, name: str) -> None:
+        """Join background stream threads and close log files."""
+
+        threads = self._process_log_threads.pop(name, [])
+        for thread in threads:
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=0.5)
+            except Exception:
+                pass
+
+        files = self._process_log_files.pop(name, [])
+        for fh in files:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+        self._process_stream_strategy.pop(name, None)
+
+    def _log_process_output(self, name: str, process: subprocess.Popen, *, timeout: float = 1.0) -> None:
+        """Attempt to log remaining process output when pipes are not drained asynchronously."""
+
+        strategy = self._process_stream_strategy.get(name)
+        if strategy == "thread":
+            # Output is drained continuously; nothing to log here.
+            return
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.debug(f"Timeout collecting output for {name}")
+            return
+        except Exception as exc:
+            logger.debug(f"Failed to collect output for {name}: {exc}")
+            return
+
+        if stdout:
+            logger.error(f"{name} STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+        if stderr:
+            logger.error(f"{name} STDERR: {stderr.decode('utf-8', errors='ignore')}")
+
+    def _spawn_service_process(
+        self,
+        service_name: str,
+        command: List[str],
+        *,
+        env: Optional[Dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        stream_strategy: str = "thread",
+    ) -> subprocess.Popen:
+        """Spawn a service process while ensuring its output is drained."""
+
+        valid_strategies = {"thread", "files", "null"}
+        if stream_strategy not in valid_strategies:
+            raise ValueError(f"Unknown stream strategy: {stream_strategy}")
+
+        stdout_target: Any = subprocess.PIPE
+        stderr_target: Any = subprocess.PIPE
+        log_files: List[Any] = []
+
+        if stream_strategy == "files":
+            log_dir = Path("logs") / "services"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = log_dir / f"{service_name}.stdout.log"
+            stderr_path = log_dir / f"{service_name}.stderr.log"
+            stdout_file = open(stdout_path, "ab")
+            stderr_file = open(stderr_path, "ab")
+            stdout_target = stdout_file
+            stderr_target = stderr_file
+            log_files = [stdout_file, stderr_file]
+        elif stream_strategy == "null":
+            stdout_target = subprocess.DEVNULL
+            stderr_target = subprocess.DEVNULL
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=stdout_target,
+                stderr=stderr_target,
+                env=env,
+                cwd=cwd,
+            )
+        except Exception:
+            for fh in log_files:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+            raise
+
+        self.processes[service_name] = process
+        self._process_stream_strategy[service_name] = stream_strategy
+
+        if stream_strategy == "thread":
+            threads: List[threading.Thread] = []
+            if process.stdout is not None:
+                threads.append(self._start_stream_thread(service_name, process.stdout, is_stderr=False))
+            if process.stderr is not None:
+                threads.append(self._start_stream_thread(service_name, process.stderr, is_stderr=True))
+            if threads:
+                self._process_log_threads[service_name] = threads
+        elif stream_strategy == "files":
+            self._process_log_files[service_name] = log_files
+
+        return process
 
     def _build_service_definitions(self) -> None:
         """Build service definitions for managed components."""
@@ -318,29 +467,25 @@ class MacBotOrchestrator:
         result: Dict[str, Any] = {'service': service.name, 'success': False}
         try:
             logger.info(f"Starting {service.name}...")
-            process = subprocess.Popen(
+            process = self._spawn_service_process(
+                service.name,
                 service.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 env=service.env,
                 cwd=service.cwd,
             )
-            self.processes[service.name] = process
 
             if service.health_endpoint:
                 delay = backoff
                 for _ in range(retries):
                     # Check if process is still alive
                     if process.poll() is not None:
-                        stdout, stderr = process.communicate()
                         logger.error(f"❌ {service.name} process died during startup")
-                        if stdout:
-                            logger.error(f"STDOUT: {stdout.decode('utf-8', errors='ignore')}")
-                        if stderr:
-                            logger.error(f"STDERR: {stderr.decode('utf-8', errors='ignore')}")
+                        self._log_process_output(service.name, process)
+                        self._cleanup_process_streams(service.name)
+                        self.processes.pop(service.name, None)
                         result['error'] = 'process died during startup'
                         return result
-                    
+
                     try:
                         r = requests.get(service.health_endpoint, timeout=2)
                         if r.status_code == 200:
@@ -368,6 +513,25 @@ class MacBotOrchestrator:
                 service_name=service.name,
                 service_command=service.command
             )
+            process = self.processes.get(service.name)
+            if process:
+                if process.poll() is None:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    except Exception:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                self._cleanup_process_streams(service.name)
+                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                self.processes.pop(service.name, None)
             return result
 
     def start_llama_server(self) -> bool:
@@ -407,13 +571,13 @@ class MacBotOrchestrator:
             logger.info("Starting llama.cpp server...")
             logger.info(f"Command: {' '.join(cmd)}")
             
-            process = subprocess.Popen(
+            process = self._spawn_service_process(
+                'llama',
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=os.getcwd()
+                cwd=os.getcwd(),
+                stream_strategy='files',
             )
-            self.processes['llama'] = process
+            logger.debug("llama.cpp output redirected to logs/services/llama.*.log")
             
             # Wait for server to be ready
             for _ in range(60):  # 60 second timeout for model loading
@@ -454,6 +618,18 @@ class MacBotOrchestrator:
                     time.sleep(1)
             
             logger.error("❌ llama.cpp server failed to start")
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+            self._log_process_output('llama', process)
+            self._cleanup_process_streams('llama')
+            self.processes.pop('llama', None)
             handle_error(
                 RuntimeError("LLM server failed to start within timeout"),
                 component="orchestrator",
@@ -469,6 +645,18 @@ class MacBotOrchestrator:
                 operation="start_llama_server",
                 severity=ErrorSeverity.HIGH
             )
+            process = self.processes.get('llama')
+            if process and process.poll() is None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+            self._cleanup_process_streams('llama')
+            self.processes.pop('llama', None)
             return False
     
     
@@ -516,18 +704,18 @@ class MacBotOrchestrator:
     
     def check_process_health(self):
         """Check if all processes are still running"""
-        for name, process in self.processes.items():
+        for name, process in list(self.processes.items()):
             if process.poll() is not None:
                 logger.warning(f"Process {name} died, restarting...")
-                # Try to capture any remaining output
-                try:
-                    stdout, stderr = process.communicate(timeout=1)
-                    if stdout:
-                        logger.error(f"{name} STDOUT: {stdout.decode('utf-8', errors='ignore')}")
-                    if stderr:
-                        logger.error(f"{name} STDERR: {stderr.decode('utf-8', errors='ignore')}")
-                except Exception:
-                    pass  # Process already terminated
+                self._log_process_output(name, process)
+                self._cleanup_process_streams(name)
+                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+                self.processes.pop(name, None)
                 self.restart_process(name)
     
     def restart_process(self, name: str) -> Dict[str, Any]:
@@ -542,6 +730,18 @@ class MacBotOrchestrator:
                     proc.kill()
                 except Exception:
                     pass
+
+        if proc:
+            self._cleanup_process_streams(name)
+            for stream in (getattr(proc, 'stdout', None), getattr(proc, 'stderr', None)):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            self.processes.pop(name, None)
+        else:
+            self._cleanup_process_streams(name)
 
         if name == 'llama':
             success = self.start_llama_server()
@@ -626,7 +826,7 @@ class MacBotOrchestrator:
             logger.error(f"Error stopping health monitor: {e}")
 
         # Stop all processes
-        for name, process in self.processes.items():
+        for name, process in list(self.processes.items()):
             try:
                 process.terminate()
                 process.wait(timeout=5)
@@ -634,10 +834,25 @@ class MacBotOrchestrator:
             except subprocess.TimeoutExpired:
                 process.kill()
                 logger.warning(f"Force killed {name}")
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Error stopping {name}: {e}")
+            finally:
+                self._cleanup_process_streams(name)
+                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
 
         self.processes.clear()
+        self._process_log_threads.clear()
+        self._process_log_files.clear()
+        self._process_stream_strategy.clear()
         logger.info("All services stopped")
 
         # Ensure message bus components shut down
