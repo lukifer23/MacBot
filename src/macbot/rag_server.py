@@ -10,6 +10,7 @@ import logging
 from .logging_utils import setup_logger
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple
+from collections.abc import Mapping
 from datetime import datetime
 
 import chromadb
@@ -377,12 +378,21 @@ def health():
 def api_search():
     """Search API endpoint"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return (
+                jsonify({
+                    'success': False,
+                    'error': 'Request body must be a JSON object',
+                    'code': 'validation_error'
+                }),
+                400,
+            )
         query = data.get('query', '')
-        
+
         if not query:
             return jsonify({'success': False, 'error': 'Query is required', 'code': 'validation_error'}), 400
-        
+
         results = rag_server.search(query, top_k=5)
         return jsonify({'query': query, 'results': results})
         
@@ -404,15 +414,37 @@ def api_documents():
 def api_add_document():
     """Add document API endpoint"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return (
+                jsonify({
+                    'success': False,
+                    'error': 'Request body must be a JSON object',
+                    'code': 'validation_error'
+                }),
+                400,
+            )
         content = data.get('content', '')
         title = data.get('title', 'Untitled')
         doc_type = data.get('type', 'text')
-        metadata = data.get('metadata', {})
-        
+        metadata_value = data.get('metadata')
+        if metadata_value is None:
+            metadata = {}
+        elif isinstance(metadata_value, Mapping):
+            metadata = dict(metadata_value)
+        else:
+            return (
+                jsonify({
+                    'success': False,
+                    'error': 'Metadata must be a JSON object when provided',
+                    'code': 'validation_error'
+                }),
+                400,
+            )
+
         if not content:
             return jsonify({'success': False, 'error': 'Content is required', 'code': 'validation_error'}), 400
-        
+
         doc_id = rag_server.add_document(content, title, doc_type, metadata)
         return jsonify({'id': doc_id, 'message': 'Document added successfully'})
         
