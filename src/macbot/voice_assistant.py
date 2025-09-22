@@ -186,103 +186,62 @@ class ToolCaller:
             logger.debug(f"Tool callable '{method_name}' not available - check configuration")
         return func
 
-    def web_search(self, query: str) -> str:
-        if not self.is_tool_enabled("web_search"):
-            return "Web search is currently disabled."
+    def _execute_tool(self, tool_name: str, method_name: str, *args, unavailable_msg: str = None, **kwargs) -> str:
+        """Generic tool execution with error handling"""
+        if not self.is_tool_enabled(tool_name):
+            return f"{tool_name.replace('_', ' ').title()} is currently disabled."
 
-        func = self._get_callable("web_search")
+        func = self._get_callable(method_name)
         if func is None:
-            return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
+            return unavailable_msg or f"I couldn't perform this action right now. The {tool_name.replace('_', ' ')} service might be unavailable."
 
         try:
-            return func(query)
+            return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Web search failed: {e}")
-            return f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
+            logger.error(f"{tool_name} failed: {e}")
+            return unavailable_msg or f"I couldn't perform this action right now. The {tool_name.replace('_', ' ')} service might be unavailable."
+
+    def web_search(self, query: str) -> str:
+        return self._execute_tool(
+            "web_search", "web_search", query,
+            unavailable_msg=f"I couldn't perform a web search for '{query}' right now. The web search service might be unavailable."
+        )
 
     def browse_website(self, url: str) -> str:
-        if not self.is_tool_enabled("web_search"):
-            return "Web browsing is currently disabled."
-
-        func = self._get_callable("browse_website")
-        if func is None:
-            return f"I couldn't open {url} right now. The website browsing service might be unavailable."
-
-        try:
-            return func(url)
-        except Exception as e:
-            logger.error(f"Website browsing failed: {e}")
-            return f"I couldn't open {url} right now. The website browsing service might be unavailable."
+        return self._execute_tool(
+            "web_search", "browse_website", url,
+            unavailable_msg=f"I couldn't open {url} right now. The website browsing service might be unavailable."
+        )
 
     def get_system_info(self) -> str:
-        if not self.is_tool_enabled("system_monitor"):
-            return "System monitoring is currently disabled."
-
-        func = self._get_callable("get_system_info")
-        if func is None:
-            return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
-
-        try:
-            return func()
-        except Exception as e:
-            logger.error(f"System info retrieval failed: {e}")
-            return "I couldn't retrieve system information right now. The system monitoring service might be unavailable."
+        return self._execute_tool(
+            "system_monitor", "get_system_info",
+            unavailable_msg="I couldn't retrieve system information right now. The system monitoring service might be unavailable."
+        )
 
     def search_knowledge_base(self, query: str) -> str:
-        if not self.is_tool_enabled("rag_search"):
-            return "Knowledge base search is currently disabled."
-
-        func = self._get_callable("search_knowledge_base")
-        if func is None:
-            return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
-
-        try:
-            return func(query)
-        except Exception as e:
-            logger.error(f"Knowledge base search failed: {e}")
-            return f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
+        return self._execute_tool(
+            "rag_search", "search_knowledge_base", query,
+            unavailable_msg=f"I couldn't search the knowledge base for '{query}' right now. The RAG service might be unavailable."
+        )
 
     def open_app(self, app_name: str) -> str:
-        if not self.is_tool_enabled("app_launcher"):
-            return "Application launching is currently disabled."
-
-        func = self._get_callable("open_app")
-        if func is None:
-            return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
-
-        try:
-            return func(app_name)
-        except Exception as e:
-            logger.error(f"App opening failed: {e}")
-            return f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
+        return self._execute_tool(
+            "app_launcher", "open_app", app_name,
+            unavailable_msg=f"I couldn't open {app_name} right now. The application launcher service might be unavailable."
+        )
 
     def take_screenshot(self) -> str:
-        if not self.is_tool_enabled("screenshot"):
-            return "Screenshot capture is currently disabled."
-
-        func = self._get_callable("take_screenshot")
-        if func is None:
-            return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
-
-        try:
-            return func()
-        except Exception as e:
-            logger.error(f"Screenshot failed: {e}")
-            return "I couldn't take a screenshot right now. The screenshot service might be unavailable."
+        return self._execute_tool(
+            "screenshot", "take_screenshot",
+            unavailable_msg="I couldn't take a screenshot right now. The screenshot service might be unavailable."
+        )
 
     def get_weather(self) -> str:
-        if not self.is_tool_enabled("weather"):
-            return "Weather lookup is currently disabled."
-
-        func = self._get_callable("get_weather")
-        if func is None:
-            return "I couldn't get weather information right now. The weather service might be unavailable."
-
-        try:
-            return func()
-        except Exception as e:
-            logger.error(f"Weather retrieval failed: {e}")
-            return "I couldn't get weather information right now. The weather service might be unavailable."
+        return self._execute_tool(
+            "weather", "get_weather",
+            unavailable_msg="I couldn't get weather information right now. The weather service might be unavailable."
+        )
 
 # Initialize tool caller
 tool_caller = ToolCaller()

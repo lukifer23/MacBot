@@ -22,9 +22,9 @@ from typing import Optional, Any, Callable, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass  # Type-only imports here if needed
-import logging
+from .logging_utils import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger("macbot.audio_interrupt", "logs/audio_interrupt.log")
 
 class AudioInterruptHandler:
     """Handles audio playback interruption using macOS AudioQueue"""

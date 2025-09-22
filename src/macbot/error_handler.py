@@ -158,11 +158,14 @@ class ErrorHandler:
         self.error_history.clear()
         self.error_count = 0
 
+_error_handler_instance: Optional[ErrorHandler] = None
+
 def get_error_handler() -> ErrorHandler:
     """Get or create error handler instance"""
-    if not hasattr(get_error_handler, '_instance'):
-        get_error_handler._instance = ErrorHandler()
-    return get_error_handler._instance
+    global _error_handler_instance
+    if _error_handler_instance is None:
+        _error_handler_instance = ErrorHandler()
+    return _error_handler_instance
 
 def handle_error(error: Exception, component: str, operation: str, severity: ErrorSeverity = ErrorSeverity.MEDIUM, **context_kwargs) -> Dict[str, Any]:
     """Convenience function to handle errors"""
@@ -170,19 +173,32 @@ def handle_error(error: Exception, component: str, operation: str, severity: Err
     handler = get_error_handler()
     return handler.handle_error(error, context, severity)
 
-def with_error_handling(component: str, operation: str, severity: ErrorSeverity = ErrorSeverity.MEDIUM):
-    """Decorator to add error handling to functions"""
+
+def with_error_handling(component: str, operation: str, severity: ErrorSeverity = ErrorSeverity.MEDIUM, reraise: bool = True):
+    """Decorator to add error handling to functions
+
+    Args:
+        component: Component name for error context
+        operation: Operation name for error context
+        severity: Error severity level
+        reraise: Whether to re-raise the exception after handling
+
+    Returns:
+        Decorated function with error handling
+    """
     def decorator(func):
-        @wraps(func)
         def wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
                 error_details = handle_error(e, component, operation, severity)
-                # Re-raise with additional context
-                raise type(e)(f"Error in {component}.{operation}: {str(e)}") from e
+                if reraise:
+                    # Re-raise with additional context
+                    raise type(e)(f"Error in {component}.{operation}: {str(e)}") from e
+                return None  # Or some default value
         return wrapper
     return decorator
+
 
 @contextmanager
 def error_context(component: str, operation: str, severity: ErrorSeverity = ErrorSeverity.MEDIUM):

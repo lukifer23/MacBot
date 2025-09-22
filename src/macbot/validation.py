@@ -192,3 +192,86 @@ def validate_voice_request(data: Dict[str, Any]) -> Dict[str, Any]:
         validated['audio'] = validator.validate_audio_data(validated['audio'])
 
     return validated
+
+
+# Validation decorators for common patterns
+
+def validate_text_input_decorator(max_length: Optional[int] = None):
+    """Decorator to validate text input parameters"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # Find text parameter (usually first positional or named 'text')
+            text = None
+            if args:
+                text = args[0] if isinstance(args[0], str) else None
+            if text is None and 'text' in kwargs:
+                text = kwargs['text']
+            if text is None and 'message' in kwargs:
+                text = kwargs['message']
+
+            if text is not None:
+                validator = get_validator()
+                validated_text = validator.validate_text_input(text, max_length)
+                # Update kwargs or args
+                if 'text' in kwargs:
+                    kwargs['text'] = validated_text
+                elif 'message' in kwargs:
+                    kwargs['message'] = validated_text
+                elif args:
+                    new_args = list(args)
+                    new_args[0] = validated_text
+                    args = tuple(new_args)
+
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def validate_request_data_decorator(required_fields: Optional[List[str]] = None):
+    """Decorator to validate request data"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # Find data parameter
+            data = None
+            if 'data' in kwargs:
+                data = kwargs['data']
+            elif len(args) > 0 and isinstance(args[0], dict):
+                data = args[0]
+
+            if data is not None:
+                validator = get_validator()
+                validated_data = validator.validate_request_data(data, required_fields)
+                if 'data' in kwargs:
+                    kwargs['data'] = validated_data
+                elif args:
+                    new_args = list(args)
+                    new_args[0] = validated_data
+                    args = tuple(new_args)
+
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def validate_audio_data_decorator(max_size: Optional[int] = None):
+    """Decorator to validate audio data parameters"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # Find audio parameter
+            audio_data = None
+            if 'audio' in kwargs:
+                audio_data = kwargs['audio']
+            elif 'audio_data' in kwargs:
+                audio_data = kwargs['audio_data']
+
+            if audio_data is not None:
+                validator = get_validator()
+                validated_audio = validator.validate_audio_data(audio_data, max_size)
+                if 'audio' in kwargs:
+                    kwargs['audio'] = validated_audio
+                elif 'audio_data' in kwargs:
+                    kwargs['audio_data'] = validated_audio
+
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator

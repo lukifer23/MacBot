@@ -9,9 +9,9 @@ import json
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 from dataclasses import dataclass, asdict
-import logging
+from .logging_utils import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger("macbot.conversation_manager", "logs/conversation_manager.log")
 
 class ConversationState(Enum):
     """Conversation states"""

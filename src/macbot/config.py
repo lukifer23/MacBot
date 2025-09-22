@@ -223,6 +223,24 @@ def get(path: str, default: Any = None) -> Any:
     return cur
 
 
+def get_typed(path: str, default: Any, cast_type: type) -> Any:
+    """Get a configuration value with type casting and default fallback.
+
+    Args:
+        path: Dot-separated configuration path
+        default: Default value if path not found or casting fails
+        cast_type: Type to cast the value to
+
+    Returns:
+        The cast value or default
+    """
+    val = get(path, default)
+    try:
+        return cast_type(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def get_llm_server_url() -> str:
     return str(get("models.llm.server_url", "http://localhost:8080/v1/chat/completions"))
 
@@ -230,34 +248,16 @@ def get_llm_model_path() -> str:
     return os.path.abspath(str(get("models.llm.path", "models/llama.cpp/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf")))
 
 def get_llm_context_length() -> int:
-    val = get("models.llm.context_length", 4096)
-    try:
-        return int(val)
-    except Exception:
-        return 4096
+    return get_typed("models.llm.context_length", 4096, int)
 
 def get_llm_threads() -> int:
-    val = get("models.llm.threads", -1)
-    try:
-        return int(val)
-    except Exception:
-        return -1
-
+    return get_typed("models.llm.threads", -1, int)
 
 def get_llm_temperature() -> float:
-    val = get("models.llm.temperature", 0.4)
-    try:
-        return float(val)
-    except Exception:
-        return 0.4
-
+    return get_typed("models.llm.temperature", 0.4, float)
 
 def get_llm_max_tokens() -> int:
-    val = get("models.llm.max_tokens", 200)
-    try:
-        return int(val)
-    except Exception:
-        return 200
+    return get_typed("models.llm.max_tokens", 200, int)
 
 
 def get_system_prompt() -> str:
@@ -267,25 +267,17 @@ def get_system_prompt() -> str:
 def get_stt_bin() -> str:
     return os.path.abspath(str(get("models.stt.bin", "models/whisper.cpp/build/bin/whisper-cli")))
 
-
 def get_stt_model() -> str:
     return os.path.abspath(str(get("models.stt.model", "models/whisper.cpp/models/ggml-base.en.bin")))
-
 
 def get_stt_language() -> str:
     return str(get("models.stt.language", "en"))
 
-
 def get_tts_voice() -> str:
     return str(get("models.tts.voice", get("tts.voice", "af_heart")))
 
-
 def get_tts_speed() -> float:
-    val = get("models.tts.speed", get("tts.speed", 1.0))
-    try:
-        return float(val)
-    except Exception:
-        return 1.0
+    return get_typed("models.tts.speed", get("tts.speed", 1.0), float)
 
 def get_piper_voice_path() -> str:
     """Filesystem path to Piper ONNX voice model.
@@ -294,136 +286,75 @@ def get_piper_voice_path() -> str:
     return os.path.abspath(str(get("models.tts.piper.voice_path", "piper_voices/en_US-lessac-medium/model.onnx")))
 
 def get_piper_sample_rate() -> int:
-    try:
-        return int(get("models.tts.piper.sample_rate", 22050))
-    except Exception:
-        return 22050
+    return get_typed("models.tts.piper.sample_rate", 22050, int)
 
 def get_piper_reload_sec() -> int:
-    try:
-        return int(get("models.tts.piper.reload_sec", 30))
-    except Exception:
-        return 30
-
+    return get_typed("models.tts.piper.reload_sec", 30, int)
 
 def get_audio_sample_rate() -> int:
-    try:
-        return int(get("voice_assistant.sample_rate", 16000))
-    except Exception:
-        return 16000
-
+    return get_typed("voice_assistant.sample_rate", 16000, int)
 
 def get_audio_block_sec() -> float:
-    try:
-        return float(get("voice_assistant.block_sec", 0.03))
-    except Exception:
-        return 0.03
-
+    return get_typed("voice_assistant.block_sec", 0.03, float)
 
 def get_audio_vad_threshold() -> float:
-    try:
-        return float(get("voice_assistant.vad_threshold", 0.005))
-    except Exception:
-        return 0.005
-
+    return get_typed("voice_assistant.vad_threshold", 0.005, float)
 
 def get_audio_silence_hang() -> float:
-    try:
-        return float(get("voice_assistant.silence_hang", 0.6))
-    except Exception:
-        return 0.6
+    return get_typed("voice_assistant.silence_hang", 0.6, float)
 
 
 # Performance optimization settings
 def get_transcription_cache_size() -> int:
     """Get transcription cache size"""
-    try:
-        return int(get("voice_assistant.performance.transcription_cache_size", 10))
-    except Exception:
-        return 10
-
+    return get_typed("voice_assistant.performance.transcription_cache_size", 10, int)
 
 def get_min_chunk_duration() -> float:
     """Get minimum chunk duration for transcription"""
-    try:
-        return float(get("voice_assistant.performance.min_chunk_duration", 0.5))
-    except Exception:
-        return 0.5
-
+    return get_typed("voice_assistant.performance.min_chunk_duration", 0.5, float)
 
 def get_transcription_interval() -> float:
     """Get minimum interval between transcriptions"""
-    try:
-        return float(get("voice_assistant.performance.transcription_interval", 0.3))
-    except Exception:
-        return 0.3
+    return get_typed("voice_assistant.performance.transcription_interval", 0.3, float)
 
 def get_transcription_cache_window_sec() -> float:
     """Window size (seconds) used to key streaming transcription cache."""
-    try:
-        return float(get("voice_assistant.performance.transcription_cache_window_sec", 2.0))
-    except Exception:
-        return 2.0
-
+    return get_typed("voice_assistant.performance.transcription_cache_window_sec", 2.0, float)
 
 def get_tts_buffer_size() -> int:
     """Get TTS buffer size for streaming"""
-    try:
-        return int(get("voice_assistant.performance.tts_buffer_size", 180))
-    except Exception:
-        return 180
+    return get_typed("voice_assistant.performance.tts_buffer_size", 180, int)
 
 def get_tts_cache_size() -> int:
     """Get TTS cache size"""
-    try:
-        return int(get("voice_assistant.performance.tts_cache_size", 100))
-    except Exception:
-        return 100
+    return get_typed("voice_assistant.performance.tts_cache_size", 100, int)
 
 def get_tts_cache_enabled() -> bool:
     """Get TTS cache enabled status"""
-    try:
-        return bool(get("voice_assistant.performance.tts_cache_enabled", True))
-    except Exception:
-        return True
+    return get_typed("voice_assistant.performance.tts_cache_enabled", True, bool)
 
 def get_tts_parallel_processing() -> bool:
     """Get TTS parallel processing enabled status"""
-    try:
-        return bool(get("voice_assistant.performance.tts_parallel_processing", True))
-    except Exception:
-        return True
+    return get_typed("voice_assistant.performance.tts_parallel_processing", True, bool)
 
 def get_tts_optimize_for_speed() -> bool:
     """Get TTS optimize for speed status"""
-    try:
-        return bool(get("voice_assistant.performance.tts_optimize_for_speed", True))
-    except Exception:
-        return True
+    return get_typed("voice_assistant.performance.tts_optimize_for_speed", True, bool)
 
 def get_piper_quantized_path() -> Optional[str]:
     """Get quantized Piper model path"""
-    try:
-        path = get("models.tts.piper.quantized_path")
-        return path if path and os.path.exists(path) else None
-    except Exception:
-        return None
+    path = get("models.tts.piper.quantized_path")
+    return path if path and os.path.exists(path) else None
 
 def get_piper_coreml_path() -> Optional[str]:
     """Get CoreML Piper model path"""
-    try:
-        path = get("models.tts.piper.coreml_path")
-        return path if path and os.path.exists(path) else None
-    except Exception:
-        return None
+    path = get("models.tts.piper.coreml_path")
+    return path if path and os.path.exists(path) else None
 
 def get_piper_fallback_path() -> Optional[str]:
     """Get fallback Piper model path"""
-    try:
-        path = get("models.tts.piper.fallback_path")
-        return path if path and os.path.exists(path) else None
-    except Exception:
-        return None
+    path = get("models.tts.piper.fallback_path")
+    return path if path and os.path.exists(path) else None
 
 
 def interruption_enabled() -> bool:
@@ -431,48 +362,28 @@ def interruption_enabled() -> bool:
 
 
 def get_interrupt_threshold() -> float:
-    try:
-        return float(get("voice_assistant.interruption.interrupt_threshold", 0.01))
-    except Exception:
-        return 0.01
+    return get_typed("voice_assistant.interruption.interrupt_threshold", 0.01, float)
 
 def get_audio_output_device():
     """Return configured output device (int index or str name) or None."""
-    val = get("voice_assistant.audio.output_device", None)
-    return val
+    return get("voice_assistant.audio.output_device", None)
 
 def get_audio_input_device():
     """Return configured input device (int index or str name) or None."""
-    val = get("voice_assistant.audio.input_device", None)
-    return val
+    return get("voice_assistant.audio.input_device", None)
 
 def mic_mute_while_tts() -> bool:
     """When true, ignore mic input while assistant is speaking to avoid feedback loops."""
-    try:
-        return bool(get("voice_assistant.audio.mic_mute_while_tts", True))
-    except Exception:
-        return True
-
+    return get_typed("voice_assistant.audio.mic_mute_while_tts", True, bool)
 
 def get_interrupt_cooldown() -> float:
-    try:
-        return float(get("voice_assistant.interruption.interrupt_cooldown", 0.5))
-    except Exception:
-        return 0.5
-
+    return get_typed("voice_assistant.interruption.interrupt_cooldown", 0.5, float)
 
 def get_conversation_timeout() -> int:
-    try:
-        return int(get("voice_assistant.interruption.conversation_timeout", 30))
-    except Exception:
-        return 30
-
+    return get_typed("voice_assistant.interruption.conversation_timeout", 30, int)
 
 def get_context_buffer_size() -> int:
-    try:
-        return int(get("voice_assistant.interruption.context_buffer_size", 10))
-    except Exception:
-        return 10
+    return get_typed("voice_assistant.interruption.context_buffer_size", 10, int)
 
 
 def get_allowed_apps() -> List[str]:
@@ -561,19 +472,12 @@ def get_rag_api_tokens() -> List[str]:
 
 def get_rag_rate_limit_per_minute() -> int:
     """Return per-token request limit per minute for RAG API"""
-    try:
-        return int(get("services.rag_server.rate_limit_per_minute", 60))
-    except Exception:
-        return 60
-
+    return get_typed("services.rag_server.rate_limit_per_minute", 60, int)
 
 def get_orchestrator_host_port() -> tuple[str, int]:
     """Host/port for the orchestrator control server"""
     host = str(get("services.orchestrator.host", "localhost"))
-    try:
-        port = int(get("services.orchestrator.port", 8090))
-    except Exception:
-        port = 8090
+    port = get_typed("services.orchestrator.port", 8090, int)
     return host, port
 
 
