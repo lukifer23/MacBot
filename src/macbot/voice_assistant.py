@@ -23,7 +23,7 @@ import requests
 import hashlib
 import logging
 from .logging_utils import setup_logger
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 from .audio_interrupt import AudioInterruptHandler
@@ -36,9 +36,11 @@ from .conversation_manager import (
 from .message_bus_client import MessageBusClient
 from . import config as CFG
 from . import tools
+from .validation import validate_chat_message
+from .resource_manager import get_resource_manager, managed_temp_file, managed_resource, track_resource
 
-# Configure logging
-logger = setup_logger("macbot.voice_assistant", "logs/voice_assistant.log")
+# Configure logging with structured logging
+logger = setup_logger("macbot.voice_assistant", "logs/voice_assistant.log", structured=True)
 
 # Dashboard notifications
 _WD_HOST, _WD_PORT = CFG.get_web_dashboard_host_port()
@@ -304,13 +306,12 @@ def check_llm_service_available() -> bool:
 
 def validate_input(text: str, max_length: int = MAX_INPUT_LENGTH) -> bool:
     """Validate user input to prevent issues"""
-    if not text or not isinstance(text, str):
+    try:
+        validate_chat_message(text)
+        return True
+    except Exception as e:
+        logger.warning(f"Input validation failed: {e}")
         return False
-    if len(text.strip()) == 0:
-        return False
-    if len(text) > max_length:
-        return False
-    return True
 
 # ---- Audio I/O ----
 audio_q = queue.Queue()
@@ -344,14 +345,13 @@ def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
 def _transcribe_cli(wav_f32: np.ndarray) -> str:
     """Fallback transcription via whisper.cpp CLI using temp files."""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp = f.name
+        with managed_temp_file(suffix=".wav") as tmp_file:
             try:
                 if sf is not None:
-                    sf.write(f.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
+                    sf.write(tmp_file.name, wav_f32, SAMPLE_RATE, subtype="PCM_16")
                 else:
                     import wave, struct
-                    with wave.open(f.name, 'wb') as wf:
+                    with wave.open(tmp_file.name, 'wb') as wf:
                         wf.setnchannels(1)
                         wf.setsampwidth(2)  # 16-bit
                         wf.setframerate(SAMPLE_RATE)
@@ -366,23 +366,19 @@ def _transcribe_cli(wav_f32: np.ndarray) -> str:
         # call whisper.cpp
         # -nt = no timestamps, -l language
         # -otxt = output to text file
-        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp, "-l", WHISPER_LANG, "-nt", "-otxt", "-of", tmp]
+        cmd = [WHISPER_BIN, "-m", WHISPER_MODEL, "-f", tmp_file.name, "-l", WHISPER_LANG, "-nt", "-otxt", "-of", tmp_file.name]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             logger.error(f"Whisper transcription failed: {proc.stderr}")
             return ""
         try:
-            with open(tmp + ".txt", "r") as rf:
-                text = rf.read().strip()
+            with managed_temp_file(suffix=".txt", delete=False) as txt_file:
+                with open(txt_file.name, "r") as rf:
+                    text = rf.read().strip()
         except FileNotFoundError:
             logger.error("Whisper output file not found")
             text = ""
-        finally:
-            try:
-                os.unlink(tmp)
-                os.unlink(tmp + ".txt")
-            except OSError:
-                pass
+        # Temp files are automatically cleaned up by context managers
         return text
     except subprocess.TimeoutExpired:
         logger.error("Whisper transcription timed out")
@@ -396,13 +392,15 @@ def transcribe(wav_f32: np.ndarray) -> str:
     """Transcribe audio using in-memory pipeline with graceful degradation."""
     if _WHISPER_IMPL == "whispercpp" and _WHISPER_CTX is not None:
         try:
-            return _WHISPER_CTX.transcribe(wav_f32).strip()
+            result = _WHISPER_CTX.transcribe(wav_f32)
+            return str(result).strip()
         except Exception as e:  # pragma: no cover
             logger.error(f"whispercpp transcription failed: {e}")
     elif _WHISPER_IMPL == "whisper" and _WHISPER_CTX is not None:
         try:
-            result = _WHISPER_CTX.transcribe(wav_f32, language=WHISPER_LANG)
-            return result.get("text", "").strip()
+            result = _WHISPER_CTX.transcribe(wav_f32)  # type: ignore
+            text = result.get("text", "") if isinstance(result, dict) else str(result)
+            return str(text).strip()
         except Exception as e:  # pragma: no cover
             logger.error(f"whisper transcription failed: {e}")
     # Fallback to CLI
@@ -433,11 +431,16 @@ class StreamingTranscriber:
     def add_chunk(self, chunk: np.ndarray) -> str:
         # Add new chunk to buffer
         self._buffer = np.concatenate([self._buffer, chunk])
-        
-        # Prevent memory leak by limiting buffer size
+
+        # Prevent memory leak by limiting buffer size with more aggressive trimming
+        buffer_limit = int(self._max_buffer_samples * 0.8)  # Trim at 80% to be more conservative
         if len(self._buffer) > self._max_buffer_samples:
             self._buffer = self._buffer[-self._max_buffer_samples:]
             logger.debug(f"Audio buffer trimmed to {self._max_buffer_samples} samples")
+
+        # Clear cache periodically to prevent memory accumulation
+        if len(self._transcription_cache) > self._cache_size * 2:
+            self._cleanup_cache()
         
         # Only transcribe if we have enough audio and enough time has passed
         current_time = time.time()
@@ -476,6 +479,21 @@ class StreamingTranscriber:
         self._last_text = ""
         self._transcription_cache.clear()  # Clear cache on flush
         return text
+
+    def _cleanup_cache(self) -> None:
+        """Clean up transcription cache to prevent memory leaks"""
+        try:
+            # Keep only the most recent half of cache entries
+            keep_count = max(1, self._cache_size // 2)
+            if len(self._transcription_cache) > keep_count:
+                # Sort by access time (simple LRU approximation)
+                sorted_items = sorted(self._transcription_cache.items(), key=lambda x: x[1] if isinstance(x[1], str) else "")
+                self._transcription_cache = dict(sorted_items[-keep_count:])
+                logger.debug(f"Cleaned up transcription cache, kept {keep_count} entries")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup transcription cache: {e}")
+            # Fallback: clear entire cache
+            self._transcription_cache.clear()
 
 # ---- Enhanced LLM chat with tool calling ----
 TTS_STREAMED = False  # set true when llama_chat performs streaming TTS
@@ -827,6 +845,7 @@ class TTSManager:
         except Exception:
             return audio.astype(np.float32)
 
+    @track_resource("tts", "speak_operation")
     def speak(self, text: str, interruptible: bool = False, notify: bool = True) -> bool:
         """Speak text using the configured TTS engine
 
@@ -867,7 +886,13 @@ class TTSManager:
                         logger.error(f"Failed to reinitialize TTS engine: {reinit_error}")
                 else:
                     logger.error(f"All TTS attempts failed, falling back to system TTS")
-                    return self._fallback_speak(text, notify)
+                    try:
+                        return self._fallback_speak(text, notify)
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback TTS also failed: {fallback_error}")
+                        return False
+        # This should never be reached, but just in case
+        return False
 
     def _speak_attempt(self, text: str, interruptible: bool, notify: bool) -> bool:
         """Single TTS attempt with proper error handling"""
@@ -918,14 +943,18 @@ class TTSManager:
             # Optimize for speed over quality
             config.length_scale = 1.0 / SPEED if SPEED > 0 else 1.0
             config.noise_scale = 0.5  # Reduced for faster synthesis
-            config.noise_w = 0.6      # Reduced for faster synthesis
-            config.phoneme_silence_sec = 0.05  # Reduced silence for faster output
+            try:
+                config.noise_w = 0.6      # type: ignore  # Reduced for faster synthesis
+                config.phoneme_silence_sec = 0.05  # type: ignore  # Reduced silence for faster output
+            except AttributeError:
+                # Some Piper versions don't have these attributes
+                pass
             
-            logger.info(f"🎤 PIPER CONFIG: length_scale={config.length_scale}, noise_scale={config.noise_scale}, noise_w={config.noise_w}")
+            logger.info(f"🎤 PIPER CONFIG: length_scale={config.length_scale}, noise_scale={config.noise_scale}, noise_w={getattr(config, 'noise_w', 'N/A')}")
             
             # Synthesize audio (returns generator)
             logger.info(f"🎤 CALLING PIPER SYNTHESIZE...")
-            audio_chunks = self.engine.synthesize(text, config)
+            audio_chunks = self.engine.synthesize(text, config)  # type: ignore
             logger.info(f"🎤 PIPER SYNTHESIZE RETURNED: {type(audio_chunks)}")
             
             # Process audio chunks from generator
@@ -940,8 +969,9 @@ class TTSManager:
                         audio_arrays.append(ch.audio_float_array)
                         logger.info(f"🎤 CHUNK {chunk_count}: audio_float_array, shape={ch.audio_float_array.shape}")
                     elif hasattr(ch, 'audio'):
-                        audio_arrays.append(np.array(ch.audio, dtype=np.float32))
-                        logger.info(f"🎤 CHUNK {chunk_count}: audio, shape={np.array(ch.audio).shape}")
+                        audio_data = np.array(ch.audio, dtype=np.float32)  # type: ignore
+                        audio_arrays.append(audio_data)
+                        logger.info(f"🎤 CHUNK {chunk_count}: audio, shape={audio_data.shape}")
                     else:
                         # Try to convert directly
                         audio_arrays.append(np.array(ch, dtype=np.float32))
@@ -1082,17 +1112,42 @@ class TTSManager:
             return self._tts_cache.get(text)
     
     def _cache_audio(self, text: str, audio: np.ndarray) -> None:
-        """Cache audio for text"""
+        """Cache audio for text with memory monitoring"""
         if not self._cache_enabled:
             return
-        with self._cache_lock:
-            # Simple LRU: remove oldest if cache is full
-            if len(self._tts_cache) >= self._cache_max_size:
-                # Remove first item (oldest)
-                oldest_key = next(iter(self._tts_cache))
-                del self._tts_cache[oldest_key]
-            
-            self._tts_cache[text] = audio.copy()
+
+        try:
+            with self._cache_lock:
+                # Check memory usage before adding
+                current_size = len(self._tts_cache)
+                if current_size >= self._cache_max_size:
+                    # Remove oldest entries to make room
+                    remove_count = max(1, current_size // 4)  # Remove 25% of entries
+                    keys_to_remove = list(self._tts_cache.keys())[:remove_count]
+                    for key in keys_to_remove:
+                        del self._tts_cache[key]
+                    logger.debug(f"🧹 Removed {remove_count} old cache entries")
+
+                self._tts_cache[text] = audio.copy()
+
+                # Log memory usage periodically
+                if current_size % 10 == 0:  # Every 10 cache operations
+                    memory_usage = self.get_memory_usage()
+                    logger.debug(f"📊 TTS cache memory usage: {memory_usage}")
+
+        except Exception as e:
+            logger.warning(f"Failed to cache audio: {e}")
+            # If caching fails, try to free some memory
+            try:
+                with self._cache_lock:
+                    # Clear half the cache as emergency cleanup
+                    cache_keys = list(self._tts_cache.keys())
+                    remove_count = len(cache_keys) // 2
+                    for key in cache_keys[:remove_count]:
+                        del self._tts_cache[key]
+                    logger.info(f"🧹 Emergency cache cleanup: removed {remove_count} entries")
+            except Exception as cleanup_e:
+                logger.error(f"Emergency cache cleanup failed: {cleanup_e}")
     
     def _log_cache_stats(self, hit: bool) -> None:
         """Log cache hit/miss statistics"""
@@ -1153,6 +1208,61 @@ class TTSManager:
             return result.returncode == 0
         except Exception:
             return False
+
+    def cleanup(self) -> None:
+        """Clean up resources to prevent memory leaks"""
+        try:
+            logger.info("🧹 Cleaning up TTS manager resources...")
+
+            # Clear TTS cache
+            with self._cache_lock:
+                cache_size = len(self._tts_cache)
+                self._tts_cache.clear()
+                logger.info(f"🧹 Cleared TTS cache ({cache_size} entries)")
+
+            # Clear performance stats
+            with self.performance_lock:
+                self.performance_stats.clear()
+
+            # Wait for active TTS threads to complete
+            with self._tts_count_lock:
+                active_count = self._active_tts_count
+
+            if active_count > 0:
+                logger.info(f"🧹 Waiting for {active_count} active TTS threads to complete...")
+                # Wait a reasonable time for threads to finish
+                timeout = 5.0
+                start_time = time.time()
+                while self._active_tts_count > 0 and (time.time() - start_time) < timeout:
+                    time.sleep(0.1)
+
+                remaining = self._active_tts_count
+                if remaining > 0:
+                    logger.warning(f"🧹 {remaining} TTS threads still active after timeout")
+
+            logger.info("✅ TTS manager cleanup completed")
+
+        except Exception as e:
+            logger.error(f"Error during TTS manager cleanup: {e}")
+
+    def get_memory_usage(self) -> Dict[str, Any]:
+        """Get memory usage statistics"""
+        try:
+            cache_size = 0
+            with self._cache_lock:
+                cache_size = len(self._tts_cache)
+
+            # Estimate memory usage (approximate)
+            estimated_cache_memory = cache_size * 1024 * 1024  # Rough estimate: 1MB per cache entry
+
+            return {
+                'tts_cache_entries': cache_size,
+                'estimated_cache_memory_mb': estimated_cache_memory // (1024 * 1024),
+                'active_tts_threads': self._active_tts_count
+            }
+        except Exception as e:
+            logger.error(f"Error getting memory usage: {e}")
+            return {'error': str(e)}
 
 # Initialize TTS manager
 tts_manager = TTSManager()
@@ -1308,6 +1418,13 @@ def main():
     # Start lightweight HTTP control server for health/interrupt
     try:
         from flask import Flask, jsonify, request
+        try:
+            from ..auth import require_auth, optional_auth, get_auth_manager  # type: ignore
+        except ImportError:
+            # Fallback for when auth module is not available
+            require_auth = lambda f: f  # type: ignore
+            optional_auth = lambda f: f  # type: ignore
+            get_auth_manager = lambda: None  # type: ignore
         control_app = Flask("macbot_voice_control")
         try:
             from flask_cors import CORS
@@ -1324,6 +1441,7 @@ def main():
             })
 
         @control_app.route('/interrupt', methods=['POST'])
+        @require_auth
         def _control_interrupt():
             try:
                 if INTERRUPTION_ENABLED and conversation_manager and conversation_manager.current_context:
@@ -1337,6 +1455,7 @@ def main():
                 return jsonify({'status': 'error', 'error': str(e)}), 500
 
         @control_app.route('/speak', methods=['POST'])
+        @require_auth
         def _control_speak():
             try:
                 data = request.get_json() or {}
@@ -1731,6 +1850,13 @@ def main():
                 print("✅ Message bus client disconnected")
             except Exception as e:
                 logger.warning(f"Error stopping message bus client: {e}")
+
+        # Clean up TTS manager to prevent memory leaks
+        try:
+            tts_manager.cleanup()
+            print("✅ TTS manager cleaned up")
+        except Exception as e:
+            logger.warning(f"Error cleaning up TTS manager: {e}")
 
 if __name__ == "__main__":
     try:

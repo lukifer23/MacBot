@@ -17,7 +17,11 @@ try:
     import soundfile as sf
 except Exception:
     sf = None  # type: ignore
-from typing import Optional, Callable, List
+import typing
+from typing import Optional, Any, Callable, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass  # Type-only imports here if needed
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,7 +31,7 @@ class AudioInterruptHandler:
 
     def __init__(self, sample_rate: int = 24000, output_device=None):
         self.sample_rate = sample_rate
-        self.current_stream: Optional[sd.OutputStream] = None
+        self.current_stream: Optional[typing.Any] = None  # type: ignore  # sd.OutputStream type not available at import time
         self.audio_queue = queue.Queue()
         self.is_playing = False
         self.interrupt_requested = False
@@ -144,7 +148,11 @@ class AudioInterruptHandler:
                 device=self.output_device
             )
 
-            with self.current_stream:
+            if self.current_stream:
+                with self.current_stream:
+                    while self.is_playing and not self.interrupt_requested:
+                        time.sleep(0.01)  # Small sleep to prevent busy waiting
+            else:
                 while self.is_playing and not self.interrupt_requested:
                     time.sleep(0.01)  # Small sleep to prevent busy waiting
 

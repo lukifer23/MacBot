@@ -71,6 +71,9 @@ class WSMessageBusServer:
             return
 
         def _run():
+            if serve is None:
+                logger.error("Cannot start WS server: websockets.serve is not available")
+                return
             try:
                 with serve(self._handler, self.host, self.port) as server:
                     self._server = server

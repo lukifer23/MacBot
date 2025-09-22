@@ -547,10 +547,16 @@ def get_llm_chat_endpoint() -> str:
 
 def get_rag_api_tokens() -> List[str]:
     """Return list of allowed RAG API tokens"""
+    # Check environment variable first for security
+    env_tokens = os.getenv("MACBOT_RAG_API_TOKENS", "")
+    if env_tokens:
+        return env_tokens.split(",")
+
+    # Fallback to config file (deprecated)
     tokens = get("services.rag_server.api_tokens", [])
     if not tokens:
         tokens = get("services.rag.api_tokens", [])
-    return list(tokens) if tokens else ["change-me"]
+    return list(tokens) if tokens else []
 
 
 def get_rag_rate_limit_per_minute() -> int:

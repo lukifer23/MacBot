@@ -27,7 +27,7 @@ from . import tools as tools_mod
 from .health_monitor import get_health_monitor
 
 # Configure logging (unified)
-logger = setup_logger("macbot.web_dashboard", "logs/web_dashboard.log")
+logger = setup_logger("macbot.web_dashboard", "logs/web_dashboard.log", structured=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -41,6 +41,8 @@ except ImportError:
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 from . import config as CFG
+from .auth import require_auth, optional_auth, get_auth_manager
+from .validation import validate_chat_message, validate_tts_request, validate_voice_request
 
 # Global state
 system_stats = {
@@ -245,6 +247,7 @@ def api_pipeline_check():
 
 
 @app.route('/api/service/<name>/restart', methods=['POST'])
+@require_auth
 def api_service_restart(name: str):
     """Proxy restart requests to orchestrator."""
     try:
@@ -278,6 +281,7 @@ def test_endpoint():
     return jsonify({"status": "ok", "message": "Web dashboard test endpoint working", "timestamp": datetime.now().isoformat()})
 
 @app.route('/api/chat', methods=['POST'])
+@require_auth
 def api_chat():
     """API endpoint for chat messages (legacy)"""
     try:
@@ -286,8 +290,10 @@ def api_chat():
         print(f"🔵 WEB DASHBOARD: Chat API called with message: '{message}'")
         logger.info(f"Chat API called with message: {message}")
 
-        if not message:
-            return jsonify({'success': False, 'error': 'Message is required', 'code': 'validation_error'}), 400
+        try:
+            message = validate_chat_message(message)
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid message: {e}', 'code': 'validation_error'}), 400
 
         # Use unified processing path used by WebSocket handler
         # Avoid duplicating the user message in UI for HTTP fallback
@@ -300,6 +306,7 @@ def api_chat():
         return jsonify({'success': False, 'error': 'Internal server error', 'code': 'internal_error'}), 500
 
 @app.route('/api/llm', methods=['POST'])
+@require_auth
 def api_llm():
     """API endpoint for LLM processing"""
     try:
@@ -328,13 +335,16 @@ def api_mic_check():
         return jsonify({'success': False, 'error': str(e), 'code': 'proxy_error'}), 500
 
 @app.route('/api/assistant-speak', methods=['POST'])
+@require_auth
 def api_assistant_speak():
     """Proxy text-to-speech request to the voice assistant control server."""
     try:
         data = request.get_json() or {}
-        text = (data.get('text') or '').strip()
-        if not text:
-            return jsonify({'success': False, 'error': 'text required', 'code': 'validation_error'}), 400
+        try:
+            data = validate_tts_request(data)
+            text = data['text']
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid request: {e}', 'code': 'validation_error'}), 400
         r = _request_with_retry('POST', f"http://{va_host}:{va_port}/speak", json_body={'text': text}, timeout=5, retries=1)
         return jsonify(r.json()), r.status_code
     except Exception as e:
@@ -358,6 +368,7 @@ def api_llm_settings():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/set-llm-max-tokens', methods=['POST'])
+@require_auth
 def api_set_llm_max_tokens():
     """Set max_tokens in config and nudge voice assistant to apply at runtime."""
     try:
@@ -420,14 +431,16 @@ def api_assistant_event():
         return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/voice', methods=['POST'])
+@require_auth
 def api_voice():
     """API endpoint for voice processing using Whisper"""
     try:
         data = request.get_json()
-        audio_data = data.get('audio', '')
-        
-        if not audio_data:
-            return jsonify({'success': False, 'error': 'Audio data is required', 'code': 'validation_error'}), 400
+        try:
+            data = validate_voice_request(data)
+            audio_data = data['audio']
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid request: {e}', 'code': 'validation_error'}), 400
         
         # Process audio with Whisper
         transcription = process_voice_with_whisper(audio_data)
@@ -461,6 +474,7 @@ def api_voice():
         return jsonify({'success': False, 'error': str(e), 'code': 'internal_error'}), 500
 
 @app.route('/api/upload-documents', methods=['POST'])
+@require_auth
 def upload_documents():
     """Upload documents and forward to RAG server.
     Supports .txt natively; attempts .pdf (PyPDF2) and .docx (python-docx) when available.
@@ -537,7 +551,7 @@ def upload_documents():
                     except Exception:
                         errors.append(f"{filename}: DOCX support requires python-docx")
                         continue
-                    document = docx.Document(file)
+                    document = docx.Document(file.stream)
                     paras = [p.text for p in document.paragraphs]
                     content = "\n".join([p for p in paras if p]).strip()
                     if not content:
@@ -759,6 +773,7 @@ def handle_interrupt_conversation():
     })
 
 @app.route('/api/interrupt', methods=['POST'])
+@require_auth
 def api_interrupt():
     """HTTP fallback to request conversation interruption"""
     try:
@@ -813,6 +828,8 @@ def process_voice_with_whisper(base64_audio: str) -> str:
     - Converts to 16kHz mono WAV and transcribes with whisper.cpp CLI when available,
       otherwise falls back to python-whisper if installed.
     """
+    wav_path = None
+
     import base64
     import tempfile
     import os
@@ -908,7 +925,7 @@ def process_voice_with_whisper(base64_audio: str) -> str:
                     logger.warning(f"Unexpected sample rate {sr}, continuing")
                 model = whisper.load_model("tiny")
                 result = model.transcribe(data, language="en")
-                transcription = result.get("text", "").strip()
+                transcription = str(result.get("text", "")).strip()
                 return transcription or "No speech detected"
             finally:
                 try:
@@ -922,8 +939,8 @@ def process_voice_with_whisper(base64_audio: str) -> str:
         return f"Voice processing error: {str(e)}"
     finally:
         try:
-            if 'src_path' in locals() and os.path.exists(src_path):
-                os.unlink(src_path)
+            if 'wav_path' in locals() and wav_path is not None and os.path.exists(wav_path):
+                os.unlink(wav_path)
         except Exception:
             pass
 

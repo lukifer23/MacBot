@@ -23,14 +23,12 @@ logger = setup_logger("macbot.rag_server", "logs/rag_server.log")
 
 app = Flask(__name__)
 from . import config as CFG
+from .auth import get_auth_manager, require_api_key
 
-API_TOKENS: Set[str] = set(CFG.get_rag_api_tokens())
 RATE_LIMIT_PER_MINUTE: int = CFG.get_rag_rate_limit_per_minute()
 _request_counts: Dict[str, tuple[int, float]] = {}
 _rate_lock = threading.Lock()
-
-if not API_TOKENS:
-    logger.warning("No API tokens configured; all /api requests will be rejected")
+auth_manager = get_auth_manager()
 
 class RAGServer:
     def __init__(self, data_dir: str = "rag_data"):
@@ -259,14 +257,18 @@ def add_sample_documents():
 @app.before_request
 def _check_auth_and_rate_limit() -> Optional[Tuple[Dict[str, str], int]]:
     if request.path.startswith('/api/'):
+        # Check for API key in multiple possible headers/locations
         auth_header = request.headers.get('Authorization', '')
         token = ''
         if auth_header.startswith('Bearer '):
             token = auth_header.split(' ', 1)[1].strip()
         else:
-            token = request.args.get('token') or request.headers.get('X-API-Token', '')
-        if token not in API_TOKENS:
-            return jsonify({'success': False, 'error': 'Unauthorized', 'code': 'unauthorized'}), 401
+            token = (request.args.get('token') or
+                    request.headers.get('X-API-Token') or
+                    request.headers.get('X-API-Key', ''))
+
+        if not token or not auth_manager.verify_api_token(token):
+            return {'success': False, 'error': 'Unauthorized', 'code': 'unauthorized'}, 401
 
         now = time.time()
         with _rate_lock:
@@ -275,7 +277,7 @@ def _check_auth_and_rate_limit() -> Optional[Tuple[Dict[str, str], int]]:
                 count = 0
                 start = now
             if count >= RATE_LIMIT_PER_MINUTE:
-                return jsonify({'success': False, 'error': 'Too many requests', 'code': 'rate_limited'}), 429
+                return {'success': False, 'error': 'Too many requests', 'code': 'rate_limited'}, 429
             _request_counts[token] = (count + 1, start)
 
 # Flask routes

@@ -25,9 +25,12 @@ from .message_bus_client import MessageBusClient
 from .health_monitor import get_health_monitor
 from .message_bus_server import start_message_bus_server
 from . import config as CFG
+from .auth import require_auth, optional_auth, get_auth_manager
+from .error_handler import handle_error, ErrorSeverity, ErrorContext
+from .logging_utils import log_with_context
 
-# Configure logging (unified)
-logger = setup_logger("macbot.orchestrator", "logs/macbot.log")
+# Configure logging (unified with structured logging)
+logger = setup_logger("macbot.orchestrator", "logs/macbot.log", structured=True)
 
 
 @dataclass
@@ -357,7 +360,14 @@ class MacBotOrchestrator:
             return result
         except Exception as e:
             result['error'] = str(e)
-            logger.error(f"Failed to start {service.name}: {e}")
+            handle_error(
+                e,
+                component="orchestrator",
+                operation="start_service",
+                severity=ErrorSeverity.HIGH,
+                service_name=service.name,
+                service_command=service.command
+            )
             return result
 
     def start_llama_server(self) -> bool:
@@ -444,10 +454,21 @@ class MacBotOrchestrator:
                     time.sleep(1)
             
             logger.error("❌ llama.cpp server failed to start")
+            handle_error(
+                RuntimeError("LLM server failed to start within timeout"),
+                component="orchestrator",
+                operation="start_llama_server",
+                severity=ErrorSeverity.HIGH
+            )
             return False
-            
+
         except Exception as e:
-            logger.error(f"Failed to start llama server: {e}")
+            handle_error(
+                e,
+                component="orchestrator",
+                operation="start_llama_server",
+                severity=ErrorSeverity.HIGH
+            )
             return False
     
     
@@ -641,6 +662,7 @@ class MacBotOrchestrator:
             return jsonify({'status':'ok','timestamp': time.time(), 'req_id': req_id})
 
         @app.route('/status')
+        @optional_auth
         def status():
             req_id = str(uuid.uuid4())
             procs = {}
@@ -649,10 +671,13 @@ class MacBotOrchestrator:
                     'running': proc.poll() is None,
                     'pid': proc.pid if proc and proc.poll() is None else None
                 }
-            logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())}")
-            return jsonify({'processes': procs, 'req_id': req_id})
+            from flask import g
+            authenticated = getattr(g, 'authenticated', False)
+            logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())} authenticated={authenticated}")
+            return jsonify({'processes': procs, 'req_id': req_id, 'authenticated': authenticated})
 
         @app.route('/services')
+        @require_auth
         def services():
             """List known services and their status."""
             procs: Dict[str, Any] = {}
@@ -672,12 +697,14 @@ class MacBotOrchestrator:
             return jsonify({'services': procs})
 
         @app.route('/service/<name>/restart', methods=['POST'])
+        @require_auth
         def restart_service_endpoint(name: str):
             result = self.restart_process(name)
             status_code = 200 if result.get('success') else 500
             return jsonify(result), status_code
 
         @app.route('/metrics')
+        @require_auth
         def metrics():
             req_id = str(uuid.uuid4())
             data = {'req_id': req_id, 'timestamp': time.time()}
@@ -703,7 +730,8 @@ class MacBotOrchestrator:
                 p = self.processes.get('llama')
                 if p and p.poll() is None:
                     try:
-                        rss = psutil.Process(p.pid).memory_info().rss
+                        proc = psutil.Process(p.pid)  # type: ignore
+                        rss = proc.memory_info().rss
                         llm['rss_mb'] = round(rss / (1024*1024), 1)
                     except Exception:
                         pass
@@ -733,9 +761,42 @@ class MacBotOrchestrator:
                 logger.debug(f"metrics rag error: {e}")
             data['rag'] = rag
 
+            # System memory usage
+            try:
+                import psutil
+                memory_info = psutil.virtual_memory()
+                system_memory = memory_info
+                data['system_memory'] = {
+                    'total_mb': round(system_memory.total / (1024*1024), 1),
+                    'available_mb': round(system_memory.available / (1024*1024), 1),
+                    'percent_used': system_memory.percent,
+                    'used_mb': round(system_memory.used / (1024*1024), 1)
+                }
+
+                # Process-specific memory
+                process_memory = {}
+                for name, proc in self.processes.items():
+                    if proc and proc.poll() is None:
+                        try:
+                            p = psutil.Process(proc.pid)  # type: ignore
+                            rss = p.memory_info().rss
+                            process_memory[name] = {
+                                'rss_mb': round(rss / (1024*1024), 1),
+                                'cpu_percent': p.cpu_percent()
+                            }
+                        except Exception as e:
+                            process_memory[name] = {'error': str(e)}
+
+                data['process_memory'] = process_memory
+
+            except Exception as e:
+                logger.debug(f"memory metrics error: {e}")
+                data['memory_error'] = str(e)
+
             return jsonify(data)
 
         @app.route('/pipeline-check')
+        @require_auth
         def pipeline_check():
             """Lightweight end-to-end readiness check across components."""
             results: Dict[str, Any] = {'timestamp': time.time()}

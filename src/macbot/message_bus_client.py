@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 # Try sync API first; fallback to async API if unavailable
 _HAS_WEBSOCKETS_SYNC = False
 _HAS_WEBSOCKETS_ASYNC = False
+ws_connect = None
 try:  # websockets >= 11 provides sync API
     from websockets.sync.client import connect as ws_connect  # type: ignore
     _HAS_WEBSOCKETS_SYNC = True
@@ -190,7 +191,7 @@ class MessageBusClient:
         first_connect = True
         while self.running:
             # Try WS first if available
-            if _HAS_WEBSOCKETS_SYNC:
+            if _HAS_WEBSOCKETS_SYNC and ws_connect is not None:
                 try:
                     url = f"ws://{self.host}:{self.port}"
                     logger.info(f"Connecting to message bus WS {url}")
