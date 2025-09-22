@@ -50,7 +50,8 @@ class AuthenticationManager:
             # Generate a default token for development
             default_token = secrets.token_hex(16)
             logger.warning(f"Using generated API token: {default_token}. Set MACBOT_API_TOKENS environment variable for production.")
-            return {default_token}
+            default_token_hash = hashlib.sha256(default_token.encode()).hexdigest()
+            return {default_token_hash}
 
         tokens = set()
         for token in tokens_str.split(","):
