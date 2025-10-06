@@ -21,6 +21,12 @@ models:
       # coreml_path: optimized_models/piper_model.mlpackage
     speed: 1.2
     voice: en_US-amy-medium
+  embedding:
+    sentence_transformer:
+      # Point to a local clone or extracted model directory to stay offline
+      local_path: models/sentence-transformers/all-MiniLM-L6-v2
+      # Optional fallback repo ID if you prefer to download from Hugging Face
+      repo_id: sentence-transformers/all-MiniLM-L6-v2
 performance:
   cpu_limit_percent: 80
   max_concurrent_requests: 3

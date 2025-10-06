@@ -45,8 +45,52 @@ class RAGServer:
         
         # Initialize sentence transformer
         logger.info("Loading sentence transformer model...")
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("✅ Sentence transformer loaded")
+        local_model_path = CFG.get_sentence_transformer_local_path()
+        repo_id = CFG.get_sentence_transformer_repo_id()
+        load_kwargs: Dict[str, object] = {}
+
+        if local_model_path:
+            resolved_path = Path(local_model_path)
+            if not resolved_path.exists():
+                raise RuntimeError(
+                    "Configured SentenceTransformer local_path does not exist: "
+                    f"{resolved_path}. Download the embedding model and update "
+                    "models.embedding.sentence_transformer.local_path in config/config.yaml."
+                )
+            model_source = str(resolved_path)
+            load_kwargs["local_files_only"] = True
+            logger.info("Using local sentence transformer model at %s", resolved_path)
+        elif repo_id:
+            model_source = repo_id
+            load_kwargs["local_files_only"] = False
+            logger.info("Using sentence transformer repo id '%s'", repo_id)
+        else:
+            raise RuntimeError(
+                "No sentence transformer model configured. Set "
+                "models.embedding.sentence_transformer.local_path to a local directory "
+                "or provide models.embedding.sentence_transformer.repo_id to download one."
+            )
+
+        try:
+            self.embedding_model = SentenceTransformer(model_source, **load_kwargs)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Failed to load sentence transformer model from local path. "
+                "Ensure the files exist at "
+                f"{model_source}."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                "Sentence transformer model is not fully available offline. "
+                "Download the repository manually and set models.embedding.sentence_transformer.local_path."
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not initialize the sentence transformer model from "
+                f"'{model_source}'. Check your configuration and ensure the model is prepared."
+            ) from exc
+        else:
+            logger.info("✅ Sentence transformer loaded from %s", model_source)
         
         # Document store
         self.documents = {}

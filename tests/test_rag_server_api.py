@@ -34,6 +34,11 @@ def rag_server_client(monkeypatch: pytest.MonkeyPatch) -> Iterator["FlaskClient"
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "src"))
 
+    import macbot.config as config_module
+
+    monkeypatch.setattr(config_module, "get_sentence_transformer_local_path", lambda: "")
+    monkeypatch.setattr(config_module, "get_sentence_transformer_repo_id", lambda: "sentence-transformers/test-model")
+
     monkeypatch.setitem(sys.modules, "chromadb", types.SimpleNamespace(PersistentClient=DummyPersistentClient))
 
     class DummySentenceTransformer:  # pragma: no cover - simple stub

@@ -40,6 +40,18 @@ MacBot has been significantly enhanced with production-ready security, advanced 
    - **Command**: "search knowledge base for [query]"
    - **Features**: Document ingestion, semantic search, vector database
 
+### Offline Embedding Model Preparation
+
+- **Configuration Keys**: Update `config/config.yaml` under `models.embedding.sentence_transformer`.
+  - `local_path`: Absolute or relative path to a locally cloned/extracted SentenceTransformer model (preferred).
+  - `repo_id`: Optional Hugging Face Hub repo identifier to fall back on when a local copy is unavailable.
+- **Offline Setup Steps**:
+  1. Clone or download the repository containing your embedding model, e.g. `sentence-transformers/all-MiniLM-L6-v2`.
+  2. Place the extracted directory somewhere accessible to MacBot (for example `models/sentence-transformers/all-MiniLM-L6-v2`).
+  3. Set `local_path` in `config/config.yaml` to that directory. Leave `repo_id` empty to fully disable network downloads.
+  4. Restart the RAG server. It will refuse to start if the configured `local_path` is missing, helping you catch typos or incomplete downloads early.
+- **Tip**: If you must rely on `repo_id`, ensure the system has network access or that you've pre-populated the Hugging Face cache directory to stay offline.
+
 ## Web Dashboard Features
 
 ### Real-Time WebSocket Communication

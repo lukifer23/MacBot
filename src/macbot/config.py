@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Mapping
 from pathlib import Path
 
 import yaml
@@ -100,13 +100,38 @@ def _validate_config(config: Dict[str, Any]) -> None:
         # TTS validation
         if "tts" in models_config:
             tts_config = models_config["tts"]
-            
+
             if "piper" in tts_config and "voice_path" in tts_config["piper"]:
                 voice_path = tts_config["piper"]["voice_path"]
                 if not isinstance(voice_path, str):
                     errors.append("models.tts.piper.voice_path must be a string")
                 elif not os.path.exists(voice_path):
                     warnings.append(f"Piper voice model not found: {voice_path}")
+
+        # Embedding model validation
+        if "embedding" in models_config:
+            embedding_config = models_config["embedding"]
+            if not isinstance(embedding_config, Mapping):
+                errors.append("models.embedding must be a mapping")
+            else:
+                st_config = embedding_config.get("sentence_transformer")
+                if st_config is not None and not isinstance(st_config, Mapping):
+                    errors.append("models.embedding.sentence_transformer must be a mapping")
+                elif isinstance(st_config, Mapping):
+                    local_path = st_config.get("local_path")
+                    if local_path not in (None, "") and not isinstance(local_path, str):
+                        errors.append("models.embedding.sentence_transformer.local_path must be a string")
+                    elif isinstance(local_path, str) and local_path:
+                        expanded_path = os.path.expanduser(local_path)
+                        if not os.path.exists(expanded_path):
+                            warnings.append(
+                                "SentenceTransformer local_path does not exist: "
+                                f"{expanded_path}. Download the model for offline use."
+                            )
+
+                    repo_id = st_config.get("repo_id")
+                    if repo_id not in (None, "") and not isinstance(repo_id, str):
+                        errors.append("models.embedding.sentence_transformer.repo_id must be a string")
     
     # Validate services section
     if "services" in config:
@@ -284,6 +309,27 @@ def get_llm_max_tokens() -> int:
 
 def get_system_prompt() -> str:
     return str(get("prompts.system", "You are MacBot, a helpful AI assistant running locally on macOS."))
+
+
+def get_sentence_transformer_local_path() -> str:
+    """Return configured local path for the embedding model (if any)."""
+    raw_path = get("models.embedding.sentence_transformer.local_path", "")
+    if not raw_path:
+        return ""
+    if not isinstance(raw_path, str):
+        return ""
+    expanded = os.path.expanduser(raw_path.strip())
+    if not expanded:
+        return ""
+    return os.path.abspath(expanded)
+
+
+def get_sentence_transformer_repo_id() -> str:
+    """Return configured Hugging Face repo id for the embedding model."""
+    repo_id = get("models.embedding.sentence_transformer.repo_id", "")
+    if not repo_id or not isinstance(repo_id, str):
+        return ""
+    return repo_id.strip()
 
 
 def get_stt_bin() -> str:
