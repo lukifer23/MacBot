@@ -53,6 +53,9 @@ system_stats = {
     'timestamp': datetime.now().isoformat()
 }
 
+_cpu_percent_lock = threading.Lock()
+_cpu_percent_initialized = False
+
 # Conversation state management
 conversation_state = {
     'active': False,
@@ -127,15 +130,30 @@ def _api_error(message: str, code: str = 'bad_request', status: int = 400, detai
     return jsonify(resp), status
 
 
+def _prime_cpu_percent_baseline():
+    """Ensure psutil has a baseline sample for non-blocking CPU metrics."""
+    global _cpu_percent_initialized
+    with _cpu_percent_lock:
+        if _cpu_percent_initialized:
+            return
+        try:
+            psutil.cpu_percent(interval=None)
+        except Exception as exc:  # pragma: no cover - defensive logging path
+            logger.debug(f"Unable to prime CPU percent baseline: {exc}")
+        finally:
+            _cpu_percent_initialized = True
+
+
 def get_system_stats():
-    """Get current system statistics"""
+    """Get current system statistics without blocking for CPU sampling."""
     try:
-        cpu_percent = psutil.cpu_percent(interval=1)
+        _prime_cpu_percent_baseline()
+        cpu_percent = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
         network = psutil.net_io_counters()
-        
-        return {
+
+        stats_snapshot = {
             'cpu': round(cpu_percent, 1),
             'ram': round(memory.percent, 1),
             'disk': round(disk.percent, 1),
@@ -145,9 +163,18 @@ def get_system_stats():
             },
             'timestamp': datetime.now().isoformat()
         }
+
+        # Keep legacy global in sync for any external consumers.
+        global system_stats
+        system_stats = stats_snapshot
+        return stats_snapshot
     except Exception as e:
         logger.error(f"Error getting system stats: {e}")
         return system_stats
+
+
+# Prime CPU stats baseline early so that the first live request has cached data
+_prime_cpu_percent_baseline()
 
 def check_service_health():
     """Check health of all services"""
