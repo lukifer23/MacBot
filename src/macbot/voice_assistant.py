@@ -20,7 +20,6 @@ try:
 except Exception as _sf_imp_err:
     sf = None  # type: ignore
 import requests
-import hashlib
 import logging
 from .logging_utils import setup_logger
 from typing import Dict, List, Optional, Any
@@ -386,92 +385,132 @@ def transcribe(wav_f32: np.ndarray) -> str:
 
 
 class StreamingTranscriber:
-    """Optimized streaming transcriber with intelligent buffering and caching."""
+    """Optimized streaming transcriber with intelligent buffering and segment tracking."""
 
     def __init__(self, max_buffer_duration: float = 30.0, sample_rate: int = 16000) -> None:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
+        self._buffer_offset: int = 0  # Absolute sample index of the first element in ``_buffer``
+        self._processed_offset: int = 0  # Absolute index up to which audio has been transcribed
+        self._next_sample_index: int = 0  # Absolute index assigned to the next appended sample
+
         self._last_text: str = ""
+        self._segments: List[Dict[str, Any]] = []
+
         self._max_buffer_samples = int(max_buffer_duration * sample_rate)
         self._sample_rate = sample_rate
-        
-        # Optimization: cache for recent transcriptions to avoid redundant processing
-        self._transcription_cache = {}
-        self._cache_size = CFG.get_transcription_cache_size()
         self._min_chunk_size = int(CFG.get_min_chunk_duration() * sample_rate)
+
         cwin_sec = CFG.get_transcription_cache_window_sec()
-        self._cache_window_samples = int(max(1.0, cwin_sec) * sample_rate)
-        
+        window_samples = int(max(1.0, cwin_sec) * sample_rate)
+        self._window_samples = max(self._min_chunk_size, window_samples)
+        self._lookback_samples = min(self._window_samples, self._max_buffer_samples)
+
         # Performance tracking
         self._transcription_count = 0
-        self._last_transcription_time = 0
+        self._last_transcription_time = 0.0
         self._transcription_interval = CFG.get_transcription_interval()
 
     def add_chunk(self, chunk: np.ndarray) -> str:
-        # Add new chunk to buffer
+        if chunk.size == 0:
+            return ""
+
+        # Append new audio and update absolute indices
         self._buffer = np.concatenate([self._buffer, chunk])
+        self._next_sample_index += len(chunk)
 
-        # Prevent memory leak by limiting buffer size with more aggressive trimming
-        buffer_limit = int(self._max_buffer_samples * 0.8)  # Trim at 80% to be more conservative
-        if len(self._buffer) > self._max_buffer_samples:
-            self._buffer = self._buffer[-self._max_buffer_samples:]
-            logger.debug(f"Audio buffer trimmed to {self._max_buffer_samples} samples")
+        delta_fragments: List[str] = []
+        aggregated_text = self._last_text
+        processed_any = False
 
-        # Clear cache periodically to prevent memory accumulation
-        if len(self._transcription_cache) > self._cache_size * 2:
-            self._cleanup_cache()
-        
-        # Only transcribe if we have enough audio and enough time has passed
-        current_time = time.time()
-        if (len(self._buffer) >= self._min_chunk_size and 
-            current_time - self._last_transcription_time > self._transcription_interval):
-            
-            # Check cache using a digest of the last 2s window to reduce hashing cost
-            try:
-                win = self._buffer[-self._cache_window_samples:] if len(self._buffer) > self._cache_window_samples else self._buffer
-                digest = hashlib.sha1(win.tobytes()).hexdigest()
-            except Exception:
-                digest = str(len(self._buffer))
+        while True:
+            pending = self._next_sample_index - self._processed_offset
+            if pending < self._min_chunk_size:
+                break
 
-            if digest in self._transcription_cache:
-                text = self._transcription_cache[digest]
-            else:
-                text = transcribe(self._buffer)
-                # Cache the result
-                if len(self._transcription_cache) >= self._cache_size:
-                    # Remove oldest entry
-                    oldest_key = next(iter(self._transcription_cache))
-                    del self._transcription_cache[oldest_key]
-                self._transcription_cache[digest] = text
-                self._transcription_count += 1
-                self._last_transcription_time = current_time
-            
-            delta = text[len(self._last_text) :]
-            self._last_text = text
-            return delta.strip()
-        
-        return ""
+            current_time = time.time()
+            if (not processed_any and
+                current_time - self._last_transcription_time <= self._transcription_interval):
+                break
+
+            chunk_length = min(pending, self._window_samples)
+
+            start_index = self._processed_offset - self._buffer_offset
+            end_index = start_index + chunk_length
+            if start_index < 0:
+                # Should not happen, but guard against race conditions with trimming
+                start_index = 0
+                end_index = min(len(self._buffer), chunk_length)
+
+            if end_index > len(self._buffer):
+                end_index = len(self._buffer)
+                chunk_length = end_index - start_index
+
+            if chunk_length <= 0:
+                break
+
+            audio_window = self._buffer[start_index:end_index]
+            text = transcribe(audio_window)
+            normalized_text = text.strip()
+
+            segment_start = self._processed_offset
+            segment_end = segment_start + chunk_length
+            self._segments.append(
+                {
+                    "start": segment_start,
+                    "end": segment_end,
+                    "text": normalized_text,
+                    "timestamp": current_time,
+                }
+            )
+
+            self._processed_offset = segment_end
+            self._transcription_count += 1
+            self._last_transcription_time = current_time
+            processed_any = True
+
+            previous_text = aggregated_text
+            if normalized_text:
+                aggregated_text = (f"{aggregated_text} {normalized_text}" if aggregated_text else normalized_text).strip()
+            delta_part = aggregated_text[len(previous_text):]
+            if delta_part:
+                delta_fragments.append(delta_part)
+
+        if processed_any:
+            self._last_text = aggregated_text
+            delta_text = "".join(delta_fragments).strip()
+        else:
+            delta_text = ""
+
+        self._trim_buffer()
+        return delta_text
 
     def flush(self) -> str:
         text = self._last_text.strip()
         self._buffer = np.array([], dtype=np.float32)
+        self._buffer_offset = 0
+        self._processed_offset = 0
+        self._next_sample_index = 0
+        self._segments.clear()
         self._last_text = ""
-        self._transcription_cache.clear()  # Clear cache on flush
         return text
 
-    def _cleanup_cache(self) -> None:
-        """Clean up transcription cache to prevent memory leaks"""
-        try:
-            # Keep only the most recent half of cache entries
-            keep_count = max(1, self._cache_size // 2)
-            if len(self._transcription_cache) > keep_count:
-                # Sort by access time (simple LRU approximation)
-                sorted_items = sorted(self._transcription_cache.items(), key=lambda x: x[1] if isinstance(x[1], str) else "")
-                self._transcription_cache = dict(sorted_items[-keep_count:])
-                logger.debug(f"Cleaned up transcription cache, kept {keep_count} entries")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup transcription cache: {e}")
-            # Fallback: clear entire cache
-            self._transcription_cache.clear()
+    def _trim_buffer(self) -> None:
+        """Trim processed audio while keeping a short lookback window."""
+
+        # Determine the earliest sample we need to retain for lookback
+        target_offset = max(0, self._processed_offset - self._lookback_samples)
+        target_offset = max(target_offset, self._next_sample_index - self._max_buffer_samples)
+
+        if target_offset <= self._buffer_offset:
+            return
+
+        drop = target_offset - self._buffer_offset
+        if drop >= len(self._buffer):
+            self._buffer = np.array([], dtype=np.float32)
+        else:
+            self._buffer = self._buffer[drop:]
+
+        self._buffer_offset = target_offset
 
 # ---- Enhanced LLM chat with tool calling ----
 TTS_STREAMED = False  # set true when llama_chat performs streaming TTS
