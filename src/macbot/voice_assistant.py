@@ -617,6 +617,8 @@ def llama_chat(user_text: str) -> str:
             if INTERRUPTION_ENABLED and conversation_manager:
                 conversation_manager.start_response()
 
+            pending_tts_jobs: List['TTSJob'] = []
+
             for line in r.iter_lines(decode_unicode=True):
                 if INTERRUPTION_ENABLED and tts_manager.audio_handler and tts_manager.audio_handler.interrupt_requested:
                     if conversation_manager:
@@ -659,21 +661,29 @@ def llama_chat(user_text: str) -> str:
                         to_say = tts_buf.strip()
                         tts_buf = ""
                         TTS_STREAMED = True
-                        
+
                         # Check if we should still speak (not interrupted)
-                        if (INTERRUPTION_ENABLED and conversation_manager and 
+                        if (INTERRUPTION_ENABLED and conversation_manager and
                             conversation_manager.current_context and
                             conversation_manager.current_context.response_state != ResponseState.INTERRUPTED):
-                            threading.Thread(target=lambda: tts_manager.speak(to_say, interruptible=True, notify=False), daemon=True).start()
+                            job = tts_manager.enqueue_speak(to_say, interruptible=True, notify=False)
+                            pending_tts_jobs.append(job)
 
             if tts_buf.strip():
                 TTS_STREAMED = True
-                threading.Thread(target=lambda: tts_manager.speak(tts_buf.strip(), interruptible=True, notify=False), daemon=True).start()
+                job = tts_manager.enqueue_speak(tts_buf.strip(), interruptible=True, notify=False)
+                pending_tts_jobs.append(job)
 
             if INTERRUPTION_ENABLED and conversation_manager and not (tts_manager.audio_handler and tts_manager.audio_handler.interrupt_requested):
                 conversation_manager.update_response(full_response, is_complete=True)
                 try:
                     conversation_manager.complete_response()
+                except Exception:
+                    pass
+
+            for job in pending_tts_jobs:
+                try:
+                    job.wait()
                 except Exception:
                     pass
 
@@ -723,6 +733,32 @@ def get_degraded_response(user_text: str) -> str:
 
 # ---- TTS Setup ----
 # Unified TTS system with proper fallback handling
+class TTSJob:
+    """Container for queued TTS work with completion helpers."""
+
+    def __init__(self, text: str, interruptible: bool, notify: bool):
+        self.text = text
+        self.interruptible = interruptible
+        self.notify = notify
+        self.done_event = threading.Event()
+        self.success: bool = False
+        self.error: Optional[Exception] = None
+
+    def set_result(self, success: bool, error: Optional[Exception] = None) -> None:
+        self.success = success
+        self.error = error
+        self.done_event.set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        finished = self.done_event.wait(timeout)
+        if not finished:
+            return False
+        return self.success
+
+    def done(self) -> bool:
+        return self.done_event.is_set()
+
+
 class TTSManager:
     """Unified TTS manager handling different engines and interruption"""
 
@@ -732,38 +768,31 @@ class TTSManager:
         self.audio_handler = None
         self.voices = []  # available voice names/ids for the active engine
         self.kokoro_available = False
-        
+
         # Performance monitoring
-        self.performance_stats = {
-            'total_requests': 0,
-            'total_duration': 0.0,
-            'avg_duration': 0.0,
-            'max_duration': 0.0,
-            'min_duration': float('inf'),
-            'errors': 0,
-            'last_request_time': 0.0
-        }
         self.performance_lock = threading.Lock()
+        self.performance_stats = self._default_performance_stats()
         self.pyttsx3_available = False
         self.piper_available = False
         self.say_available = False
         self._speak_lock = threading.Lock()
         self._initialized = False  # lazy init to avoid crashes on import
-        
+
         # TTS queue system for resource management
-        self._tts_queue = queue.Queue(maxsize=MAX_CONCURRENT_TTS)
+        self._tts_queue: "queue.Queue[Optional[TTSJob]]" = queue.Queue()
         self._active_tts_count = 0
         self._tts_count_lock = threading.Lock()
-        
+        self._tts_workers: List[threading.Thread] = []
+        self._tts_shutdown = threading.Event()
+
         # Async TTS processing
-        self._tts_thread_pool = []
         self._tts_cache = {}  # Cache for common phrases
         self._cache_max_size = CFG.get_tts_cache_size()
         self._cache_enabled = CFG.get_tts_cache_enabled()
         self._parallel_processing = CFG.get_tts_parallel_processing()
         self._optimize_for_speed = CFG.get_tts_optimize_for_speed()
         self._cache_lock = threading.Lock()
-        
+
         # Hardware acceleration detection
         self._mps_available = self._detect_mps_support()
         self._coreml_available = self._detect_coreml_support()
@@ -772,10 +801,99 @@ class TTSManager:
 
         if os.environ.get("MACBOT_DISABLE_TTS") == "1":
             print("⚠️ TTS disabled via environment variable")
+            self._tts_shutdown.set()
             return
+
+        self._start_tts_workers()
 
         # Only Piper is supported now; no other engines to probe
         self.say_available = False
+
+    def _default_performance_stats(self) -> Dict[str, Any]:
+        return {
+            'total_requests': 0,
+            'total_duration': 0.0,
+            'avg_duration': 0.0,
+            'max_duration': 0.0,
+            'min_duration': float('inf'),
+            'errors': 0,
+            'last_request_time': 0.0,
+            'active_jobs': 0,
+            'queued_jobs': 0,
+        }
+
+    def _start_tts_workers(self) -> None:
+        """Start the fixed worker pool responsible for handling queued jobs."""
+        if self._tts_workers:
+            return
+
+        for idx in range(MAX_CONCURRENT_TTS):
+            worker = threading.Thread(
+                target=self._tts_worker_loop,
+                name=f"TTSWorker-{idx}",
+                daemon=True,
+            )
+            worker.start()
+            self._tts_workers.append(worker)
+
+    def _tts_worker_loop(self) -> None:
+        """Continuously process queued TTS jobs respecting concurrency limits."""
+        while True:
+            try:
+                job = self._tts_queue.get(timeout=0.2)
+            except queue.Empty:
+                if self._tts_shutdown.is_set():
+                    break
+                continue
+
+            if job is None:
+                self._tts_queue.task_done()
+                break
+
+            if isinstance(job, TTSJob):
+                self._execute_job(job)
+                self._tts_queue.task_done()
+            else:
+                # Unexpected payload, just acknowledge to avoid deadlock
+                self._tts_queue.task_done()
+
+    def _execute_job(self, job: TTSJob) -> None:
+        """Execute a queued TTS job, handling lifecycle metrics."""
+        with self._tts_count_lock:
+            self._active_tts_count += 1
+            active_now = self._active_tts_count
+
+        start_time = time.time()
+        success = False
+        error: Optional[Exception] = None
+        try:
+            success = self._process_speak_request(job.text, job.interruptible, job.notify)
+        except Exception as exc:
+            error = exc
+            logger.error(f"Error running TTS job: {exc}")
+        finally:
+            duration = time.time() - start_time
+            with self._tts_count_lock:
+                self._active_tts_count -= 1
+                active_after = self._active_tts_count
+
+        job.set_result(success, error)
+
+        self._log_performance(duration, success, active_after)
+
+        try:
+            queue_size = self._tts_queue.qsize()
+        except NotImplementedError:
+            queue_size = 0
+
+        logger.debug(
+            "TTS job finished",
+            extra={
+                'tts_active_before': active_now,
+                'tts_active_after': active_after,
+                'tts_queue_size': queue_size,
+            },
+        )
 
     def init_engine(self):
         if self._initialized:
@@ -862,26 +980,21 @@ class TTSManager:
         except Exception:
             return audio.astype(np.float32)
 
-    @track_resource("tts", "speak_operation")
-    def speak(self, text: str, interruptible: bool = False, notify: bool = True) -> bool:
-        """Speak text using the configured TTS engine
-
-        Args:
-            text: Text to speak
-            interruptible: Whether speech should support interruption
-
-        Returns:
-            bool: True if speech completed, False if interrupted
-        """
+    def _process_speak_request(self, text: str, interruptible: bool, notify: bool) -> bool:
+        """Internal implementation that performs the actual TTS work."""
         if not text.strip():
             return True
-        
-        # Enhanced debugging for TTS requests
-        logger.info(f"🎤 TTS SPEAK START: '{text[:50]}{'...' if len(text) > 50 else ''}' (length: {len(text)} chars)")
-        logger.info(f"🎤 TTS ENGINE STATUS: type={self.engine_type}, loaded={self.engine is not None}, initialized={self._initialized}")
+
+        logger.info(
+            f"🎤 TTS SPEAK START: '{text[:50]}{'...' if len(text) > 50 else ''}' "
+            f"(length: {len(text)} chars)"
+        )
+        logger.info(
+            f"🎤 TTS ENGINE STATUS: type={self.engine_type}, loaded={self.engine is not None}, "
+            f"initialized={self._initialized}"
+        )
         logger.info(f"🎤 TTS PARAMS: interruptible={interruptible}, notify={notify}")
 
-        # Try TTS with retry mechanism
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -892,24 +1005,64 @@ class TTSManager:
             except Exception as e:
                 logger.warning(f"🎤 TTS ATTEMPT {attempt + 1} FAILED: {e}")
                 if attempt < max_retries - 1:
-                    # Try to reinitialize engine on failure
                     try:
                         logger.info(f"🎤 TTS REINITIALIZING ENGINE (attempt {attempt + 1})")
                         self._initialized = False
                         self.init_engine()
-                        time.sleep(0.5)  # Brief delay before retry
-                        logger.info(f"🎤 TTS REINITIALIZATION COMPLETE: type={self.engine_type}, loaded={self.engine is not None}")
+                        time.sleep(0.5)
+                        logger.info(
+                            f"🎤 TTS REINITIALIZATION COMPLETE: type={self.engine_type}, "
+                            f"loaded={self.engine is not None}"
+                        )
                     except Exception as reinit_error:
                         logger.error(f"Failed to reinitialize TTS engine: {reinit_error}")
                 else:
-                    logger.error(f"All TTS attempts failed, falling back to system TTS")
+                    logger.error("All TTS attempts failed, falling back to system TTS")
                     try:
                         return self._fallback_speak(text, notify)
                     except Exception as fallback_error:
                         logger.error(f"Fallback TTS also failed: {fallback_error}")
                         return False
-        # This should never be reached, but just in case
         return False
+
+    def enqueue_speak(self, text: str, interruptible: bool = False, notify: bool = True) -> TTSJob:
+        """Enqueue a TTS request for asynchronous processing."""
+        job = TTSJob(text, interruptible, notify)
+
+        if not text.strip():
+            job.set_result(True)
+            return job
+
+        if self._tts_shutdown.is_set() or not self._tts_workers:
+            job.set_result(False, RuntimeError("TTS manager is not available"))
+            return job
+
+        try:
+            self._tts_queue.put(job, timeout=TTS_QUEUE_TIMEOUT)
+            with self.performance_lock:
+                self.performance_stats['queued_jobs'] = self._tts_queue.qsize()
+        except queue.Full as exc:
+            logger.error(f"TTS queue is full: {exc}")
+            job.set_result(False, exc)
+
+        return job
+
+    @track_resource("tts", "speak_operation")
+    def speak(self, text: str, interruptible: bool = False, notify: bool = True) -> bool:
+        """Speak text using the configured TTS engine."""
+        job = self.enqueue_speak(text, interruptible=interruptible, notify=notify)
+        if job.done():
+            return job.success
+
+        completed = job.wait()
+        if not completed and not job.done():
+            logger.warning("TTS job wait timed out")
+            return False
+
+        if job.error:
+            logger.error(f"TTS job failed: {job.error}")
+
+        return job.success
 
     def _speak_attempt(self, text: str, interruptible: bool, notify: bool) -> bool:
         """Single TTS attempt with proper error handling"""
@@ -1084,19 +1237,31 @@ class TTSManager:
             self.audio_handler.interrupt_playback()
             logger.info("TTS playback interrupted")
     
-    def _log_performance(self, duration: float, success: bool = True):
+    def _log_performance(self, duration: float, success: bool = True, active_jobs: Optional[int] = None):
         """Log TTS performance metrics"""
         with self.performance_lock:
             self.performance_stats['total_requests'] += 1
             self.performance_stats['last_request_time'] = time.time()
-            
+
             if success:
                 self.performance_stats['total_duration'] += duration
                 self.performance_stats['max_duration'] = max(self.performance_stats['max_duration'], duration)
                 self.performance_stats['min_duration'] = min(self.performance_stats['min_duration'], duration)
-                self.performance_stats['avg_duration'] = self.performance_stats['total_duration'] / self.performance_stats['total_requests']
+                self.performance_stats['avg_duration'] = (
+                    self.performance_stats['total_duration'] /
+                    max(1, self.performance_stats['total_requests'])
+                )
             else:
                 self.performance_stats['errors'] += 1
+
+            if active_jobs is None:
+                active_jobs = self._active_tts_count
+            self.performance_stats['active_jobs'] = max(0, active_jobs)
+            try:
+                queue_size = self._tts_queue.qsize()
+            except NotImplementedError:
+                queue_size = 0
+            self.performance_stats['queued_jobs'] = max(0, queue_size)
     
     def get_performance_stats(self) -> dict:
         """Get current performance statistics"""
@@ -1231,6 +1396,36 @@ class TTSManager:
         try:
             logger.info("🧹 Cleaning up TTS manager resources...")
 
+            self._tts_shutdown.set()
+
+            # Drain pending queue items and mark them cancelled
+            cancelled_jobs = 0
+            while True:
+                try:
+                    job = self._tts_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                if isinstance(job, TTSJob):
+                    if not job.done():
+                        job.set_result(False, RuntimeError("TTS manager shutting down"))
+                    cancelled_jobs += 1
+                self._tts_queue.task_done()
+
+            if cancelled_jobs:
+                logger.info(f"🧹 Cancelled {cancelled_jobs} queued TTS jobs")
+
+            # Signal workers to exit after finishing current task
+            for _ in list(self._tts_workers):
+                self._tts_queue.put(None)
+
+            for worker in list(self._tts_workers):
+                worker.join(timeout=5.0)
+                if worker.is_alive():
+                    logger.warning(f"⚠️ TTS worker {worker.name} did not stop cleanly")
+
+            self._tts_workers.clear()
+
             # Clear TTS cache
             with self._cache_lock:
                 cache_size = len(self._tts_cache)
@@ -1239,23 +1434,15 @@ class TTSManager:
 
             # Clear performance stats
             with self.performance_lock:
-                self.performance_stats.clear()
+                self.performance_stats = self._default_performance_stats()
 
-            # Wait for active TTS threads to complete
             with self._tts_count_lock:
-                active_count = self._active_tts_count
-
-            if active_count > 0:
-                logger.info(f"🧹 Waiting for {active_count} active TTS threads to complete...")
-                # Wait a reasonable time for threads to finish
-                timeout = 5.0
-                start_time = time.time()
-                while self._active_tts_count > 0 and (time.time() - start_time) < timeout:
-                    time.sleep(0.1)
-
-                remaining = self._active_tts_count
-                if remaining > 0:
-                    logger.warning(f"🧹 {remaining} TTS threads still active after timeout")
+                if self._active_tts_count:
+                    logger.debug(
+                        "Waiting for active TTS jobs to settle",
+                        extra={'active_jobs': self._active_tts_count},
+                    )
+                self._active_tts_count = 0
 
             logger.info("✅ TTS manager cleanup completed")
 
@@ -1370,18 +1557,22 @@ def speak(text: str):
     finally:
         # Log performance metrics
         duration = time.time() - start_time
-        tts_manager._log_performance(duration, success)
-        
-        # Log performance stats every 10 requests
-        if tts_manager.performance_stats['total_requests'] % 10 == 0:
-            stats = tts_manager.get_performance_stats()
-            logger.info(f"📊 TTS Performance: Avg={stats['avg_duration']:.2f}s, "
-                       f"Max={stats['max_duration']:.2f}s, "
-                       f"CPU={stats['cpu_percent']:.1f}%, "
-                       f"RAM={stats['memory_mb']:.1f}MB, "
-                       f"Errors={stats['errors']}")
-        
-        logger.info(f"⏱️ TTS Duration: {duration:.2f}s ({'✅' if success else '❌'})")
+        stats_snapshot = tts_manager.get_performance_stats()
+
+        total_requests = stats_snapshot.get('total_requests', 0)
+        if total_requests and total_requests % 10 == 0:
+            logger.info(
+                f"📊 TTS Performance: Avg={stats_snapshot.get('avg_duration', 0.0):.2f}s, "
+                f"Max={stats_snapshot.get('max_duration', 0.0):.2f}s, "
+                f"CPU={stats_snapshot.get('cpu_percent', 0.0):.1f}%, "
+                f"RAM={stats_snapshot.get('memory_mb', 0.0):.1f}MB, "
+                f"Errors={stats_snapshot.get('errors', 0)}"
+            )
+
+        logger.info(
+            f"⏱️ TTS Duration: {duration:.2f}s ({'✅' if success else '❌'}) "
+            f"[active={stats_snapshot.get('active_jobs', 0)}, queued={stats_snapshot.get('queued_jobs', 0)}]"
+        )
 
 """Web GUI removed from voice_assistant; use web_dashboard service instead."""
 
@@ -1659,7 +1850,7 @@ def main():
             try:
                 data = request.get_json() or {}
                 text = str(data.get('text') or 'Hey there, how can I help?')
-                threading.Thread(target=lambda: tts_manager.speak(text, interruptible=False, notify=False), daemon=True).start()
+                tts_manager.enqueue_speak(text, interruptible=False, notify=False)
                 return jsonify({'ok': True})
             except Exception as e:
                 return jsonify({'ok': False, 'error': str(e)}), 500
