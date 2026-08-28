@@ -20,3 +20,5 @@ Chroma 1.5.9 is embedded only. Known upstream advisories affecting Chroma's remo
 ## Reporting and verification
 
 Do not include service keys, session cookies, private documents or recordings in bug reports. Report affected versions, route, expected/actual behavior and redacted logs. Authentication, origin, approval and parser regressions must fail the supported test suite. Successful startup or a localhost address is not evidence of authorization correctness.
+
+Kokoro weights are Apache-2.0; the ONNX wrapper and bundled espeak-ng phonemizer have their own licenses. The registered model and voice pack record upstream release/revision, filenames, sizes and SHA-256 values. Runtime voice IDs resolve only through the registry. Review all dependency licenses before redistributing an app bundle.

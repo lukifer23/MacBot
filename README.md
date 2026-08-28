@@ -36,7 +36,7 @@ uv run --frozen macbot stop
 
 The assistant service owns turn history, generation, tool policy, cancellation, and one ordered speech stream. Dashboard HTTP routes and authenticated Socket.IO events are adapters to that runtime. Read-only system/document tools run automatically; every desktop or external-search action requires a single-use dashboard confirmation bound to its exact arguments, session, turn, and expiration. Spoken or model-generated text cannot approve an action.
 
-The native Swift helper routes capture and playback through one AVAudioEngine with voice processing. Resident Silero ONNX performs endpointing. STT is explicitly selected between Parakeet MLX and the private persistent whisper.cpp worker. Piper streams synthesis at the voice's actual sample rate. RAG uses CPU MiniLM ONNX for both ingestion and queries; SQLite owns source documents and Chroma holds a replaceable index.
+The native Swift helper routes capture and playback through one AVAudioEngine with voice processing. Resident Silero ONNX performs endpointing. STT is explicitly selected between Parakeet MLX and the private persistent whisper.cpp worker. Piper and Kokoro are explicit local voice choices. Phrase streaming preserves word boundaries, and 48 kHz native playback preserves the voice bandwidth separately from 16 kHz STT capture. RAG uses CPU MiniLM ONNX for both ingestion and queries; SQLite owns source documents and Chroma holds a replaceable index.
 
 ## Documentation
 

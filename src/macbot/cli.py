@@ -19,7 +19,15 @@ import yaml
 
 from .auth import AuthStore
 from .config import Settings, atomic_write, load, prepare, save
-from .provision import build_audio, catalog, download, install_binaries, model_dir, verify
+from .provision import (
+    build_audio,
+    catalog,
+    download,
+    install_binaries,
+    model_dir,
+    verify,
+    voice_model,
+)
 
 REVISIONS = {
     "llama.cpp": "c1d0e7a004015f23bc0233470b747b596f29b264",
@@ -102,7 +110,7 @@ def doctor(settings: Settings) -> dict:
     needed = [
         settings.models.llm,
         "parakeet" if settings.models.stt == "parakeet" else "whisper-base",
-        settings.models.tts_voice,
+        voice_model(settings.models.tts_voice),
         "minilm",
         "silero",
     ]

@@ -12,7 +12,7 @@ from flask_socketio import SocketIO
 
 from .auth import COOKIE, AuthStore, install_security
 from .config import Settings, load, save
-from .provision import model_dir, voices
+from .provision import model_dir, voice_model, voices
 from .validation import json_object
 
 
@@ -109,6 +109,10 @@ def create_app(settings: Settings) -> Flask:
             ),
         )
 
+    @app.get("/api/audio-status")
+    def audio_status():
+        return proxy("assistant", "/audio-status")
+
     routes = {
         "chat": "/chat",
         "llm": "/chat",
@@ -179,9 +183,17 @@ def create_app(settings: Settings) -> Flask:
     @app.get("/api/settings")
     def settings_get():
         current = load(settings.config_path)
+        installed = []
+        for voice in voices():
+            try:
+                model_dir(current, voice_model(voice))
+                installed.append(voice)
+            except FileNotFoundError:
+                continue
         return jsonify(
             models=current.models.model_dump(),
             voices=voices(),
+            installed_voices=installed,
         )
 
     @app.post("/api/settings")
@@ -195,7 +207,7 @@ def create_app(settings: Settings) -> Flask:
         if candidate.models.tts_voice not in voices():
             raise ValueError("Voice is not registered")
         if "tts_voice" in data:
-            model_dir(candidate, candidate.models.tts_voice)
+            model_dir(candidate, voice_model(candidate.models.tts_voice))
         save(candidate)
         return jsonify(success=True, restart_required="assistant")
 

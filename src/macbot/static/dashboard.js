@@ -3,7 +3,8 @@ const $ = id => document.getElementById(id);
 let csrf = sessionStorage.getItem('macbot_csrf') || '';
 let cursor = 0, epoch = '', listening = false, recorder = null, socket = null;
 let connected = false, pollTimer = null, refreshing = false, sending = false;
-let activeModels = null, pendingSettings = false;
+let activeModels = null, pendingSettings = false, audioTimer = null, captureEpoch = -1;
+const voiceNames = {'kokoro-heart': 'Heart · Kokoro', 'kokoro-michael': 'Michael · Kokoro', lessac: 'Lessac · Piper', amy: 'Amy · Piper'};
 const messages = new Map(), approvalTimers = new Map(), serviceRows = new Map();
 const labels = {assistant: 'Assistant', dashboard: 'Dashboard', llm: 'Language model', rag: 'Document search'};
 const toolLabels = {open_app: 'Open an app', screenshot: 'Take a screenshot', browse_website: 'Open a website', web_search: 'Search the web', weather: 'Check weather', system_info: 'Mac system status', rag_search: 'Search local documents'};
@@ -64,7 +65,7 @@ function setPhase(phase, state = 'running') {
 function acceptEpoch(value) {
   if (!value) return true;
   if (epoch && BigInt(value) < BigInt(epoch)) return false;
-  if (epoch && value !== epoch) {resetHistory(); cursor = 0; setPhase('idle'); message('restart-' + value, 'Connection', 'Assistant restarted. This is a new conversation; previous pending actions were cancelled.');}
+  if (epoch && value !== epoch) {captureEpoch = -1; resetHistory(); cursor = 0; setPhase('idle'); message('restart-' + value, 'Connection', 'Assistant restarted. This is a new conversation; previous pending actions were cancelled.');}
   epoch = value; return true;
 }
 function events(data) {
@@ -77,6 +78,7 @@ function events(data) {
     if (e.kind === 'delta') message(e.turn_id, 'MacBot', e.data.text, true);
     if (e.kind === 'text') message(e.turn_id, 'MacBot', e.data.text);
     if (e.kind === 'listening') setListening(e.data.enabled);
+    if (e.kind === 'capture_activity' && e.data.active) $('audio-state').textContent = 'Hearing you';
     if (['generating', 'transcribing', 'speaking', 'tool'].includes(e.kind)) setPhase(e.kind, e.state);
     if (e.state === 'accepted') setPhase('queued', 'accepted');
     if (e.kind === 'context') {showContext(e.data); if (e.data.pruned_turns) message(e.turn_id + '-context-' + e.seq, 'Context', e.data.pruned_turns + ' earlier turns were removed from model context to fit the token budget. The visible transcript is unchanged.');}
@@ -118,11 +120,37 @@ function approval(e) {
   approvalTimers.set(e.turn_id, setInterval(tick, 1000)); tick(); $('history').append(box); box.scrollIntoView({block: 'nearest'});
 }
 function setListening(enabled, status = {}) {
-  listening = !!enabled; $('listen').textContent = enabled ? 'Stop hands-free' : 'Start hands-free';
-  $('mute').disabled = !enabled; $('voice-indicator').dataset.active = String(!!enabled || !!status.browser_recording);
-  $('audio-state').textContent = status.browser_recording ? 'Browser microphone is on' : enabled ? 'Listening on your Mac' : status.audio_ready ? 'Microphone is muted' : 'Microphone is off';
-  $('audio-detail').textContent = status.browser_recording ? 'Finish recording to send your message.' : enabled ? (status.aec ? 'Native voice processing is active. You can interrupt a reply.' : 'Native capture is active; checking voice processing…') : status.audio_ready ? 'The playback engine is ready. Native input is muted.' : 'Start when you’re ready. Text chat is always available.';
+  if (status.epoch && !acceptEpoch(status.epoch)) return;
+  if (Number.isFinite(status.capture_epoch)) {
+    if (status.capture_epoch < captureEpoch) return;
+    captureEpoch = status.capture_epoch;
+  }
+  listening = !!enabled;
+  $('listen').textContent = enabled ? 'Stop hands-free' : 'Start hands-free';
+  $('mute').disabled = !enabled;
+  $('voice-indicator').dataset.active = String(enabled);
   $('listen').disabled = !!status.browser_recording;
+  let title = 'Microphone is off', detail = 'Start hands-free to talk, or type a message below.';
+  if (status.browser_recording) {title = 'Recording in your browser'; detail = 'Choose Finish recording when you’re done.';}
+  else if (enabled) {
+    title = status.speech_detected ? 'Hearing you' : status.input?.receiving ? 'Listening' : 'Waiting for microphone';
+    detail = status.input?.receiving ? 'Speak naturally. A short pause sends your message.' : 'Waiting for audio frames. Check your Mac’s input device if this persists.';
+  } else if (status.audio_error) {title = 'Audio needs attention'; detail = status.audio_error;}
+  $('audio-state').textContent = title; $('audio-detail').textContent = detail;
+  const rms = enabled && status.input?.receiving ? status.input.rms : 0;
+  const level = rms > 0 ? Math.max(0, Math.min(100, (20 * Math.log10(rms) + 60) / 60 * 100)) : 0;
+  $('input-level').value = level;
+  $('input-label').textContent = !enabled ? 'Input off' : !status.input?.receiving ? 'No frames yet' : status.speech_detected ? 'Speech detected' : level > 3 ? 'Input detected' : 'Quiet';
+}
+function scheduleAudio() {
+  clearTimeout(audioTimer);
+  audioTimer = setTimeout(async () => {
+    if (connected && listening && !document.hidden) {
+      try {const status = await api('/api/audio-status'); setListening(status.listening, status);}
+      catch { $('audio-state').textContent = 'Microphone status unavailable'; $('audio-detail').textContent = 'Reconnecting to the assistant…'; $('input-level').value = 0; $('input-label').textContent = 'Unavailable'; }
+    }
+    if (connected) scheduleAudio();
+  }, 250);
 }
 function definitionList(id, pairs) {
   const root = $(id); root.replaceChildren();
@@ -140,14 +168,14 @@ function showStatus(s) {
   setListening(s.listening, s); if ((s.cursor ?? cursor) >= cursor) setPhase(s.phase, s.turn_state);
   showContext(s.context);
   activeModels = s.models;
-  if (activeModels) $('model-label').textContent = activeModels.llm + ' · ' + activeModels.llm_backend + ' · ' + activeModels.tts_voice + ' voice';
+  if (activeModels) $('model-label').textContent = activeModels.llm + ' · ' + activeModels.llm_backend + ' · ' + (voiceNames[activeModels.tts_voice] || activeModels.tts_voice);
   const metrics = s.metrics || []; const latest = metrics.at(-1); showMetric(latest);
   const samples = metrics.map(m => m.ttft_ms).filter(Number.isFinite).sort((a,b) => a-b);
   $('sample-count').textContent = metrics.length + (metrics.length === 1 ? ' turn' : ' turns');
   $('metric-ttft-note').textContent = samples.length ? 'p95 ' + ms(samples[Math.ceil(samples.length * .95) - 1]) + ' · ' + samples.length + ' recent turns' : 'No completed turns yet';
   $('metric-queue').textContent = (s.turn_queue + s.speech_queue) + ' / ' + s.audio_dropped;
   $('metric-queue-note').textContent = s.errors + ' turn errors · ' + s.playback_chunks + ' playback chunks';
-  definitionList('pipeline', [['Capture', s.browser_recording ? 'Browser' : s.listening ? 'Native · active' : 'Off'], ['Voice processing', s.audio_ready ? s.aec ? 'Enabled' : 'Unavailable' : 'Not started'], ['Transcription', s.stt_loaded ? s.models?.stt || 'Loaded' : 'Not loaded'], ['Voice synthesis', s.tts_loaded ? 'Piper · loaded' : 'Not loaded'], ['Turn / speech queue', s.turn_queue + ' / ' + s.speech_queue], ['Capture frames queued', String(s.audio_queue)]]);
+  definitionList('pipeline', [['Capture', s.browser_recording ? 'Browser' : s.listening ? 'Native · active' : 'Off'], ['Voice processing', s.audio_ready ? s.aec ? 'Enabled' : 'Unavailable' : 'Not started'], ['Transcription', s.stt_loaded ? s.models?.stt || 'Loaded' : 'Not loaded'], ['Voice synthesis', s.tts_loaded ? (voiceNames[s.models?.tts_voice] || s.models?.tts_voice || 'Loaded') : 'Not loaded'], ['Turn / speech queue', s.turn_queue + ' / ' + s.speech_queue], ['Capture frames queued', String(s.audio_queue)]]);
 }
 async function restartService(name, button) {
   if (!confirm('Restart ' + (labels[name] || name) + '? Active work in that service will stop.')) return;
@@ -176,7 +204,7 @@ async function refresh() {
   refreshing = true;
   try {
     const results = await Promise.allSettled([api('/api/status'), api('/api/services')]);
-    if (results[0].status === 'fulfilled') showStatus(results[0].value); else {setPhase('failed', 'failed'); $('model-label').textContent = 'Assistant unavailable · retrying'; showMetric(null); showContext(); activeModels = null; definitionList('pipeline', [['Status', 'Unavailable · reconnecting']]); $('sample-count').textContent = 'Unknown'; $('metric-ttft-note').textContent = 'Telemetry unavailable'; $('metric-queue').textContent = '—'; $('metric-queue-note').textContent = 'Assistant telemetry unavailable';}
+    if (results[0].status === 'fulfilled') showStatus(results[0].value); else {setPhase('failed', 'failed'); $('model-label').textContent = 'Assistant unavailable · retrying'; setListening(false, {audio_error: 'The assistant is unavailable. Wait for reconnection before starting the microphone.'}); showMetric(null); showContext(); activeModels = null; definitionList('pipeline', [['Status', 'Unavailable · reconnecting']]); $('sample-count').textContent = 'Unknown'; $('metric-ttft-note').textContent = 'Telemetry unavailable'; $('metric-queue').textContent = '—'; $('metric-queue-note').textContent = 'Assistant telemetry unavailable';}
     if (results[1].status === 'fulfilled') showServices(results[1].value); else {$('updated').textContent = 'Telemetry unavailable'; $('metric-memory').textContent = '—'; for (const row of serviceRows.values()) {row.dot.dataset.ready = 'false'; row.meta.textContent = 'State unknown · connection unavailable';}}
     const denied = results.find(r => r.status === 'rejected' && r.reason.status === 401);
     if (denied) {disconnect(); fail(new Error('Session expired. Run macbot open to reconnect.'));}
@@ -201,17 +229,17 @@ async function connect() {
   // A settings read also verifies the browser session before showing the workspace.
   const settings = await api('/api/settings'); connected = true;
   $('login').hidden = true; $('application').hidden = false; $('logout').hidden = false;
-  $('voice').replaceChildren(); for (const voice of settings.voices) {const option = document.createElement('option'); option.value = option.textContent = voice; $('voice').append(option);}
+  $('voice').replaceChildren(); for (const voice of settings.voices) {const option = document.createElement('option'); option.value = voice; option.textContent = voiceNames[voice] || voice; option.disabled = !settings.installed_voices.includes(voice); if (option.disabled) option.textContent += ' · not installed'; $('voice').append(option);}
   $('voice').value = settings.models.tts_voice; $('tokens').value = settings.models.max_tokens; $('speed').value = settings.models.tts_speed;
   socket = io({auth: {csrf}, transports: ['websocket', 'polling']});
   socket.on('turn_events', events);
   socket.on('connect', () => {connection('Connected locally', 'good'); api('/api/events?after=' + cursor + (epoch ? '&epoch=' + encodeURIComponent(epoch) : '')).then(events).catch(fail);});
   socket.on('disconnect', () => connection('Reconnecting…', 'warn'));
   socket.on('connect_error', () => connection('Live updates unavailable', 'warn'));
-  await refresh(); scheduleRefresh(); await documents();
+  await refresh(); scheduleRefresh(); scheduleAudio(); await documents();
 }
 function disconnect() {
-  connected = false; clearTimeout(pollTimer); socket?.disconnect(); socket = null; csrf = ''; sessionStorage.removeItem('macbot_csrf');
+  connected = false; clearTimeout(pollTimer); clearTimeout(audioTimer); socket?.disconnect(); socket = null; csrf = ''; sessionStorage.removeItem('macbot_csrf');
   resetHistory(); cursor = 0; epoch = ''; $('application').hidden = true; $('login').hidden = false; $('logout').hidden = true; connection('Not connected', 'neutral');
 }
 $('login-form').onsubmit = async e => {e.preventDefault(); await busy(e.submitter, 'Connecting…', async () => {const data = await api('/auth/exchange', {token: $('login-code').value}); csrf = data.csrf; sessionStorage.setItem('macbot_csrf', csrf); $('login-code').value = ''; await connect();});};
@@ -223,10 +251,10 @@ $('chat-form').onsubmit = async e => {
 $('message').onkeydown = e => {if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {e.preventDefault(); $('chat-form').requestSubmit($('send'));}};
 document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => {$('message').value = button.dataset.prompt; $('message').focus();});
 $('listen').onclick = () => busy($('listen'), listening ? 'Stopping…' : 'Starting…', async () => {const d = await api('/api/listen', {enabled: !listening}); setListening(d.listening, d);}).then(refresh);
-$('mute').onclick = () => busy($('mute'), 'Muting…', async () => {await api('/api/listen', {enabled: false}); setListening(false);});
+$('mute').onclick = () => busy($('mute'), 'Muting…', async () => {const d = await api('/api/listen', {enabled: false}); setListening(false, d);});
 $('interrupt').onclick = () => busy($('interrupt'), 'Stopping…', async () => {await api('/api/interrupt', {}); setPhase('interrupted', 'interrupted');});
 $('clear').onclick = () => busy($('clear'), 'Clearing…', async () => {await api('/api/clear', {}); resetHistory();});
-$('preview').onclick = () => busy($('preview'), 'Preparing…', async () => {await api('/api/preview-voice', {text: 'Hello. This is the active local voice.'});});
+$('preview').onclick = () => busy($('preview'), 'Preparing…', async () => {await api('/api/preview-voice', {text: 'Hey, I’m here. What would you like to work on?'});});
 $('settings').onsubmit = async e => {e.preventDefault(); await busy($('save-settings'), 'Saving…', async () => {await api('/api/settings', {tts_voice: $('voice').value, tts_speed: Number($('speed').value), max_tokens: Number($('tokens').value)}); pendingSettings = true; $('settings-note').textContent = 'Saved. The current voice stays active until the assistant restarts.'; $('apply-settings').hidden = false;});};
 $('apply-settings').onclick = async () => {await restartService('assistant', $('apply-settings')); if (activeModels && activeModels.tts_voice === $('voice').value && activeModels.tts_speed === Number($('speed').value) && activeModels.max_tokens === Number($('tokens').value)) {pendingSettings = false; $('apply-settings').hidden = true; $('settings-note').textContent = 'Settings are active.';}};
 $('upload').onsubmit = async e => {e.preventDefault(); if (!$('files').files.length) {fail(new Error('Choose at least one document first.')); return;} const data = new FormData(); for (const file of $('files').files) data.append('files', file); await busy($('import-button'), 'Importing…', async () => {const result = await api('/api/upload-documents', data); await documents(); $('files').value = ''; $('document-status').textContent = 'Import completed.'; if (result.errors?.length) fail(new Error(JSON.stringify(result.errors)));});};

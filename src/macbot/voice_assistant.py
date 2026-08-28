@@ -36,6 +36,10 @@ def create_app(settings: Settings, runtime: Runtime | None = None) -> Flask:
         after = max(0, int(request.args.get("after", "0")))
         return jsonify(engine.events.read(after, timeout=20, epoch=request.args.get("epoch")))
 
+    @app.get("/audio-status")
+    def audio_status():
+        return jsonify(engine.audio_status())
+
     @app.post("/chat")
     def chat():
         data = json_object()
@@ -74,7 +78,7 @@ def create_app(settings: Settings, runtime: Runtime | None = None) -> Flask:
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be boolean")
         engine.listen(enabled, session_id=session_id())
-        return jsonify(success=True, listening=engine.listening, aec=engine.audio.aec)
+        return jsonify(success=True, **engine.audio_status())
 
     @app.post("/approve")
     def approve():

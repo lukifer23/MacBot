@@ -14,7 +14,7 @@ dependencies = [
   "httpx>=0.28.1,<0.29", "PyYAML>=6.0.2,<7", "pydantic>=2.13.5,<3",
   "numpy>=2.2.5,<3", "scipy>=1.14,<2", "psutil>=7,<8", "soundfile>=0.13,<1",
   "onnxruntime>=1.29,<2", "tokenizers>=0.22,<0.24",
-  "chromadb==1.5.9", "piper-tts==1.7.0", "pypdf>=6.16.2,<7",
+  "chromadb==1.5.9", "piper-tts==1.7.0", "kokoro-onnx==0.6.1", "pypdf>=6.16.2,<7",
   "python-docx>=1.2,<2", "huggingface-hub>=1.0,<2",
   "parakeet-mlx==0.5.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]

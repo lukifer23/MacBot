@@ -45,6 +45,22 @@ class NativeAudio:
         self.reader: threading.Thread | None = None
         self.last_stop_ns = 0
         self.closing = False
+        self.input_peak = 0.0
+        self.input_rms = 0.0
+        self.input_frames = 0
+        self.input_updated = 0.0
+
+    def input_status(self) -> dict:
+        with self.condition:
+            age = time.monotonic() - self.input_updated if self.input_updated else None
+            fresh = age is not None and age < 1
+            return {
+                "peak": self.input_peak if fresh else 0.0,
+                "rms": self.input_rms if fresh else 0.0,
+                "frames": self.input_frames,
+                "age_ms": age * 1000 if age is not None else None,
+                "receiving": fresh,
+            }
 
     def launch(self, capture: bool = False) -> None:
         try:
@@ -62,6 +78,8 @@ class NativeAudio:
             self.closing = False
             self.error = None
             self.inflight = 0
+            self.input_frames = 0
+            self.input_updated = 0.0
             logfile = self.settings.data_dir / "logs" / "audio.log"
             with logfile.open("ab") as log:
                 self.process = subprocess.Popen(
@@ -110,6 +128,13 @@ class NativeAudio:
                 frame = read_exact(process.stdout, size)
                 if frame[0] == 2:
                     samples = np.frombuffer(frame[1:], dtype="<f4").copy()
+                    if not samples.size or not np.isfinite(samples).all():
+                        raise ValueError("Invalid microphone samples")
+                    with self.condition:
+                        self.input_peak = float(np.max(np.abs(samples)))
+                        self.input_rms = float(np.sqrt(np.mean(np.square(samples))))
+                        self.input_frames += 1
+                        self.input_updated = time.monotonic()
                     try:
                         self.capture.put_nowait(samples)
                     except queue.Full:
@@ -119,6 +144,10 @@ class NativeAudio:
                     data = json.loads(frame[1:])
                     with self.condition:
                         if data["event"] == "ready":
+                            if data.get("protocol") != 2:
+                                raise ValueError(
+                                    "Audio helper is outdated. Run macbot build-audio and restart."
+                                )
                             self.ready, self.aec = True, bool(data.get("aec"))
                         elif data["event"] == "error":
                             self.error = data.get("message", "Audio error")
@@ -141,16 +170,18 @@ class NativeAudio:
     def play(
         self, samples: np.ndarray, sample_rate: int, cancel: threading.Event, generation: int
     ) -> None:
-        if sample_rate != 16000:
-            # Polyphase resampling from Piper's actual voice sample rate.
+        playback_rate = 48000
+        if sample_rate != playback_rate:
+            # Preserve the voice bandwidth; 16 kHz is only the STT capture rate.
             from math import gcd
 
             from scipy.signal import resample_poly
 
-            common = gcd(sample_rate, 16000)
-            samples = resample_poly(samples, 16000 // common, sample_rate // common)
+            common = gcd(sample_rate, playback_rate)
+            samples = resample_poly(samples, playback_rate // common, sample_rate // common)
         pcm = np.clip(samples, -1, 1).astype("<f4")
-        for offset in range(0, len(pcm), 800):
+        chunk_size = playback_rate // 20
+        for offset in range(0, len(pcm), chunk_size):
             with self.condition:
                 deadline = time.monotonic() + 5
                 while self.inflight >= 4 and not cancel.is_set() and generation == self.generation:
@@ -163,7 +194,9 @@ class NativeAudio:
                     raise RuntimeError(self.error or "Audio helper unavailable")
                 self.inflight += 1
                 self._write(
-                    2, struct.pack(">QI", generation, 16000) + pcm[offset : offset + 800].tobytes()
+                    2,
+                    struct.pack(">QI", generation, playback_rate)
+                    + pcm[offset : offset + chunk_size].tobytes(),
                 )
 
     def drain(self, cancel: threading.Event, timeout: float = 10) -> None:

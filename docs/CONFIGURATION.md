@@ -35,3 +35,9 @@ This is **whole-turn pruning, not semantic compaction or durable memory**. Older
 Dashboard changes support output length, voice and speech speed. They save validated user settings and require an assistant restart. Other settings require editing the user configuration and restarting MacBot. `start` persists the effective configuration so child services agree.
 
 Mute uses AVAudioEngine's voice-processing input mute. The audio device may remain open while playback continues, so macOS may still show its microphone indicator. Browser push-to-talk stops native capture before opening the browser microphone and closes browser tracks after recording. Full device closure occurs on service stop.
+
+## Voice choices
+
+Piper voices `amy` and `lessac` remain available. To try Kokoro locally, run `macbot models download kokoro` and `macbot models verify kokoro`, then select `kokoro-heart` or `kokoro-michael` in Settings. The two voices share one resident 82M model. Start at speed `1.0`; no voice-quality claim replaces listening acceptance. Missing models fail explicitly. Uninstalled voices are disabled in the dashboard selector.
+
+After updating from the earlier audio helper, run `macbot build-audio` and restart MacBot. Native IPC protocol 2 uses 16 kHz capture and 48 kHz playback so the voice is no longer downsampled to the STT input rate. The Python bridge rejects an outdated helper with a rebuild instruction. Roll back code, wheel and helper together; voice rollback is selecting a provisioned Piper voice and restarting the assistant.

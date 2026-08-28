@@ -57,3 +57,13 @@ Required acceptance: warm p95 speech-end to first audible response <=1.5 s; p95 
 **Scheduling a PCM buffer is not audible playback.** `first_audio_scheduled_ms` is a software diagnostic, not the latency acceptance measurement. The native stop acknowledgement is also distinct from a measured acoustic stop.
 
 Complete a 30-minute sustained conversation soak and obtain user listening acceptance. Do not label hands-free support complete before that. Record local automated, hosted-CI, and physical-device results separately. Preserve every unmet gate in the delivery report.
+
+### Follow-up microphone and voice repair, 2026-08-28
+
+The owner reported that Start succeeded but speaking produced no response. Direct device diagnostics found nonzero 9-channel native input but all-zero converted mono PCM. Explicit `channelMap = [0]` restored the signal. Both updated device assertions failed against the previous helper and passed with the mapping fix. The final protocol-2 device checks passed four cases: direct/muted starts with Piper and Kokoro, nonzero finite capture, reported input telemetry, playback scheduling and cancellation acknowledgement. They still do not prove spontaneous-speech transcription or acoustic echo suppression.
+
+The software suite passed 88 tests before the final capture-epoch ordering guard; Ruff, formatting, mypy (21 modules) and distribution inspection passed. Kokoro model/voice hashes were verified. Real synthesis from the installed runtime also passed with all networking denied by the OS. The dependency scan still reports the same four Chroma advisories; no new package advisory was reported. The changed-file secret scan flagged public upstream revision/model hashes, not credentials.
+
+A live text-to-spoken-reply turn completed with Kokoro Heart, zero dropped frames, 762 ms to first text and 2,608 ms to first scheduled audio. This was a single cold exploratory turn, not a warm p95 result. The owner confirmed hearing the reply, but did not accept voice quality or sustained conversation. The 1.5-second speech-end acoustic target remains unproven.
+
+Chrome displayed `ERR_BLOCKED_BY_CLIENT` before loading the dashboard, although one listener per configured port and a local HTTP 200 response were observed. Revised UI layout, live input feedback and browser interactions are **not visually/operator verified** in that blocked browser. Do not treat source changes or backend checks as UI acceptance. Any push is an unfinished-work checkpoint, not a release.

@@ -21,10 +21,11 @@ Internal service requests use the target service's Bearer credential. These are 
 | `/api/clear` | POST | Interrupt then clear conversation history |
 | `/api/preview-voice`, `/api/assistant-speak` | POST | `{text}` → real synthesis/playback turn |
 | `/api/events?after=N&epoch=E` | GET | Bounded ordered event replay, epoch, cursor, gap and reset indicators; epoch is optional on the first request |
+| `/api/audio-status` | GET | Live PCM peak/RMS, frame age/count, speech detection, capture state and capture/assistant epochs; authenticated, no audio content |
 | `/api/status` | GET | Actual assistant state and recent content-free timing records |
 | `/api/services`, `/api/metrics` | GET | Owned processes, readiness, restarts and RSS |
 | `/api/service/NAME/restart` | POST | Restart only a registered process owned by this supervisor |
-| `/api/settings` | GET/POST | Read settings; update `max_tokens`, `tts_speed`, `tts_voice`; restart required |
+| `/api/settings` | GET/POST | Read settings and installed/registered voice lists; update `max_tokens`, `tts_speed`, `tts_voice`; restart required |
 | `/api/documents` | GET | Document metadata list |
 | `/api/documents/ID` | GET/DELETE | Read/delete source document and rebuild index |
 | `/api/search` | POST | `{query, top_k}` → result chunks with source offsets and distance |

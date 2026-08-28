@@ -20,6 +20,8 @@ The assistant event stream has an epoch as well as a sequence number. On restart
 - **Speech → playback queued:** last detected speech to first buffer scheduling, or text submission to scheduling for text input. This is **not** the acoustic latency release gate. A dash means no measurement.
 - **Process memory:** summed RSS of MacBot-owned service processes and their children, plus the supervisor. Shared mappings may be counted by more than one process; this is not macOS memory-pressure accounting.
 - **Queue / dropped frames:** queued turns plus queued synthesis work, followed by dropped capture-frame counts. Audio pipeline details separate capture, model residency and queued playback chunks.
-- Last-turn details show STT, first text, Piper first chunk and total duration where measured. They do not fabricate values for unused stages.
+- Last-turn details show STT, first text, TTS first chunk and total duration where measured. They do not fabricate values for unused stages.
 
 The UI remains labeled as a hands-free preview until physical device testing, the 30-minute soak and user listening acceptance pass. Responsive CSS and a working browser are not a substitute for visual/operator acceptance.
+
+The conversation occupies the primary workspace. Performance cards and service controls live in Overview rather than above the conversation. Input level is measured from actual captured PCM, with a separate Silero speech-detected state. While native listening is active and the tab is visible, a bounded sequential audio-status poll runs every 250 ms; it stops on disconnect and does not store audio. The lower-frequency service/turn snapshot remains separate. Errors stay visible in a fixed banner rather than below the fold.

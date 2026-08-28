@@ -15,6 +15,12 @@ import httpx
 
 from .config import Settings, atomic_write
 
+KOKORO_VOICES = {"kokoro-heart": "af_heart", "kokoro-michael": "am_michael"}
+
+
+def voice_model(name: str) -> str:
+    return "kokoro" if name in KOKORO_VOICES else name
+
 
 def catalog() -> dict[str, Any]:
     return json.loads(files("macbot").joinpath("defaults/models.json").read_text())
@@ -25,7 +31,7 @@ def voices() -> list[str]:
         name
         for name, item in catalog().items()
         if any(f["name"].endswith(".onnx.json") for f in item["files"])
-    ]
+    ] + list(KOKORO_VOICES)
 
 
 def sha256(path: Path) -> str:

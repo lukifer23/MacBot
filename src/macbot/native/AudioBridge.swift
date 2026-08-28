@@ -3,7 +3,8 @@ import AVFoundation
 import AVFAudio
 
 // Protocol: uint32 big-endian length, uint8 kind, payload. Kind 1 = JSON.
-// Python -> helper PCM: kind 2, uint64 generation, uint32 rate, float32 LE mono.
+// Protocol v2. Python -> helper PCM: kind 2, uint64 generation, uint32 rate,
+// float32 LE mono at 48 kHz. Capture remains 16 kHz for STT.
 // Helper -> Python PCM: kind 2, float32 LE mono at 16 kHz.
 // Only the main control queue touches the engine. Audio callbacks never perform IPC.
 final class Bridge {
@@ -23,6 +24,7 @@ final class Bridge {
     var converter: AVAudioConverter?
     var timer: DispatchSourceTimer?
     let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    let playback = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
 
     func send(_ kind: UInt8, _ data: Data) {
         // The control queue may drop capture PCM, but never accumulates unlimited
@@ -56,13 +58,20 @@ final class Bridge {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(domain: "MacBot", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone input format"])
         }
-        converter = AVAudioConverter(from: format, to: mono)
+        guard let captureConverter = AVAudioConverter(from: format, to: mono) else {
+            throw NSError(domain: "MacBot", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cannot convert microphone audio"])
+        }
+        // VoiceProcessingIO can expose a multichannel/discrete layout. Its
+        // implicit mapping to mono can select no source and produce all zeros.
+        // Select the processed microphone channel explicitly before resampling.
+        captureConverter.channelMap = [0]
+        converter = captureConverter
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: mono)
+        engine.connect(player, to: engine.mainMixerNode, format: playback)
         // VoiceProcessingIO requires matching client input/output sample rates.
         // Its output can otherwise retain the engine's 44.1 kHz default even
         // when the microphone runs at 48 kHz, making AU initialization fail.
-        // The mixer converts our 16 kHz playback stream to the device rate.
+        // The mixer converts playback to the device rate when necessary.
         let outputChannels = engine.outputNode.inputFormat(forBus: 0).channelCount
         guard outputChannels > 0,
               let outputFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
@@ -92,7 +101,8 @@ final class Bridge {
         t.schedule(deadline: .now(), repeating: .milliseconds(10))
         t.setEventHandler { [weak self] in self?.drainCapture() }
         t.resume(); timer = t
-        event("ready", ["aec": engine.inputNode.isVoiceProcessingEnabled, "sample_rate": 16000,
+        event("ready", ["protocol": 2, "aec": engine.inputNode.isVoiceProcessingEnabled, "sample_rate": 16000,
+                        "playback_sample_rate": 48000,
                         "input_sample_rate": format.sampleRate,
                         "output_sample_rate": engine.outputNode.inputFormat(forBus: 0).sampleRate])
     }
@@ -148,10 +158,10 @@ final class Bridge {
         guard body.count >= 12, (body.count - 12) % 4 == 0, body.count <= 256 * 1024 else { return }
         let gen = body.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         let rate = body.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        guard started, gen == generation, rate == 16000 else { event("rejected", ["generation": gen]); return }
+        guard started, gen == generation, rate == 48000 else { event("rejected", ["generation": gen]); return }
         guard pending < 4 else { event("error", ["message": "Playback credit limit exceeded"]); return }
         let count = (body.count - 12) / 4
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: AVAudioFrameCount(count)), let dest = buffer.floatChannelData else { return }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: playback, frameCapacity: AVAudioFrameCount(count)), let dest = buffer.floatChannelData else { return }
         buffer.frameLength = AVAudioFrameCount(count)
         body.dropFirst(12).withUnsafeBytes { raw in memcpy(dest[0], raw.baseAddress!, count * 4) }
         pending += 1
@@ -176,7 +186,7 @@ func readExact(_ count: Int) -> Data? {
 }
 let bridge = Bridge()
 if CommandLine.arguments.contains("--probe") {
-    bridge.event("capabilities", ["voice_processing": true, "protocol": 1])
+    bridge.event("capabilities", ["voice_processing": true, "protocol": 2])
     bridge.output.sync {}; exit(0)
 }
 DispatchQueue.global(qos: .userInteractive).async {

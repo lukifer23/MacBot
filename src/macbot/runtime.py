@@ -18,7 +18,7 @@ from .config import Settings
 from .events import EventJournal
 from .llm import LocalLLM
 from .native_audio import NativeAudio
-from .speech import SileroVAD, Synthesizer, Transcriber
+from .speech import SileroVAD, Synthesizer, Transcriber, split_speech
 from .tools import READ_ONLY, Tools
 from .validation import validate_chat_message
 
@@ -73,6 +73,8 @@ class Runtime:
         self.listening = False
         self.capture_session = "local"
         self.capture_epoch = 0
+        self.capture_speech = False
+        self.vad_probability = 0.0
         self.last_activity = time.monotonic()
         self.error_count = 0
         self.last_error: str | None = None
@@ -119,6 +121,16 @@ class Runtime:
                 turn.first_audio_scheduled_ns = time.monotonic_ns()
                 self._emit(turn, "running", "speaking")
             elif event.get("event") in {"error", "overflow"}:
+                if event.get("event") == "error":
+                    self.last_error = event.get("message", "Audio unavailable")
+                    self.error_count += 1
+                    self.listening = False
+                    self.capture_speech = False
+                    self.capture_epoch += 1
+                    try:
+                        self.audio.command("capture", enabled=False)
+                    except (RuntimeError, OSError):
+                        pass
                 self.events.publish("local", turn.id if turn else "", "failed", "audio", **event)
 
     def submit(
@@ -232,9 +244,12 @@ class Runtime:
             self.capture_session = session_id
         elif self.audio.process:
             self.audio.command("capture", enabled=False)
-        self.listening = enabled
-        self.capture_epoch += 1
-        self.events.publish("local", "", "running", "listening", enabled=enabled)
+        with self.lock:
+            self.listening = enabled
+            self.capture_speech = False
+            self.vad_probability = 0.0
+            self.capture_epoch += 1
+            self.events.publish("local", "", "running", "listening", enabled=enabled)
 
     def browser_recording(self, enabled: bool, session_id: str):
         with self.lock:
@@ -414,13 +429,15 @@ class Runtime:
                     round_text += content
                     buffer += content
                     self._emit(turn, "running", "delta", text=content)
-                    if any(c in content for c in ".?!\n") or len(buffer) >= 100:
-                        self._queue_speech(turn, buffer)
-                        buffer = ""
+                    phrases, buffer = split_speech(buffer)
+                    for phrase in phrases:
+                        self._queue_speech(turn, phrase)
             if turn.cancelled.is_set():
                 return
             if buffer:
-                self._queue_speech(turn, buffer)
+                phrases, _ = split_speech(buffer, final=True)
+                for phrase in phrases:
+                    self._queue_speech(turn, phrase)
             if not calls:
                 if not round_text.strip():
                     raise RuntimeError("Model returned an empty response")
@@ -531,6 +548,7 @@ class Runtime:
                 pre.clear()
                 utterance = []
                 active = False
+                self.capture_speech = False
                 voiced = quiet = 0
                 if self.vad:
                     self.vad.reset()
@@ -546,7 +564,17 @@ class Runtime:
             pending = np.concatenate((pending, chunk))
             while len(pending) >= 512:
                 frame, pending = pending[:512].copy(), pending[512:]
-                speech = self.vad.probability(frame) >= self.settings.audio.vad_threshold
+                try:
+                    self.vad_probability = self.vad.probability(frame)
+                except Exception as exc:
+                    self._audio_event(
+                        {
+                            "event": "error",
+                            "message": f"Speech detection failed: {type(exc).__name__}",
+                        }
+                    )
+                    break
+                speech = self.vad_probability >= self.settings.audio.vad_threshold
                 if speech:
                     voiced += 32
                     quiet = 0
@@ -559,6 +587,10 @@ class Runtime:
                     if voiced < self.settings.audio.speech_start_ms:
                         continue
                     active = True
+                    self.capture_speech = True
+                    self.events.publish(
+                        self.capture_session, "", "running", "capture_activity", active=True
+                    )
                     utterance = list(pre)
                     pre.clear()
                     self.interrupt()
@@ -574,6 +606,10 @@ class Runtime:
                     ]
                     utterance = []
                     active = False
+                    self.capture_speech = False
+                    self.events.publish(
+                        self.capture_session, "", "running", "capture_activity", active=False
+                    )
                     voiced = quiet = 0
                     try:
                         self.submit(
@@ -584,9 +620,27 @@ class Runtime:
                     except Exception as exc:
                         self.events.publish("local", "", "failed", "audio", message=str(exc))
 
+    def audio_status(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "epoch": self.events.epoch,
+                "capture_epoch": self.capture_epoch,
+                "listening": self.listening,
+                "audio_ready": self.audio.ready,
+                "aec": self.audio.aec,
+                "input": self.audio.input_status(),
+                "speech_detected": self.capture_speech if self.listening else False,
+                "speech_probability": self.vad_probability if self.listening else 0.0,
+                "audio_error": self.audio.error,
+                "browser_recording": bool(
+                    self.browser_capture and self.browser_capture[1] > time.monotonic()
+                ),
+            }
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {
+                **self.audio_status(),
                 "listening": self.listening,
                 "aec": self.audio.aec,
                 "audio_ready": self.audio.ready,

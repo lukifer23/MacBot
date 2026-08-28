@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -15,7 +16,38 @@ import soundfile as sf
 
 from .config import Settings
 from .pipe_io import read_exact, write_all
-from .provision import model_dir, model_file
+from .provision import KOKORO_VOICES, model_dir, model_file, voices
+
+
+def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
+    """Emit phrases at word boundaries, even when model tokens bisect a word."""
+    phrases = []
+    while buffer:
+        cut = 0
+        for match in re.finditer(r"[.!?][\"')\]]*(?=\s)", buffer):
+            prefix = buffer[: match.start() + 1].split()
+            word = prefix[-1].lower() if prefix else ""
+            if word in {"mr.", "mrs.", "ms.", "dr.", "prof.", "e.g.", "i.e."}:
+                continue
+            if re.fullmatch(r"[a-z]\.", word):
+                continue
+            cut = match.end()
+            break
+        if not cut and len(buffer) >= 180:
+            boundaries = list(re.finditer(r"[,;:](?=\s)", buffer[:180]))
+            cut = next((m.end() for m in reversed(boundaries) if m.end() >= 60), 0)
+            if not cut:
+                spaces = list(re.finditer(r"\s+", buffer[:180]))
+                cut = spaces[-1].end() if spaces else 0
+        if not cut:
+            if final:
+                cut = len(buffer)
+            else:
+                break
+        phrase, buffer = buffer[:cut].strip(), buffer[cut:].lstrip()
+        if phrase:
+            phrases.append(phrase)
+    return phrases, buffer
 
 
 class SileroVAD:
@@ -154,20 +186,61 @@ class Transcriber:
 
 class Synthesizer:
     def __init__(self, settings: Settings):
-        from piper import PiperVoice
-
         self.settings = settings
-        self.path = model_file(settings, settings.models.tts_voice, ".onnx")
-        self.voice = PiperVoice.load(str(self.path))
+        name = settings.models.tts_voice
+        if name not in voices():
+            raise ValueError("TTS voice is not registered")
+        self.voice_id = name
+        self.kokoro = None
+        self.voice = None
+        if name in KOKORO_VOICES:
+            import onnxruntime as ort
+            from kokoro_onnx import Kokoro
+
+            self.path = model_file(settings, "kokoro", ".onnx")
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 4
+            options.inter_op_num_threads = 1
+            session = ort.InferenceSession(
+                str(self.path), options, providers=["CPUExecutionProvider"]
+            )
+            self.kokoro = Kokoro.from_session(session, str(model_file(settings, "kokoro", ".bin")))
+        else:
+            from piper import PiperVoice
+
+            self.path = model_file(settings, name, ".onnx")
+            self.voice = PiperVoice.load(str(self.path))
         self.lock = threading.Lock()
         self.cache: OrderedDict[tuple, list[tuple[np.ndarray, int]]] = OrderedDict()
         self.cache_bytes = 0
 
-    def chunks(self, text: str, cancel: threading.Event):
+    def _generate(self, text: str, cancel: threading.Event):
+        if self.kokoro is not None:
+            phrases, _ = split_speech(text, final=True)
+            for phrase in phrases:
+                if cancel.is_set():
+                    return
+                samples, rate = self.kokoro.create(
+                    phrase,
+                    voice=KOKORO_VOICES[self.voice_id],
+                    speed=self.settings.models.tts_speed,
+                    lang="en-us",
+                )
+                yield samples, rate
+            return
         from piper import SynthesisConfig
 
-        key = (str(self.path), self.settings.models.tts_speed, text)
+        assert self.voice is not None
+        for chunk in self.voice.synthesize(
+            text, SynthesisConfig(length_scale=1 / self.settings.models.tts_speed)
+        ):
+            yield chunk.audio_float_array.copy(), chunk.sample_rate
+
+    def chunks(self, text: str, cancel: threading.Event):
+        key = (str(self.path), self.voice_id, self.settings.models.tts_speed, text)
         with self.lock:
+            if cancel.is_set():
+                return
             if key in self.cache:
                 self.cache.move_to_end(key)
                 for audio, sr in self.cache[key]:
@@ -177,16 +250,13 @@ class Synthesizer:
                 return
             chunks = []
             total = 0
-            for chunk in self.voice.synthesize(
-                text, SynthesisConfig(length_scale=1 / self.settings.models.tts_speed)
-            ):
+            for samples, rate in self._generate(text, cancel):
                 if cancel.is_set():
                     return
-                samples = chunk.audio_float_array.copy()
                 total += samples.nbytes
                 if total <= 2 * 1024 * 1024:
-                    chunks.append((samples, chunk.sample_rate))
-                yield samples, chunk.sample_rate
+                    chunks.append((samples, rate))
+                yield samples, rate
             if total <= 2 * 1024 * 1024:
                 self.cache[key] = chunks
                 self.cache_bytes += total
