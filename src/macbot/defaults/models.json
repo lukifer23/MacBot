@@ -347,5 +347,25 @@
       }
     ],
     "license_url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/blob/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/README.md"
+  },
+  "qwen3-1.7b": {
+    "repo": "unsloth/Qwen3-1.7B-GGUF",
+    "revision": "d7f544eead698dbd1f15126ef60b45a1e1933222",
+    "source_model": "Qwen/Qwen3-1.7B",
+    "license": "apache-2.0",
+    "files": [
+      {
+        "name": "Qwen3-1.7B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf",
+        "size": 1107409472,
+        "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897"
+      },
+      {
+        "name": "README.md",
+        "url": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/README.md",
+        "size": 17080,
+        "sha256": "bd3c097093e5292cbaa76dbb7f8ecde3ce4dc3354f9daa160e5515a580ad587d"
+      }
+    ]
   }
 }

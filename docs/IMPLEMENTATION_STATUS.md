@@ -13,11 +13,13 @@ This is an owner-requested remote backup of work in progress, **not an accepted 
 
 Checkpoint checks: **67 software/model tests passed in 28.67 seconds**; one physical-device test was explicitly deselected. Ruff, mypy (21 source files), JavaScript syntax and Git whitespace checks passed. The current-tree secret scan reviewed 60 findings, all public provenance hashes or a negative URL-credential test; no live credential was found. The dependency audit has four Chroma advisories with scoped mitigations, documented separately; it is not a clean vulnerability scan.
 
+The context/cancellation follow-up passed **83 software/model tests in 34.38 seconds**, including 20 repeated real-generation interruptions and a token-overflow history test. One device test remains deselected. Ruff, mypy and JavaScript syntax checks passed. Cancellation now shuts down the stream socket to wake the reader and leaves response cleanup to that reader, avoiding a cross-thread close race observed during testing.
+
 ## Still open
 
-- Context-budget visibility and long-conversation behavior. Current history pruning is not semantic compaction.
+- Extended long-conversation behavior and semantic compaction. The follow-up context patch exposes the real token budget and preserves complete tool exchanges while pruning old turns; it does not implement semantic compaction.
 - Broader model/tool-selection accuracy. Initial 20-case results did not generalize fully to the additional 30-case screening. Small/faster models are candidates, not proven replacements.
-- Final end-to-end offline wheel validation after the latest edits and hosted CI on the pushed commit.
+- Final end-to-end offline wheel validation after the latest edits. Hosted software CI passed for checkpoint `742e3ef` ([run 33204304226](https://github.com/lukifer23/MacBot/actions/runs/33204304226)); this excludes model inference and physical-device acceptance.
 - Built-in microphone/speaker behavior, browser recording, acoustic latency/interruption measurements, a 30-minute conversation soak and user listening acceptance.
 - Final model/voice selection, remaining runtime recovery checks and complete release evidence.
 

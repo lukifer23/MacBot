@@ -22,7 +22,10 @@ SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
     "system_info": ("Read CPU, memory and disk usage on this Mac", {}),
     "rag_search": ("Search documents in the local knowledge base", {"query": "string"}),
     "open_app": ("Open an allowed application, after user confirmation", {"app": "string"}),
-    "web_search": ("Open a web search in Safari, after user confirmation", {"query": "string"}),
+    "web_search": (
+        "Search the external web only when the user asks for an internet search or current information. Never use for ordinary factual questions, local documents, or weather (use weather). Requires user confirmation.",
+        {"query": "string"},
+    ),
     "browse_website": (
         "Open a public HTTP(S) website in Safari, after user confirmation",
         {"url": "string"},

@@ -1,5 +1,6 @@
 """Actual llama inference and RAG services exercising the shared turn runtime."""
 
+import json
 import socket
 import time
 
@@ -76,8 +77,43 @@ def test_real_generation_and_clear_no_deadlock(engine):
     )
     events = until(engine, turn, lambda e: e["state"] in {"completed", "failed"})
     assert events[-1]["state"] == "completed"
+
     assert "4" in "".join(e["data"]["text"] for e in events if e["kind"] == "delta")
     assert len(engine.history) == 2
+    engine.clear()
+    assert not engine.history
+
+
+def test_context_prunes_whole_turns_and_preserves_recent_fact(engine):
+    engine.clear()
+    for i in range(8):
+        engine.history.extend(
+            [
+                {
+                    "role": "user",
+                    "content": f"Earlier note {i}. " + "A long historical description. " * 180,
+                },
+                {"role": "assistant", "content": "Noted."},
+            ]
+        )
+    engine.history.extend(
+        [
+            {
+                "role": "user",
+                "content": "My verification word is cobalt. Remember it for my next question.",
+            },
+            {"role": "assistant", "content": "Your verification word is cobalt."},
+        ]
+    )
+    turn = engine.submit("What is my verification word? Answer only that word.", speak=False)
+    events = until(engine, turn, lambda e: e["state"] in {"completed", "failed"})
+    assert events[-1]["state"] == "completed"
+    assert "cobalt" in "".join(e["data"]["text"] for e in events if e["kind"] == "delta").lower()
+    context = engine.status()["context"]
+    assert context["pruned_turns"] > 0
+    assert context["prompt_tokens"] + context["reserved_output_tokens"] <= context["limit"]
+    assert engine.history[0]["role"] == "user"
+    assert engine.history[-1]["role"] == "assistant"
     engine.clear()
     assert not engine.history
 
@@ -100,8 +136,17 @@ def test_real_tool_proposal_requires_bound_dashboard_decision(engine):
     events = until(engine, turn, lambda e: e["state"] in {"completed", "failed"})
     assert events[-1]["state"] == "completed"
 
+    # The next request must retain the actual denied result in the tool role,
+    # not just the assistant's paraphrase or an elevated system instruction.
+    results = [m for m in engine.history if m["role"] == "tool"]
+    assert len(results) == 1
+    assert json.loads(results[0]["content"])["status"] == "denied"
+    calls = [c for m in engine.history for c in m.get("tool_calls", [])]
+    assert results[0]["tool_call_id"] == calls[0]["id"]
+    assert not any(m["role"] == "system" for m in engine.history)
 
-@pytest.mark.parametrize("attempt", range(5))
+
+@pytest.mark.parametrize("attempt", range(20))
 def test_interruption_discards_late_output_before_next_turn(engine, attempt):
     engine.clear()
     turn = engine.submit("Explain photosynthesis in detailed numbered steps.", speak=False)

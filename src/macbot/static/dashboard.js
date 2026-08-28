@@ -79,6 +79,7 @@ function events(data) {
     if (e.kind === 'listening') setListening(e.data.enabled);
     if (['generating', 'transcribing', 'speaking', 'tool'].includes(e.kind)) setPhase(e.kind, e.state);
     if (e.state === 'accepted') setPhase('queued', 'accepted');
+    if (e.kind === 'context') {showContext(e.data); if (e.data.pruned_turns) message(e.turn_id + '-context-' + e.seq, 'Context', e.data.pruned_turns + ' earlier turns were removed from model context to fit the token budget. The visible transcript is unchanged.');}
     if (e.kind === 'approval') {approval(e); setPhase('approval');}
     if (e.kind === 'tool_result') {
       removeApproval(e.turn_id);
@@ -131,9 +132,13 @@ function showMetric(m) {
   $('metric-ttft').textContent = ms(m?.ttft_ms); $('metric-audio').textContent = ms(m?.first_audio_scheduled_ms);
   definitionList('metrics', [['Transcription', ms(m?.stt_ms)], ['First response text', ms(m?.ttft_ms)], ['TTS first chunk', ms(m?.tts_first_chunk_ms)], ['Turn duration', ms(m?.total_ms)]]);
 }
+function showContext(c = {}) {
+  definitionList('context-metrics', [['Prompt tokens', Number.isFinite(c.prompt_tokens) ? c.prompt_tokens.toLocaleString() : '—'], ['Reserved for reply', Number.isFinite(c.reserved_output_tokens) ? c.reserved_output_tokens.toLocaleString() : '—'], ['Context limit', Number.isFinite(c.limit) ? c.limit.toLocaleString() : '—'], ['Pruned turns in last request', String(c.pruned_turns || 0)]]);
+}
 function showStatus(s) {
   if (!acceptEpoch(s.epoch)) return;
   setListening(s.listening, s); if ((s.cursor ?? cursor) >= cursor) setPhase(s.phase, s.turn_state);
+  showContext(s.context);
   activeModels = s.models;
   if (activeModels) $('model-label').textContent = activeModels.llm + ' · ' + activeModels.llm_backend + ' · ' + activeModels.tts_voice + ' voice';
   const metrics = s.metrics || []; const latest = metrics.at(-1); showMetric(latest);

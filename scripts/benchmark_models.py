@@ -247,7 +247,9 @@ def run(name, backend, destination, case_set="core"):
                 "artifacts": catalog()[name],
                 "runtime_versions": {
                     package: importlib.metadata.version(package)
-                    for package in ("macbot", "httpx", "mlx-lm")
+                    for package in (
+                        ("macbot", "httpx", "mlx-lm") if backend == "mlx" else ("macbot", "httpx")
+                    )
                 },
                 "binary_sha256": sha256(root / "bin/llama-server") if backend == "llama" else None,
                 "system_prompt_sha256": hashlib.sha256(s.system_prompt.encode()).hexdigest(),

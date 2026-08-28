@@ -61,7 +61,9 @@ class Runtime:
         self.vad = SileroVAD(settings) if load_speech else None
         self.turns: queue.Queue[Turn | None] = queue.Queue(maxsize=4)
         self.speech: queue.Queue[tuple[Turn, str | None] | None] = queue.Queue(maxsize=4)
-        self.history: deque[dict] = deque(maxlen=16)
+        # Model-token budgeting bounds this complete-message history. Tool calls
+        # and their results stay together; a message-count deque could orphan them.
+        self.history: list[dict] = []
         self.metrics: deque[dict] = deque(maxlen=256)
         self.lock = threading.RLock()
         self.audio_owner = threading.RLock()
@@ -265,6 +267,7 @@ class Runtime:
         with self.lock:
             self.interrupt()
             self.history.clear()
+            self.llm.context_stats = {}
             self.events.publish("local", "", "completed", "cleared")
 
     def _queue_speech(self, turn: Turn, text: str | None):
@@ -379,7 +382,6 @@ class Runtime:
             *list(self.history),
             {"role": "user", "content": turn.text},
         ]
-        full = ""
         first_token_ns = None
         for _round in range(4):
             self._emit(turn, "running", "generating")
@@ -389,6 +391,8 @@ class Runtime:
             for delta in self.llm.stream(messages, self.tools.definitions(), turn.cancelled):
                 if turn.cancelled.is_set():
                     return
+                if "_context" in delta:
+                    self._emit(turn, "running", "context", **delta["_context"])
                 for fragment in delta.get("tool_calls", []):
                     index = fragment.get("index", 0)
                     if not isinstance(index, int) or not 0 <= index < 4:
@@ -407,7 +411,6 @@ class Runtime:
                 if content:
                     if first_token_ns is None:
                         first_token_ns = time.monotonic_ns()
-                    full += content
                     round_text += content
                     buffer += content
                     self._emit(turn, "running", "delta", text=content)
@@ -421,6 +424,7 @@ class Runtime:
             if not calls:
                 if not round_text.strip():
                     raise RuntimeError("Model returned an empty response")
+                messages.append({"role": "assistant", "content": round_text})
                 break
             complete_calls = list(calls.values())
             messages.append(
@@ -486,9 +490,9 @@ class Runtime:
         if turn.cancelled.is_set():
             return
         with self.lock:
-            self.history.extend(
-                [{"role": "user", "content": turn.text}, {"role": "assistant", "content": full}]
-            )
+            if turn.cancelled.is_set():
+                return
+            self.history = messages[1:]
             turn.terminal = True
         metric = {
             "turn_id": turn.id,
@@ -605,6 +609,7 @@ class Runtime:
                 "epoch": self.events.epoch,
                 "cursor": self.events.seq,
                 "metrics": list(self.metrics),
+                "context": dict(self.llm.context_stats),
             }
 
     def close(self):

@@ -22,6 +22,7 @@ class LocalLLM:
         self.client = httpx.Client(timeout=httpx.Timeout(30, connect=3), trust_env=False)
         self.response: httpx.Response | None = None
         self.lock = threading.Lock()
+        self.context_stats: dict = {}
         self.model = self.tokenizer = None
         if settings.models.llm_backend == "mlx":
             os.environ["HF_HUB_OFFLINE"] = "1"
@@ -47,7 +48,10 @@ class LocalLLM:
         if definitions:
             body["tools"] = definitions
             body["tool_choice"] = "auto"
-        body["messages"] = list(messages)
+        # Keep canonical history in sync with pruning so the runtime does not
+        # repeatedly resend evicted turns or drop half a tool exchange.
+        body["messages"] = messages
+        pruned = 0
         while not cancel.is_set():
             formatted = self.client.post(
                 self.settings.models.llm_url + "/apply-template",
@@ -61,12 +65,14 @@ class LocalLLM:
                 headers=self.auth.headers("llm"),
             )
             tokens.raise_for_status()
-            if (
-                len(tokens.json()["tokens"]) + self.settings.models.max_tokens
-                <= self.settings.models.context_length
-            ):
+            token_count = len(tokens.json()["tokens"])
+            if token_count + self.settings.models.max_tokens <= self.settings.models.context_length:
                 break
             self._drop_oldest_turn(body["messages"])
+            pruned += 1
+        if cancel.is_set():
+            return
+        yield self._context_event(token_count, pruned)
         if cancel.is_set():
             return
         try:
@@ -134,12 +140,15 @@ class LocalLLM:
             add_generation_prompt=True,
             enable_thinking=False,
         )
+        pruned = 0
         while (
             len(self.tokenizer.encode(prompt, add_special_tokens=False))
             + self.settings.models.max_tokens
             > self.settings.models.context_length
         ):
             self._drop_oldest_turn(formatted)
+            self._drop_oldest_turn(messages)
+            pruned += 1
             prompt = self.tokenizer.apply_chat_template(
                 formatted,
                 tools=([d["function"] for d in definitions] if liquid else definitions) or None,
@@ -147,6 +156,11 @@ class LocalLLM:
                 add_generation_prompt=True,
                 enable_thinking=False,
             )
+        yield self._context_event(
+            len(self.tokenizer.encode(prompt, add_special_tokens=False)), pruned
+        )
+        if cancel.is_set():
+            return
         buffer = ""
         tool_mode = False
         first = True
@@ -187,12 +201,23 @@ class LocalLLM:
             raise ValueError("Current turn and tool results exceed the configured context window")
         del messages[users[0] : users[1]]
 
+    def _context_event(self, tokens: int, pruned: int) -> dict:
+        self.context_stats = {
+            "prompt_tokens": tokens,
+            "reserved_output_tokens": self.settings.models.max_tokens,
+            "limit": self.settings.models.context_length,
+            "pruned_turns": pruned,
+            "policy": "whole_turn_pruning",
+        }
+        return {"_context": self.context_stats}
+
     def cancel(self):
         with self.lock:
             response = self.response
         if response is not None:
-            # close() alone does not wake a blocked read in another thread on
-            # macOS. Shut down this response's owned socket before closing it.
+            # Wake the reader, but let its context manager close the response.
+            # Closing the descriptor here races the reader's select/recv on
+            # macOS and can leave it asleep until the 30-second read timeout.
             stream = response.extensions.get("network_stream")
             sock = stream.get_extra_info("socket") if stream is not None else None
             if sock is not None:
@@ -200,7 +225,6 @@ class LocalLLM:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-            response.close()
 
     def close(self):
         self.cancel()
