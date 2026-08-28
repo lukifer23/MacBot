@@ -48,6 +48,8 @@ The script verifies that imports come from the installed environment and that th
 
 ## Device and listening acceptance
 
+Focused check on 2026-08-28: the previous helper reproduced Core Audio `-10875` on this Mac because its input/output client sample rates differed. After explicitly matching those rates, both device regression cases passed (direct capture start and muted start followed by capture), including real captured frames, Piper playback scheduling and cancellation acknowledgment. Start hands-free was also exercised successfully in Chrome with voice processing enabled, then capture was stopped. The separate software suite passed 84 tests. These checks do not measure acoustic latency, validate transcription of spontaneous speech, establish feedback suppression or replace the soak/listening gates below.
+
 On this M3 Pro with built-in microphone and speakers, use real recorded conversational prompts and overlap user speech with assistant playback. Check microphone ownership, echo suppression, no assistant-triggered turns, ordered playback, final STT tail flushing, Stop/Mute, reconnect, interruption recovery and degraded services.
 
 Required acceptance: warm p95 speech-end to first audible response <=1.5 s; p95 interruption to playback stop <=250 ms; >=95% correct task/tool selection; zero unapproved actions; <=8 GB aggregate process RSS during the standard workload. Within 5% of latency, prefer lower memory.

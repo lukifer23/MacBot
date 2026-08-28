@@ -59,6 +59,17 @@ final class Bridge {
         converter = AVAudioConverter(from: format, to: mono)
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: mono)
+        // VoiceProcessingIO requires matching client input/output sample rates.
+        // Its output can otherwise retain the engine's 44.1 kHz default even
+        // when the microphone runs at 48 kHz, making AU initialization fail.
+        // The mixer converts our 16 kHz playback stream to the device rate.
+        let outputChannels = engine.outputNode.inputFormat(forBus: 0).channelCount
+        guard outputChannels > 0,
+              let outputFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
+                                               channels: outputChannels) else {
+            throw NSError(domain: "MacBot", code: 3, userInfo: [NSLocalizedDescriptionKey: "No speaker output format"])
+        }
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)
         engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self = self, self.captureLock.try() else { return }
             defer { self.captureLock.unlock() }
@@ -81,7 +92,9 @@ final class Bridge {
         t.schedule(deadline: .now(), repeating: .milliseconds(10))
         t.setEventHandler { [weak self] in self?.drainCapture() }
         t.resume(); timer = t
-        event("ready", ["aec": engine.inputNode.isVoiceProcessingEnabled, "sample_rate": 16000])
+        event("ready", ["aec": engine.inputNode.isVoiceProcessingEnabled, "sample_rate": 16000,
+                        "input_sample_rate": format.sampleRate,
+                        "output_sample_rate": engine.outputNode.inputFormat(forBus: 0).sampleRate])
     }
     func setCapture(_ enabled: Bool) {
         captureLock.lock(); capturing = enabled; captured.removeAll(); captureLock.unlock()

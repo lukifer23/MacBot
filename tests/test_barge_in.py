@@ -18,7 +18,8 @@ from macbot.speech import Synthesizer
 pytestmark = pytest.mark.device
 
 
-def test_shared_engine_capture_playback_and_cancel_acknowledgement():
+@pytest.mark.parametrize("start_muted", [False, True])
+def test_shared_engine_capture_playback_and_cancel_acknowledgement(start_muted):
     assert os.environ.get("MACBOT_DEVICE_TEST") == "1", (
         "Device gate unrun: operator must explicitly authorize microphone and speaker test with MACBOT_DEVICE_TEST=1"
     )
@@ -40,8 +41,14 @@ def test_shared_engine_capture_playback_and_cancel_acknowledgement():
 
     thread = None
     try:
-        audio.launch(capture=True)
+        audio.launch(capture=not start_muted)
         assert audio.ready and audio.aec
+        ready = next(e for e in events if e["event"] == "ready")
+        assert ready["input_sample_rate"] > 0
+        assert ready["input_sample_rate"] == ready["output_sample_rate"]
+        assert ready["sample_rate"] == 16000
+        if start_muted:
+            audio.launch(capture=True)
         thread = threading.Thread(target=playback)
         thread.start()
         deadline = time.monotonic() + 10
