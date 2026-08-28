@@ -18,7 +18,7 @@ Version 2 settings include:
 | `services` | Dashboard 3000, assistant 8123, RAG 8001, supervisor 8090. Loopback only, distinct ports. |
 | `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), voice (`amy`), TTS speed. |
 | `audio` | Endpoint silence 350 ms, pre-roll 256 ms, speech start 96 ms, maximum utterance 30 seconds, idle capture timeout 300 seconds, VAD threshold 0.5. |
-| `tools` | Enabled tool names, allowed applications, screenshot directory, approval lifetime (60 seconds). |
+| `tools` | Enabled tool names, allowed applications, screenshot directory, approval lifetime (60 seconds), and `auto_run_requested` (default `false`). Set `true` to execute supported explicit requests without confirmation; restart the assistant to apply. |
 
 Existing Qwen3-4B remains the default until full candidate acceptance. Change `models.llm` explicitly to compare `lfm-1.2b` or `qwen3.5-2b`. MLX names have `-mlx` suffix and require `llm_backend: mlx` and the `mlx` extra. Selecting a missing backend/model fails; no substitution or runtime downloads occur.
 
@@ -41,3 +41,7 @@ Mute uses AVAudioEngine's voice-processing input mute. The audio device may rema
 Piper voices `amy` and `lessac` remain available. To try Kokoro locally, run `macbot models download kokoro` and `macbot models verify kokoro`, then select `kokoro-heart` or `kokoro-michael` in Settings. The two voices share one resident 82M model. Start at speed `1.0`; no voice-quality claim replaces listening acceptance. Missing models fail explicitly. Uninstalled voices are disabled in the dashboard selector.
 
 After updating from the earlier audio helper, run `macbot build-audio` and restart MacBot. Native IPC protocol 2 uses 16 kHz capture and 48 kHz playback so the voice is no longer downsampled to the STT input rate. The Python bridge rejects an outdated helper with a rebuild instruction. Roll back code, wheel and helper together; voice rollback is selecting a provisioned Piper voice and restarting the assistant.
+
+## Request routing
+
+Direct requests such as “Open Calculator”, “Search the web for sourdough recipes”, “Take a screenshot”, and “What time is it?” select only their relevant tool. Tool output and prior turns cannot select tools for the current turn. Ambiguous follow-ups such as “do that again” require an explicit restatement; compound or unrecognized requests may need to be split. Unsupported file operations remain unavailable. Add `local_time` to `tools.enabled` in an older configuration to enable local clock answers; no network is needed.

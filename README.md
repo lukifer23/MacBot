@@ -1,6 +1,6 @@
 # MacBot
 
-A local macOS voice assistant with a Flask/Socket.IO dashboard, explicit tool approvals, and offline model inference.
+A local macOS voice assistant with a Flask/Socket.IO dashboard, request-scoped tool execution, and offline model inference.
 
 **Modernization in progress. Not yet a verified hands-free release.** Native audio, model selection, migration, and packaging must pass the [release gates](docs/VERIFICATION.md) before deployment. Local service startup is not microphone, listening, or latency acceptance.
 
@@ -34,7 +34,11 @@ uv run --frozen macbot stop
 
 ## Architecture
 
-The assistant service owns turn history, generation, tool policy, cancellation, and one ordered speech stream. Dashboard HTTP routes and authenticated Socket.IO events are adapters to that runtime. Read-only system/document tools run automatically; every desktop or external-search action requires a single-use dashboard confirmation bound to its exact arguments, session, turn, and expiration. Spoken or model-generated text cannot approve an action.
+The assistant service owns turn history, generation, tool policy, cancellation, and one ordered speech stream. The dashboard consumes a single authenticated HTTP long-poll journal, so blocked WebSockets cannot hide the transcript. Socket.IO remains available for API clients. The latest recognized speech also stays visible above the conversation.
+
+Only tools matching the current explicit request are offered; greetings and general questions do not authorize desktop actions. Set `tools.auto_run_requested: true` for hands-free execution of requested app/URL opening, web/weather searches and screenshots. Each action runs at most once per turn, and its actual result returns to the model for the reply. With the default `false`, side effects retain single-use dashboard confirmations. Local time, system status and document lookups run automatically. Arbitrary file creation, deletion and shell execution are not supported. See [security](docs/SECURITY.md) for limits.
+
+Web/weather searches currently open browser results; they do **not** fetch page contents. MacBot must report that limitation rather than invent retrieved answers.
 
 The native Swift helper routes capture and playback through one AVAudioEngine with voice processing. Resident Silero ONNX performs endpointing. STT is explicitly selected between Parakeet MLX and the private persistent whisper.cpp worker. Piper and Kokoro are explicit local voice choices. Phrase streaming preserves word boundaries, and 48 kHz native playback preserves the voice bandwidth separately from 16 kHz STT capture. RAG uses CPU MiniLM ONNX for both ingestion and queries; SQLite owns source documents and Chroma holds a replaceable index.
 

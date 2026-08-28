@@ -145,6 +145,66 @@ def test_real_tool_proposal_requires_bound_dashboard_decision(engine):
     assert results[0]["tool_call_id"] == calls[0]["id"]
     assert not any(m["role"] == "system" for m in engine.history)
 
+    # An actual prior action/result must not authorize the next ordinary turn.
+    for text in ["Hello, how are you?", "What else can you do for me?", "Well,"]:
+        turn = engine.submit(text, speak=False)
+        events = until(
+            engine, turn, lambda e: e["state"] in {"completed", "failed", "approval_required"}
+        )
+        assert events[-1]["state"] == "completed", events
+        assert not any(e["kind"] in {"approval", "tool", "tool_result"} for e in events)
+        assert any(e["kind"] == "delta" and e["data"]["text"].strip() for e in events)
+
+
+def test_real_local_time_uses_tool_result_without_external_search(engine):
+    engine.clear()
+    turn = engine.submit("What time is now?", speak=False)
+    events = until(
+        engine, turn, lambda e: e["state"] in {"completed", "failed", "approval_required"}
+    )
+    assert events[-1]["state"] == "completed", events
+    results = [e["data"] for e in events if e["kind"] == "tool_result"]
+    assert len(results) == 1 and results[0]["tool"] == "local_time"
+    assert results[0]["result"]["source"] == "mac_clock"
+    assert any(e["kind"] == "delta" for e in events)
+
+
+@pytest.mark.device
+def test_requested_app_executes_once_and_returns_actual_result(engine):
+    """Operator-visible test: launches Calculator, never a substitute command."""
+    import psutil
+
+    engine.clear()
+    engine.settings.tools.auto_run_requested = True
+    try:
+        turn = engine.submit("Open Calculator.", speak=False)
+        events = until(
+            engine, turn, lambda e: e["state"] in {"completed", "failed", "approval_required"}
+        )
+        assert events[-1]["state"] == "completed", events
+        results = [e["data"] for e in events if e["kind"] == "tool_result"]
+        assert len(results) == 1
+        assert results[0] == {
+            "tool": "open_app",
+            "result": {"status": "completed", "app": "Calculator"},
+        }
+        assert any(p.info["name"] == "Calculator" for p in psutil.process_iter(["name"]))
+        assert any(e["kind"] == "delta" for e in events)
+        assert not any(e["kind"] == "approval" for e in events)
+        assert not engine.tools.pending
+        assert any(m["role"] == "tool" and '"completed"' in m["content"] for m in engine.history)
+        result_seq = next(e["seq"] for e in events if e["kind"] == "tool_result")
+        assert any(e["kind"] == "delta" and e["seq"] > result_seq for e in events)
+        # The completed real action must not leak authority into small talk.
+        turn = engine.submit("Hello, how are you?", speak=False)
+        events = until(
+            engine, turn, lambda e: e["state"] in {"completed", "failed", "approval_required"}
+        )
+        assert events[-1]["state"] == "completed", events
+        assert not any(e["kind"] in {"approval", "tool", "tool_result"} for e in events)
+    finally:
+        engine.settings.tools.auto_run_requested = False
+
 
 @pytest.mark.parametrize("attempt", range(20))
 def test_interruption_discards_late_output_before_next_turn(engine, attempt):

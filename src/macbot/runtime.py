@@ -19,7 +19,7 @@ from .events import EventJournal
 from .llm import LocalLLM
 from .native_audio import NativeAudio
 from .speech import SileroVAD, Synthesizer, Transcriber, split_speech
-from .tools import READ_ONLY, Tools
+from .tools import AUTO_REQUESTED, READ_ONLY, Tools
 from .validation import validate_chat_message
 
 
@@ -385,25 +385,44 @@ class Runtime:
             self._emit(turn, "completed", "no_speech")
             turn.terminal = True
             return
+        self._emit(turn, "running", "user", text=turn.text)
         if turn.text.strip().lower().rstrip(".!?") in {"confirm action", "cancel action"}:
             self._emit(
                 turn, "completed", "text", text="Actions must be confirmed in the dashboard."
             )
             turn.terminal = True
             return
-        self._emit(turn, "running", "user", text=turn.text)
+        instruction = (
+            " Only the current user request can request a tool. Greetings, general questions, "
+            "and questions about your capabilities need a conversational answer, not an action. "
+            "Never repeat a previous action unless the current user explicitly asks for it. "
+            "If no tool is available for an action, ask the user to state the action and target "
+            "explicitly. Never emit tool syntax as ordinary text or claim an action happened. "
+            "Never guess live facts such as the current time or weather when the relevant "
+            "tool is unavailable. Say what you cannot check. "
+            "Supported capabilities: chat, the local clock, Mac usage, local document search, opening allowed "
+            "apps and website URLs, web/weather searches, and explicitly requested screenshots."
+        )
+        if self.settings.tools.auto_run_requested:
+            instruction += (
+                " Available actions are already authorized by the explicit request. Do not ask "
+                "for confirmation; use the tool once, then report its actual result."
+            )
         messages = [
-            {"role": "system", "content": self.settings.system_prompt},
+            {"role": "system", "content": self.settings.system_prompt + instruction},
             *list(self.history),
             {"role": "user", "content": turn.text},
         ]
         first_token_ns = None
+        used_tools: set[str] = set()
         for _round in range(4):
             self._emit(turn, "running", "generating")
             calls: dict[int, dict] = {}
             buffer = ""
             round_text = ""
-            for delta in self.llm.stream(messages, self.tools.definitions(), turn.cancelled):
+            for delta in self.llm.stream(
+                messages, self.tools.definitions(turn.text, used_tools), turn.cancelled
+            ):
                 if turn.cancelled.is_set():
                     return
                 if "_context" in delta:
@@ -452,10 +471,29 @@ class Runtime:
                     return
                 name = call["function"]["name"]
                 args = json.loads(call["function"]["arguments"])
-                self.tools.validate(name, args)
-                if name in READ_ONLY:
+                result: dict | None
+                try:
+                    self.tools.validate_request(turn.text, name, args)
+                    if name in used_tools:
+                        raise PermissionError("Action already attempted for this request")
+                except (PermissionError, ValueError) as exc:
+                    result = {"status": "denied", "reason": str(exc)}
+                else:
+                    result = None
+                used_tools.add(name)
+                if result is not None:
+                    pass
+                elif name in READ_ONLY:
                     self._emit(turn, "running", "tool", tool=name)
                     result = self.tools.read(name, args)
+                elif self.settings.tools.auto_run_requested and name in AUTO_REQUESTED:
+                    self._emit(turn, "running", "tool", tool=name, authorization="explicit_request")
+                    if turn.cancelled.is_set():
+                        return
+                    try:
+                        result = self.tools._execute(name, args)
+                    except Exception as exc:
+                        result = {"status": "failed", "tool": name, "error": str(exc)}
                 else:
                     with self.lock:
                         if turn.cancelled.is_set():
@@ -657,6 +695,7 @@ class Runtime:
                 "errors": self.error_count,
                 "last_error": self.last_error,
                 "models": self.settings.models.model_dump(),
+                "auto_run_requested": self.settings.tools.auto_run_requested,
                 "browser_recording": bool(
                     self.browser_capture and self.browser_capture[1] > time.monotonic()
                 ),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -57,7 +58,8 @@ class AuthStore:
         return token
 
     def exchange(self, token: str) -> tuple[str, str] | None:
-        session_token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        session_token = secrets.token_urlsafe(32)
+        csrf = self._session_csrf(session_token)
         with self.lock, self.db:
             row = self.db.execute(
                 "DELETE FROM login WHERE token=? AND expires>? RETURNING token",
@@ -71,6 +73,18 @@ class AuthStore:
             )
         return session_token, csrf
 
+    def _session_csrf(self, token: str) -> str:
+        # Recoverable from an authenticated HttpOnly cookie, without storing
+        # plaintext credentials or rotating tokens out from under another tab.
+        return hmac.new(
+            self.keys["dashboard"].encode(),
+            b"macbot-browser-csrf-v1\0" + token.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def resume(self, token: str) -> str | None:
+        return self._session_csrf(token) if self.session(token) else None
+
     def session(self, token: str, csrf: str | None = None) -> bool:
         if not token:
             return False
@@ -78,7 +92,14 @@ class AuthStore:
             row = self.db.execute(
                 "SELECT csrf FROM session WHERE token=? AND expires>?", (digest(token), time.time())
             ).fetchone()
-        return bool(row and (csrf is None or secrets.compare_digest(row[0], digest(csrf))))
+        return bool(
+            row
+            and (
+                csrf is None
+                or secrets.compare_digest(row[0], digest(csrf))
+                or secrets.compare_digest(digest(self._session_csrf(token)), digest(csrf))
+            )
+        )
 
     def revoke(self, token: str) -> None:
         with self.lock, self.db:

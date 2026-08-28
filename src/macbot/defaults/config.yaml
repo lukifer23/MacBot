@@ -32,7 +32,9 @@ audio:
   speech_start_ms: 96
   idle_timeout_sec: 300
 tools:
+  auto_run_requested: false
   enabled:
+  - local_time
   - system_info
   - rag_search
   - open_app

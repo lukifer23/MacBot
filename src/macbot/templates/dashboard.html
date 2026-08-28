@@ -22,12 +22,13 @@
       <div class="voice-status"><span id="voice-indicator" class="voice-indicator" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1M12 18v3M9 21h6"/></svg></span><div><h2 id="audio-state">Microphone is off</h2><p id="audio-detail">Start when you're ready. Text chat is always available.</p></div></div>
       <div class="input-feedback" aria-label="Microphone signal"><div class="input-meter"><meter id="input-level" min="0" max="100" value="0" aria-label="Microphone input level"></meter></div><span id="input-label">Input off</span></div><div class="voice-actions"><button id="listen">Start hands-free</button><button id="mute" class="secondary" disabled>Mute</button><button id="ptt" class="secondary">Record browser voice</button></div>
     </section>
-    <p class="release-note">Preview · Voice quality and hands-free behavior are being verified on this Mac.</p>
+    <p class="release-note">Preview · Voice quality and hands-free behavior are being verified on this Mac. <span id="action-policy"></span></p>
+    <p id="last-heard" class="last-heard" role="status" hidden></p>
     <div class="workspace">
       <section class="conversation panel" aria-label="Conversation">
         <div class="panel-heading"><div><h2>Let’s talk</h2><p id="model-label">Loading local model…</p></div><span id="turn-state" class="status-pill" role="status">Ready</span></div>
         <div id="history" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions">
-          <div id="empty-state" class="empty-state"><div class="empty-mark" aria-hidden="true">m</div><h3>What can I help with?</h3><p>Ask a question, find something in your documents,<br>or ask me to help on your Mac.</p><div class="suggestions"><button type="button" class="suggestion" data-prompt="What can you help me do on this Mac?">What can you do?</button><button type="button" class="suggestion" data-prompt="Show current CPU, memory and disk usage.">Check my Mac</button><button type="button" class="suggestion" data-prompt="Search my local documents for an installation guide.">Find a document</button></div><small>Desktop actions and external searches always ask first.</small></div>
+          <div id="empty-state" class="empty-state"><div class="empty-mark" aria-hidden="true">m</div><h3>What can I help with?</h3><p>Ask a question, find something in your documents,<br>or ask me to help on your Mac.</p><div class="suggestions"><button type="button" class="suggestion" data-prompt="What can you help me do on this Mac?">What can you do?</button><button type="button" class="suggestion" data-prompt="Show current CPU, memory and disk usage.">Check my Mac</button><button type="button" class="suggestion" data-prompt="Search my local documents for an installation guide.">Find a document</button></div><small>Ask for the action and target explicitly.</small></div>
         </div>
         <form id="chat-form" class="composer"><label class="sr-only" for="message">Message</label><textarea id="message" rows="2" maxlength="10000" required placeholder="Ask MacBot anything…"></textarea><div class="composer-actions"><label class="checkbox-label"><input id="speak" type="checkbox" checked> Speak replies</label><div><button id="clear" type="button" class="quiet">Clear</button><button id="interrupt" type="button" class="secondary" disabled>Stop response</button><button id="send">Send <span aria-hidden="true">↑</span></button></div></div><span class="composer-hint">Enter to send · Shift + Enter for a new line</span></form>
       </section>
@@ -54,13 +55,13 @@
         </section>
         <section id="panel-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
           <h2>Your voice assistant</h2><p class="caption">Choose the voice you want to hear. Changes apply after restarting the assistant.</p><form id="settings"><label for="voice">Voice</label><select id="voice"></select><div class="settings-grid"><div><label for="speed">Speech speed</label><input id="speed" type="number" min="0.5" max="2" step="0.1"></div><div><label for="tokens">Response tokens</label><input id="tokens" type="number" min="1" max="4096"></div></div><button id="save-settings">Save settings</button><button id="preview" type="button" class="secondary">Preview active voice</button></form><p id="settings-note" role="status" class="caption"></p><button id="apply-settings" class="secondary" hidden>Restart assistant to apply</button>
-          <div class="divided"><h3>Always in your control</h3><p class="caption">The microphone starts only when you ask. Read-only tools run automatically. Desktop changes and external searches need a fresh confirmation for the exact action.</p><p class="caption">Conversation text and recordings are not logged by default.</p></div>
+          <div class="divided"><h3>Always in your control</h3><p class="caption">The microphone starts only when you ask. Only actions requested in the current turn are available. Your active action policy appears beside the voice controls.</p><p class="caption">Conversation text and recordings are not logged by default.</p></div>
         </section>
       </aside>
     </div>
   </div>
   <div id="error-banner" class="error-banner" hidden><p id="error" role="alert"></p><button id="dismiss-error" class="quiet" aria-label="Dismiss error">Dismiss</button></div>
-  <footer><span>Local by design. Permission before action.</span><span>MacBot 2.0 · Verification in progress</span></footer>
+  <footer><span>Local by design. Your request controls the action.</span><span>MacBot 2.0 · Verification in progress</span></footer>
 </main>
-<script src="/static/socket.io.min.js"></script><script src="/static/dashboard.js"></script>
+<script src="/static/event-feed.js"></script><script src="/static/dashboard.js"></script>
 </body></html>

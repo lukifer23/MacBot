@@ -85,6 +85,7 @@ class Audio(StrictModel):
 class ToolPolicy(StrictModel):
     enabled: list[str] = Field(
         default_factory=lambda: [
+            "local_time",
             "system_info",
             "rag_search",
             "open_app",
@@ -99,6 +100,7 @@ class ToolPolicy(StrictModel):
     )
     screenshot_dir: str = "~/Desktop"
     approval_seconds: int = Field(default=60, ge=10, le=300)
+    auto_run_requested: bool = False
 
 
 class Settings(StrictModel):

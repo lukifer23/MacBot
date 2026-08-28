@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -19,6 +21,7 @@ from .auth import AuthStore
 from .config import Settings
 
 SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
+    "local_time": ("Read the current date, time and UTC offset from this Mac's local clock", {}),
     "system_info": ("Read CPU, memory and disk usage on this Mac", {}),
     "rag_search": ("Search documents in the local knowledge base", {"query": "string"}),
     "open_app": ("Open an allowed application, after user confirmation", {"app": "string"}),
@@ -33,7 +36,10 @@ SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
     "screenshot": ("Save a screenshot locally, after user confirmation", {}),
     "weather": ("Open a web weather search, after user confirmation", {"location": "string"}),
 }
-READ_ONLY = {"system_info", "rag_search"}
+READ_ONLY = {"system_info", "rag_search", "local_time"}
+# Only these implemented actions may opt into request-based execution. New tools
+# do not inherit permission to change the desktop or create files.
+AUTO_REQUESTED = {"open_app", "browse_website", "web_search", "weather", "screenshot"}
 
 
 @dataclass(frozen=True)
@@ -53,7 +59,76 @@ class Tools:
         self.lock = threading.RLock()
         self.client = httpx.Client(timeout=8, trust_env=False)
 
-    def definitions(self) -> list[dict]:
+    def requested(self, text: str) -> dict[str, dict[str, str]]:
+        """Conservative request routing, never inferred from history/tool output.
+
+        Values bind desktop targets verbatim. Empty constraints permit generated
+        search queries, but only after an explicit search request. This is not an
+        unrestricted language classifier: ambiguous phrasing gets clarification.
+        """
+        text = text.strip().replace("’", "'")
+        if re.search(r"\b(?:don't|do not|never|without|instead of|not now)\b", text, re.I):
+            return {}
+        command = re.sub(
+            r"^(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+))+", "", text, flags=re.I
+        )
+        selected: dict[str, dict[str, str]] = {}
+        if re.fullmatch(
+            r"(?:what(?:'s| is) (?:the )?(?:current |local )?(?:time|date)|what (?:time|day) is (?:it|now)|tell me (?:the )?(?:time|date))(?:\s+(?:now|today|here|on my mac))?[.!?]*",
+            command,
+            re.I,
+        ):
+            selected["local_time"] = {}
+        opening = re.match(
+            r"^(?:open|launch|start|bring up|visit)\s+(?:the\s+)?(.+)", command, re.I
+        )
+        if opening:
+            target = opening[1]
+            for app in self.settings.tools.allowed_apps:
+                if re.match(re.escape(app) + r"(?:\b|$)", target, re.I):
+                    selected["open_app"] = {"app": app}
+                    break
+            url = re.match(r"https?://[^\s<>\"']+", target, re.I)
+            if url:
+                selected["browse_website"] = {"url": url[0].rstrip(".,!?")}
+        if re.match(
+            r"^(?:take|capture|save)\s+(?:a\s+|an\s+)?(?:screenshot\b|image of (?:my |the )?(?:current )?(?:screen|desktop)\b)",
+            command,
+            re.I,
+        ):
+            selected["screenshot"] = {}
+        searching = re.match(r"^(?:search|find|look up|look in|check)\b", command, re.I)
+        if searching and re.search(r"\b(?:web|internet|online)\b", command, re.I):
+            selected["web_search"] = {}
+        if (
+            re.search(r"\b(?:weather|forecast)\b", command, re.I)
+            and (searching or re.match(r"^what(?:'s| is)\b", command, re.I))
+            and re.search(r"\b(?:in|for|today|tomorrow|tonight|now)\b", command, re.I)
+        ):
+            selected.pop("web_search", None)
+            selected["weather"] = {}
+        if re.search(r"\b(?:documents|knowledge base|library)\b", command, re.I) and (
+            searching or re.match(r"^(?:what|which|where|show|summarize)\b", command, re.I)
+        ):
+            selected["rag_search"] = {}
+        if (
+            re.match(r"^(?:show|check|how much|how full|what(?:'s| is))\b", command, re.I)
+            and re.search(r"\b(?:cpu|memory|disk|system status)\b", command, re.I)
+            and re.search(r"\b(?:usage|using|used|free|available|full|status)\b", command, re.I)
+        ):
+            selected["system_info"] = {}
+        return {
+            name: args for name, args in selected.items() if name in self.settings.tools.enabled
+        }
+
+    def validate_request(self, text: str, name: str, arguments: dict) -> None:
+        self.validate(name, arguments)
+        requested = self.requested(text)
+        if name not in requested or any(arguments.get(k) != v for k, v in requested[name].items()):
+            raise PermissionError("Tool action does not match the current explicit request")
+
+    def definitions(self, text: str | None = None, used: set[str] | None = None) -> list[dict]:
+        requested = self.requested(text) if text is not None else None
         definitions: list[dict[str, Any]] = [
             {
                 "type": "function",
@@ -70,13 +145,26 @@ class Tools:
             }
             for name in self.settings.tools.enabled
             if name in SCHEMAS
+            and (requested is None or name in requested)
+            and name not in (used or set())
         ]
         for definition in definitions:
             function = definition["function"]
+            if self.settings.tools.auto_run_requested and function["name"] in AUTO_REQUESTED:
+                function["description"] = (
+                    function["description"]
+                    .replace(", after user confirmation", "")
+                    .replace("Requires user confirmation.", "")
+                    .replace("after user confirmation", "when explicitly requested")
+                    + " Runs automatically for the current explicit request; do not ask again."
+                )
             if function["name"] == "open_app":
                 function["parameters"]["properties"]["app"]["enum"] = list(
                     self.settings.tools.allowed_apps
                 )
+            if requested is not None:
+                for key, value in requested[function["name"]].items():
+                    function["parameters"]["properties"][key]["enum"] = [value]
         return definitions
 
     def validate(self, name: str, arguments: Any) -> dict:
@@ -141,6 +229,9 @@ class Tools:
 
     def _execute(self, name: str, arguments: dict) -> dict:
         args = self.validate(name, arguments)
+        if name == "local_time":
+            now = datetime.now().astimezone()
+            return {"datetime": now.isoformat(), "timezone": now.tzname(), "source": "mac_clock"}
         if name == "system_info":
             return {
                 "cpu_percent": psutil.cpu_percent(),

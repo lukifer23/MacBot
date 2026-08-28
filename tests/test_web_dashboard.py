@@ -97,3 +97,124 @@ def test_document_parsers_use_real_bounded_processes():
         zipped.writestr("oversized.xml", b"x" * (33 * 1024 * 1024))
     with pytest.raises(ValueError):
         extract(archive.getvalue(), ".docx")
+
+
+def test_new_tab_can_resume_valid_cookie_but_not_cross_site(dashboard):
+    s, app = dashboard
+    url = s.services.dashboard.url
+    client = app.test_client()
+    auth = app.extensions["macbot_auth"]
+    assert client.get(url + "/auth/session").status_code == 401
+
+    token, original_csrf = auth.exchange(auth.issue_login())
+    client.set_cookie(COOKIE, token, domain="127.0.0.1")
+    for headers in (
+        {"Origin": "https://evil.invalid"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Host": "evil.invalid:3000"},
+    ):
+        assert client.get(url + "/auth/session", headers=headers).status_code == 403
+    response = client.get(url + "/auth/session")
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "Access-Control-Allow-Origin" not in response.headers
+    assert response.json["csrf"] == original_csrf
+    headers = {"X-CSRF-Token": response.json["csrf"]}
+    assert (
+        client.post(url + "/api/settings", json={"tts_speed": 1.0}, headers=headers).status_code
+        == 200
+    )
+    assert client.post(url + "/auth/logout", headers=headers).status_code == 200
+    assert client.get(url + "/auth/session").status_code == 401
+
+
+def test_browser_event_feed_replays_transcription_over_real_http(tmp_path):
+    """Execute the production JS reader against the actual authenticated journal.
+
+    No WebSocket or substitute DOM/service: a real rejected login exercises
+    retry, then existing and new speech events must arrive in sequence.
+    """
+    import json
+    import shutil
+    import subprocess
+    import threading
+    from pathlib import Path
+
+    from werkzeug.serving import make_server
+
+    from macbot.runtime import Runtime
+    from macbot.voice_assistant import create_app as assistant_app
+
+    node = shutil.which("node")
+    assert node, "Node is required to verify the dashboard event reader"
+    s = Settings(data_dir=tmp_path)
+    prepare(s)
+    engine = Runtime(s, load_speech=False)
+    # Bind first, then publish the actual port to Host validation before serving.
+    app = assistant_app(s, engine)
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    s.services.assistant.port = server.server_port
+    app = assistant_app(s, engine)
+    server.app = app
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    engine.events.publish(
+        "browser", "speech", "running", "transcription", text="Hello, how are you?"
+    )
+    engine.events.publish("browser", "speech", "running", "user", text="Hello, how are you?")
+    feed = Path(__file__).parents[1] / "src/macbot/static/event-feed.js"
+    script = """
+const {MacBotEventFeed} = require(process.argv[1]);
+const config = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+let attempts = 0, failures = 0, inflight = 0, maximum = 0, seen = [];
+const timeout = setTimeout(() => {console.error('Event replay timed out'); process.exit(1);}, 8000);
+const feed = new MacBotEventFeed(async (after, epoch, signal) => {
+  maximum = Math.max(maximum, ++inflight);
+  try {
+    const response = await fetch(config.url + '/events?after=' + after + (epoch ? '&epoch=' + epoch : ''), {
+      headers: {Authorization: attempts++ === 0 ? 'Bearer wrong' : config.authorization}, signal
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return await response.json();
+  } finally {inflight--;}
+}, batch => {
+  seen.push(...batch.events);
+  if (seen.some(e => e.state === 'completed')) {
+    feed.stop(); clearTimeout(timeout);
+    console.log(JSON.stringify({seen, failures, maximum}));
+  }
+}, () => {failures++;});
+feed.start();
+"""
+
+    def finish():
+        engine.events.publish("browser", "speech", "running", "delta", text="Hello!")
+        engine.events.publish("browser", "speech", "completed")
+
+    timer = threading.Timer(1.5, finish)
+    timer.start()
+    try:
+        result = subprocess.run(
+            [node, "-e", script, str(feed)],
+            input=json.dumps(
+                {
+                    "url": s.services.assistant.url,
+                    "authorization": engine.auth.headers("assistant")["Authorization"],
+                }
+            ),
+            text=True,
+            capture_output=True,
+            timeout=12,
+            check=True,
+        )
+        report = json.loads(result.stdout)
+        assert report["failures"] == 1
+        assert report["maximum"] == 1
+        assert [e["seq"] for e in report["seen"]] == [1, 2, 3, 4]
+        assert report["seen"][0]["data"]["text"] == "Hello, how are you?"
+    finally:
+        timer.cancel()
+        server.shutdown()
+        worker.join(timeout=2)
+        server.server_close()
+        engine.close()

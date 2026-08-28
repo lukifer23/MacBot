@@ -86,6 +86,13 @@ def create_app(settings: Settings) -> Flask:
         response.delete_cookie(COOKIE)
         return response
 
+    @app.get("/auth/session")
+    def resume_session():
+        csrf = auth.resume(request.cookies.get(COOKIE, ""))
+        if csrf is None:
+            return jsonify(error="Authentication required", code="unauthorized"), 401
+        return jsonify(csrf=csrf)
+
     @app.get("/api/status")
     def status():
         return proxy("assistant", "/info")

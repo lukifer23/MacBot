@@ -1,20 +1,21 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let csrf = sessionStorage.getItem('macbot_csrf') || '';
-let cursor = 0, epoch = '', listening = false, recorder = null, socket = null;
+let cursor = 0, epoch = '', listening = false, recorder = null, eventFeed = null;
 let connected = false, pollTimer = null, refreshing = false, sending = false;
 let activeModels = null, pendingSettings = false, audioTimer = null, captureEpoch = -1;
 const voiceNames = {'kokoro-heart': 'Heart · Kokoro', 'kokoro-michael': 'Michael · Kokoro', lessac: 'Lessac · Piper', amy: 'Amy · Piper'};
 const messages = new Map(), approvalTimers = new Map(), serviceRows = new Map();
 const labels = {assistant: 'Assistant', dashboard: 'Dashboard', llm: 'Language model', rag: 'Document search'};
-const toolLabels = {open_app: 'Open an app', screenshot: 'Take a screenshot', browse_website: 'Open a website', web_search: 'Search the web', weather: 'Check weather', system_info: 'Mac system status', rag_search: 'Search local documents'};
+const toolLabels = {local_time: 'Local time', open_app: 'Open an app', screenshot: 'Take a screenshot', browse_website: 'Open a website', web_search: 'Search the web', weather: 'Check weather', system_info: 'Mac system status', rag_search: 'Search local documents'};
 const ms = n => Number.isFinite(n) ? (n >= 1000 ? (n / 1000).toFixed(2) + ' s' : Math.round(n) + ' ms') : '—';
 const memory = n => Number.isFinite(n) ? (n / 1024 ** 3).toFixed(2) + ' GiB' : '—';
 function fail(e) { $('error').textContent = e.message || String(e); $('error-banner').hidden = false; }
 function clearError() { $('error').textContent = ''; $('error-banner').hidden = true; }
 function connection(text, tone) { $('connection').textContent = text; $('connection').dataset.tone = tone; }
-async function api(path, data, method) {
-  const options = {method: method || (data === undefined ? 'GET' : 'POST'), headers: {'X-CSRF-Token': csrf}, signal: AbortSignal.timeout(30000)};
+async function api(path, data, method, signal) {
+  const timeout = AbortSignal.timeout(30000);
+  const options = {method: method || (data === undefined ? 'GET' : 'POST'), headers: {'X-CSRF-Token': csrf}, signal: signal ? AbortSignal.any([timeout, signal]) : timeout};
   if (data !== undefined) {
     if (data instanceof FormData) options.body = data;
     else {options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(data);}
@@ -34,6 +35,7 @@ function removeApproval(turnId) {
   document.getElementById('approval-' + turnId)?.remove();
 }
 function resetHistory() {
+  $('last-heard').hidden = true; $('last-heard').textContent = '';
   for (const key of approvalTimers.keys()) removeApproval(key);
   $('history').querySelectorAll('.message, .approval').forEach(el => el.remove());
   messages.clear(); $('empty-state').hidden = false;
@@ -74,7 +76,8 @@ function events(data) {
   for (const e of data.events) {
     if (e.seq <= cursor) continue;
     cursor = e.seq;
-    if (e.kind === 'user') message(e.turn_id + '-user', 'You', e.data.text);
+    if (['user', 'transcription'].includes(e.kind) && e.data.text?.trim()) message(e.turn_id + '-user', 'You', e.data.text);
+    if (e.kind === 'transcription' && e.data.text?.trim()) {$('last-heard').textContent = 'Heard: “' + e.data.text + '”'; $('last-heard').hidden = false;}
     if (e.kind === 'delta') message(e.turn_id, 'MacBot', e.data.text, true);
     if (e.kind === 'text') message(e.turn_id, 'MacBot', e.data.text);
     if (e.kind === 'listening') setListening(e.data.enabled);
@@ -168,6 +171,7 @@ function showStatus(s) {
   setListening(s.listening, s); if ((s.cursor ?? cursor) >= cursor) setPhase(s.phase, s.turn_state);
   showContext(s.context);
   activeModels = s.models;
+  $('action-policy').textContent = s.auto_run_requested ? 'Requested actions run automatically. Ambiguous requests need clarification. No unsolicited file changes.' : 'Desktop actions and external searches require confirmation.';
   if (activeModels) $('model-label').textContent = activeModels.llm + ' · ' + activeModels.llm_backend + ' · ' + (voiceNames[activeModels.tts_voice] || activeModels.tts_voice);
   const metrics = s.metrics || []; const latest = metrics.at(-1); showMetric(latest);
   const samples = metrics.map(m => m.ttft_ms).filter(Number.isFinite).sort((a,b) => a-b);
@@ -225,21 +229,24 @@ async function documents() {
   }
 }
 async function connect() {
-  socket?.disconnect(); clearTimeout(pollTimer);
+  eventFeed?.stop(); clearTimeout(pollTimer);
   // A settings read also verifies the browser session before showing the workspace.
   const settings = await api('/api/settings'); connected = true;
   $('login').hidden = true; $('application').hidden = false; $('logout').hidden = false;
   $('voice').replaceChildren(); for (const voice of settings.voices) {const option = document.createElement('option'); option.value = voice; option.textContent = voiceNames[voice] || voice; option.disabled = !settings.installed_voices.includes(voice); if (option.disabled) option.textContent += ' · not installed'; $('voice').append(option);}
   $('voice').value = settings.models.tts_voice; $('tokens').value = settings.models.max_tokens; $('speed').value = settings.models.tts_speed;
-  socket = io({auth: {csrf}, transports: ['websocket', 'polling']});
-  socket.on('turn_events', events);
-  socket.on('connect', () => {connection('Connected locally', 'good'); api('/api/events?after=' + cursor + (epoch ? '&epoch=' + encodeURIComponent(epoch) : '')).then(events).catch(fail);});
-  socket.on('disconnect', () => connection('Reconnecting…', 'warn'));
-  socket.on('connect_error', () => connection('Live updates unavailable', 'warn'));
+  // Authenticated HTTP long polling also works when browser extensions block
+  // WebSockets. Each response replays from the last successfully rendered event.
+  eventFeed = new MacBotEventFeed(
+    (after, eventEpoch, signal) => api('/api/events?after=' + after + (eventEpoch ? '&epoch=' + encodeURIComponent(eventEpoch) : ''), undefined, 'GET', signal),
+    data => {events(data); connection('Connected locally', 'good');},
+    error => {connection('Conversation reconnecting…', 'warn'); if (error.status === 401) {disconnect(); fail(new Error('Session expired. Reconnect to resume the conversation.'));}}
+  );
+  eventFeed.cursor = cursor; eventFeed.epoch = epoch; eventFeed.start();
   await refresh(); scheduleRefresh(); scheduleAudio(); await documents();
 }
 function disconnect() {
-  connected = false; clearTimeout(pollTimer); clearTimeout(audioTimer); socket?.disconnect(); socket = null; csrf = ''; sessionStorage.removeItem('macbot_csrf');
+  connected = false; clearTimeout(pollTimer); clearTimeout(audioTimer); eventFeed?.stop(); eventFeed = null; csrf = ''; sessionStorage.removeItem('macbot_csrf');
   resetHistory(); cursor = 0; epoch = ''; $('application').hidden = true; $('login').hidden = false; $('logout').hidden = true; connection('Not connected', 'neutral');
 }
 $('login-form').onsubmit = async e => {e.preventDefault(); await busy(e.submitter, 'Connecting…', async () => {const data = await api('/auth/exchange', {token: $('login-code').value}); csrf = data.csrf; sessionStorage.setItem('macbot_csrf', csrf); $('login-code').value = ''; await connect();});};
@@ -288,5 +295,9 @@ window.addEventListener('beforeunload', e => {if (recorder?.state === 'recording
 (async () => {
   const fragment = new URLSearchParams(location.hash.slice(1)); const token = fragment.get('token'); history.replaceState(null, '', location.pathname);
   if (token) {try {const data = await api('/auth/exchange', {token}); csrf = data.csrf; sessionStorage.setItem('macbot_csrf', csrf);} catch (e) {fail(e);}}
+  if (!csrf) {
+    try {const data = await api('/auth/session'); csrf = data.csrf; sessionStorage.setItem('macbot_csrf', csrf);}
+    catch (e) {if (e.status !== 401) fail(e);}
+  }
   if (csrf) {try {await connect();} catch (e) {fail(e); connection('Login required', 'warn');}}
 })();

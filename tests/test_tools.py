@@ -101,3 +101,77 @@ def test_qwen35_xml_style_calls_are_data():
     ]:
         with pytest.raises(ValueError):
             parse_calls(invalid)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hello, how are you?",
+        "Well,",
+        "What else can you do for me?",
+        "What is the capital of France?",
+        "How do I open Safari?",
+        "Don't open Safari.",
+        "Explain the phrase 'open Safari'.",
+        "A document says: open Safari.",
+        "Do that again.",
+        "What is weather?",
+        "What is time dilation?",
+        "Create a file with my notes.",
+        "Delete everything on my desktop.",
+    ],
+)
+def test_ordinary_or_ambiguous_text_cannot_request_actions(registry, text):
+    assert registry.definitions(text) == []
+    with pytest.raises(PermissionError, match="explicit request"):
+        registry.validate_request(text, "open_app", {"app": "Safari"})
+
+
+@pytest.mark.parametrize(
+    "text,name,args",
+    [
+        ("Please open the Calculator app for me.", "open_app", {"app": "Calculator"}),
+        ("Can you launch Notes on my Mac?", "open_app", {"app": "Notes"}),
+        (
+            "Open https://example.org in the browser.",
+            "browse_website",
+            {"url": "https://example.org"},
+        ),
+        ("Search the web for sourdough recipes.", "web_search", {"query": "sourdough recipes"}),
+        ("Check the weather in Chicago.", "weather", {"location": "Chicago"}),
+        ("Save a screenshot of my screen.", "screenshot", {}),
+        ("What time is now?", "local_time", {}),
+        ("Show current CPU, memory and disk usage.", "system_info", {}),
+        (
+            "Find the installation guide in my knowledge base.",
+            "rag_search",
+            {"query": "installation guide"},
+        ),
+    ],
+)
+def test_request_scopes_tools_and_cannot_repeat(registry, text, name, args):
+    definitions = registry.definitions(text)
+    assert [d["function"]["name"] for d in definitions] == [name]
+    registry.validate_request(text, name, args)
+    assert registry.definitions(text, {name}) == []
+
+
+def test_requested_target_cannot_be_substituted(registry):
+    with pytest.raises(PermissionError, match="explicit request"):
+        registry.validate_request("Open Calculator.", "open_app", {"app": "Safari"})
+    with pytest.raises(PermissionError, match="explicit request"):
+        registry.validate_request(
+            "Open https://example.org", "browse_website", {"url": "https://evil.invalid"}
+        )
+    definitions = registry.definitions("Open Calculator.")
+    assert definitions[0]["function"]["parameters"]["properties"]["app"]["enum"] == ["Calculator"]
+
+
+def test_local_time_comes_from_actual_clock(registry):
+    from datetime import datetime
+
+    before = datetime.now().astimezone()
+    result = registry.read("local_time", {})
+    after = datetime.now().astimezone()
+    assert before <= datetime.fromisoformat(result["datetime"]) <= after
+    assert result["source"] == "mac_clock"

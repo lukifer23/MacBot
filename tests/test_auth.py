@@ -1,12 +1,14 @@
 """Real SQLite sessions and Flask security boundaries, with no auth substitutions."""
 
+import secrets
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from flask import Flask, jsonify
 
-from macbot.auth import COOKIE, AuthStore, install_security
+from macbot.auth import COOKIE, AuthStore, digest, install_security
 from macbot.config import Settings, prepare
 
 
@@ -88,3 +90,38 @@ def test_concurrent_exchange_has_exactly_one_winner(secured):
     assert sum(r is not None for r in results) == 1
     assert auth.path.stat().st_mode & 0o077 == 0
     assert (auth.path.parent / "service-keys.json").stat().st_mode & 0o077 == 0
+
+
+def test_session_resume_is_stable_across_tabs_and_processes(secured):
+    _, auth, _ = secured
+    token, csrf = auth.exchange(auth.issue_login())
+    other, _ = auth.exchange(auth.issue_login())
+    assert auth.resume(token) == csrf
+    assert not auth.session(other, csrf)
+    assert not auth.session(token, "invalid-☃")
+    second = AuthStore(auth.path.parent)
+    try:
+        assert second.resume(token) == csrf
+        assert auth.session(token, second.resume(token))
+        auth.revoke(token)
+        assert second.resume(token) is None
+    finally:
+        second.close()
+
+
+def test_legacy_session_recovery_keeps_existing_tabs_valid(secured):
+    _, auth, _ = secured
+    token, legacy_csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    with sqlite3.connect(auth.path) as db:
+        db.execute(
+            "INSERT INTO session VALUES (?,?,?)",
+            (digest(token), digest(legacy_csrf), time.time() + 60),
+        )
+    resumed = auth.resume(token)
+    assert resumed and resumed != legacy_csrf
+    assert auth.session(token, resumed)
+    assert auth.session(token, legacy_csrf)
+    with sqlite3.connect(auth.path) as db:
+        db.execute("UPDATE session SET expires=0")
+    assert auth.resume(token) is None
+    assert not auth.session(token, resumed)
