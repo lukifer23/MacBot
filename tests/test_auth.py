@@ -1,35 +1,90 @@
-import os
-import sys
+"""Real SQLite sessions and Flask security boundaries, with no auth substitutions."""
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
-from macbot import auth
+import pytest
+from flask import Flask, jsonify
+
+from macbot.auth import COOKIE, AuthStore, install_security
+from macbot.config import Settings, prepare
 
 
-def test_verify_api_token_accepts_rag_tokens(monkeypatch):
-    """RAG API tokens should be accepted even when no primary tokens are set."""
+@pytest.fixture
+def secured(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    prepare(settings)
+    auth = AuthStore(tmp_path)
+    app = Flask(__name__)
+    install_security(app, settings, "dashboard", auth, browser=True)
+    app.add_url_rule("/data", view_func=lambda: jsonify(ok=True), methods=["GET", "POST"])
+    yield settings, auth, app.test_client()
+    auth.close()
 
-    # Ensure a clean environment so only MACBOT_RAG_API_TOKENS is populated
-    monkeypatch.delenv("MACBOT_API_TOKENS", raising=False)
-    monkeypatch.delenv("MACBOT_RAG_API_TOKENS", raising=False)
-    monkeypatch.setattr(auth, "_auth_manager_instance", None)
 
-    rag_tokens = ["rag-token-alpha", "rag-token-beta"]
-    monkeypatch.setenv("MACBOT_RAG_API_TOKENS", ", ".join(rag_tokens))
+def test_default_deny_and_credentials_are_service_specific(secured):
+    s, auth, client = secured
+    url = s.services.dashboard.url + "/data"
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=auth.headers("rag")).status_code == 401
+    assert client.get(url + "?token=" + auth.keys["dashboard"]).status_code == 401
+    assert client.get(url, headers=auth.headers("dashboard")).status_code == 200
 
-    manager = auth.AuthenticationManager()
 
-    for token in rag_tokens:
-        assert manager.verify_api_token(token)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "evil.invalid:3000"},
+        {"Origin": "https://evil.invalid"},
+        {"Origin": "null"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Origin": "http://127.0.0.1:3000"},
+    ],
+)
+def test_service_key_never_bypasses_browser_boundaries(secured, headers):
+    s, auth, client = secured
+    assert (
+        client.get(
+            s.services.dashboard.url + "/data", headers={**auth.headers("dashboard"), **headers}
+        ).status_code
+        == 403
+    )
 
-    # Placeholder tokens from configuration should be ignored
-    assert not manager.verify_api_token("change-me")
-    assert not manager.verify_api_token("not-a-token")
 
-    # Existing behavior for MACBOT_API_TOKENS should remain unchanged
-    monkeypatch.setenv("MACBOT_API_TOKENS", "primary-token")
-    monkeypatch.delenv("MACBOT_RAG_API_TOKENS", raising=False)
-    monkeypatch.setattr(auth, "_auth_manager_instance", None)
+def test_login_is_single_use_and_revocation_and_csrf_apply(secured):
+    s, auth, client = secured
+    code = auth.issue_login()
+    session, csrf = auth.exchange(code)
+    assert auth.exchange(code) is None
+    client.set_cookie(COOKIE, session, domain="127.0.0.1")
+    url = s.services.dashboard.url + "/data"
+    assert client.get(url).status_code == 200
+    assert client.post(url).status_code == 403
+    assert client.post(url, headers={"X-CSRF-Token": "incorrect"}).status_code == 403
+    response = client.post(url, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200
+    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+    auth.revoke(session)
+    assert client.get(url).status_code == 401
 
-    refreshed_manager = auth.AuthenticationManager()
-    assert refreshed_manager.verify_api_token("primary-token")
+
+def test_persisted_expired_credentials_fail(secured):
+    _, auth, _ = secured
+    code = auth.issue_login()
+    with sqlite3.connect(auth.path) as db:
+        db.execute("UPDATE login SET expires=0")
+    assert auth.exchange(code) is None
+    session, csrf = auth.exchange(auth.issue_login())
+    with sqlite3.connect(auth.path) as db:
+        db.execute("UPDATE session SET expires=0")
+    assert not auth.session(session, csrf)
+
+
+def test_concurrent_exchange_has_exactly_one_winner(secured):
+    _, auth, _ = secured
+    code = auth.issue_login()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(auth.exchange, [code] * 8))
+    assert sum(r is not None for r in results) == 1
+    assert auth.path.stat().st_mode & 0o077 == 0
+    assert (auth.path.parent / "service-keys.json").stat().st_mode & 0o077 == 0

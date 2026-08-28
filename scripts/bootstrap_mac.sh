@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-echo "Installing Xcode Command Line Tools (if needed)..."
-xcode-select --install || true
-
-if ! command -v brew >/dev/null 2>&1; then
-  echo "Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+cd "$(dirname "$0")/.."
+if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+  echo 'MacBot native setup requires Apple Silicon macOS.' >&2
+  exit 1
 fi
-
-echo "Installing packages via Homebrew..."
-brew install cmake ffmpeg portaudio python@3.11 git
-
-echo "Done. Next:"
-echo "  1) make venv && source .venv/bin/activate && pip install -r requirements.txt"
-echo "  2) make build-whisper"
-echo "  3) make build-llama"
-echo "  4) Place a GGUF model in llama.cpp/models, then: make run-llama"
-echo "  5) make run-assistant"
+for tool in uv git cmake ffmpeg xcrun; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "Missing prerequisite: $tool. Install it before running setup." >&2
+    exit 1
+  fi
+done
+xcrun --find swiftc >/dev/null
+uv sync --frozen --all-extras --group dev
+uv run --frozen macbot setup
+echo 'Environment ready. Run make build and make models explicitly to provision native engines and model weights.'

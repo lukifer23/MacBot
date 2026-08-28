@@ -1,0 +1,32 @@
+name: Software verification
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  software:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --group dev
+      - run: uv run --frozen ruff check src tests scripts
+      - run: uv run --frozen ruff format --check src tests scripts
+      - run: uv run --frozen mypy src/macbot
+      - name: Software tests without model or device requirements
+        run: uv run --frozen pytest -m 'not models and not device'
+      - name: Compile native audio helper without opening devices
+        run: uv run --frozen macbot build-audio
+      - run: uv build
+      - name: Inspect distribution contents
+        run: uv run --frozen python scripts/inspect_package.py
+      - name: Explain remaining release gates
+        run: echo 'Hosted software checks do not establish model, microphone, speaker, soak, acoustic latency, or user listening acceptance.'

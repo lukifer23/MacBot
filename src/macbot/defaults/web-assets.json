@@ -1,0 +1,8 @@
+{
+  "socket.io-client": {
+    "version": "4.8.1",
+    "source": "https://cdn.socket.io/4.8.1/socket.io.min.js",
+    "sha256": "b0e735814f8dcfecd6cdb8a7ce95a297a7e1e5f2727a29e6f5901801d52fa0c5",
+    "license": "MIT"
+  }
+}

@@ -80,7 +80,6 @@ profile_default/
 ipython_config.py
 
 # pyenv
-.python-version
 
 # pipenv
 Pipfile.lock
@@ -162,3 +161,7 @@ data/rag_database/
 .prettierrc
 .eslintrc
 .stylelintrc
+
+# Tool caches and local verification artifacts
+.ruff_cache/
+.secrets.baseline

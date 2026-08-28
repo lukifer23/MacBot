@@ -1,1161 +1,358 @@
-#!/usr/bin/env python3
-"""
-MacBot Orchestrator - Central management for all voice assistant components
-"""
+"""Supervise only processes started by this instance. No global process matching."""
+
+from __future__ import annotations
+
+import fcntl
+import json
 import os
-import sys
-import time
 import signal
+import socket
 import subprocess
+import sys
 import threading
-import uuid
+from dataclasses import dataclass, field
+from typing import BinaryIO, TextIO
+from urllib.parse import urlsplit
 
-from .utils import setup_path
-setup_path()
+import httpx
 import psutil
-import yaml  # type: ignore
-import requests
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Awaitable, Callable
-from dataclasses import dataclass
-from .logging_utils import setup_logger
+from flask import Flask, jsonify, request
 
-from .message_bus import MessageBus, start_message_bus, stop_message_bus
-from .message_bus_client import MessageBusClient
-from .health_monitor import get_health_monitor
-from .message_bus_server import start_message_bus_server
-from . import config as CFG
-from .auth import require_auth, optional_auth, get_auth_manager
-from .error_handler import handle_error, ErrorSeverity, ErrorContext
-from .logging_utils import log_with_context
-
-# Configure logging (unified with structured logging)
-logger = setup_logger("macbot.orchestrator", "logs/macbot.log", structured=True)
+from .auth import AuthStore, install_security
+from .config import Settings, atomic_write, load, prepare
+from .provision import model_file
 
 
 @dataclass
 class ServiceDefinition:
-    """Definition for a managed service."""
     name: str
-    command: List[str]
-    health_endpoint: Optional[str] = None
-    env: Optional[Dict[str, str]] = None
-    cwd: Optional[str] = None
+    command: list[str]
+    health_endpoint: str | None = None
+    port: int | None = None
+    env: dict = field(default_factory=dict)
+    cwd: str | None = None
 
 
 class MacBotOrchestrator:
-    def __init__(self, config_path: Optional[str] = None):
-        # Use centralized config system instead of duplicate logic
-        self.config = CFG.get_all()
-        self.processes: Dict[str, subprocess.Popen] = {}
-        self.threads: Dict[str, threading.Thread] = {}
-        self._process_log_threads: Dict[str, List[threading.Thread]] = {}
-        self._process_log_files: Dict[str, List[Any]] = {}
-        self._process_stream_strategy: Dict[str, str] = {}
-        self.running = False
+    def __init__(self, settings: Settings | None = None):
+        self.settings = settings or load()
+        prepare(self.settings)
+        self.auth = AuthStore(self.settings.data_dir)
+        self.processes: dict[str, subprocess.Popen] = {}
+        self.logs: dict[str, BinaryIO] = {}
+        self.service_definitions: dict[str, ServiceDefinition] = {}
+        self.restarts: dict[str, int] = {}
+        self.stopping = threading.Event()
+        self.lock = threading.RLock()
+        self.lifecycle_lock = threading.RLock()
+        self.client = httpx.Client(timeout=2, trust_env=False)
+        self.failures: dict[str, str] = {}
+        self.readiness: dict[str, bool] = {}
+        self.health_failures: dict[str, int] = {}
+        self._instance_file: TextIO | None = None
 
-        # Service definitions will be populated based on config/paths
-        self.service_definitions: Dict[str, ServiceDefinition] = {}
-        self._build_service_definitions()
-        
-        # Message bus integration
-        self.message_bus = None
-        self.bus_client = None
-        self.ws_bus_server = None
-        
-        # Health monitoring integration
-        self.health_monitor = get_health_monitor()
-        
-        # Service status tracking
-        self.service_status: Dict[str, Dict] = {}
-        
-        # Signal handling
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-
-        # Control HTTP server (status/health)
-        self.control_thread: Optional[threading.Thread] = None
-
-    def _start_stream_thread(self, service_name: str, stream: Any, *, is_stderr: bool) -> threading.Thread:
-        """Drain a subprocess pipe on a background thread."""
-
-        stream_label = "STDERR" if is_stderr else "STDOUT"
-        log_func = logger.warning if is_stderr else logger.debug
-
-        def _drain() -> None:
-            try:
-                while True:
-                    chunk = stream.read(65536)
-                    if not chunk:
-                        break
-                    try:
-                        text = chunk.decode("utf-8", errors="replace")
-                    except Exception:
-                        text = ""
-                    snippet = text.strip()
-                    if snippet:
-                        if len(snippet) > 200:
-                            snippet = snippet[:200] + "..."
-                        log_func(f"[{service_name}][{stream_label}] {snippet}")
-                    else:
-                        log_func(f"[{service_name}][{stream_label}] {len(chunk)} bytes")
-            except Exception as exc:
-                logger.debug(f"Stream reader for {service_name} {stream_label} exited: {exc}")
-            finally:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-
-        thread = threading.Thread(
-            target=_drain,
-            name=f"{service_name}-{stream_label.lower()}-drain",
-            daemon=True,
-        )
-        thread.start()
-        return thread
-
-    def _cleanup_process_streams(self, name: str) -> None:
-        """Join background stream threads and close log files."""
-
-        threads = self._process_log_threads.pop(name, [])
-        for thread in threads:
-            try:
-                if thread.is_alive():
-                    thread.join(timeout=0.5)
-            except Exception:
-                pass
-
-        files = self._process_log_files.pop(name, [])
-        for fh in files:
-            try:
-                fh.close()
-            except Exception:
-                pass
-
-        self._process_stream_strategy.pop(name, None)
-
-    def _log_process_output(self, name: str, process: subprocess.Popen, *, timeout: float = 1.0) -> None:
-        """Attempt to log remaining process output when pipes are not drained asynchronously."""
-
-        strategy = self._process_stream_strategy.get(name)
-        if strategy == "thread":
-            # Output is drained continuously; nothing to log here.
-            return
-
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            logger.debug(f"Timeout collecting output for {name}")
-            return
-        except Exception as exc:
-            logger.debug(f"Failed to collect output for {name}: {exc}")
-            return
-
-        if stdout:
-            logger.error(f"{name} STDOUT: {stdout.decode('utf-8', errors='ignore')}")
-        if stderr:
-            logger.error(f"{name} STDERR: {stderr.decode('utf-8', errors='ignore')}")
-
-    def _spawn_service_process(
-        self,
-        service_name: str,
-        command: List[str],
-        *,
-        env: Optional[Dict[str, str]] = None,
-        cwd: Optional[str] = None,
-        stream_strategy: str = "thread",
-    ) -> subprocess.Popen:
-        """Spawn a service process while ensuring its output is drained."""
-
-        valid_strategies = {"thread", "files", "null"}
-        if stream_strategy not in valid_strategies:
-            raise ValueError(f"Unknown stream strategy: {stream_strategy}")
-
-        stdout_target: Any = subprocess.PIPE
-        stderr_target: Any = subprocess.PIPE
-        log_files: List[Any] = []
-
-        if stream_strategy == "files":
-            log_dir = Path("logs") / "services"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            stdout_path = log_dir / f"{service_name}.stdout.log"
-            stderr_path = log_dir / f"{service_name}.stderr.log"
-            stdout_file = open(stdout_path, "ab")
-            stderr_file = open(stderr_path, "ab")
-            stdout_target = stdout_file
-            stderr_target = stderr_file
-            log_files = [stdout_file, stderr_file]
-        elif stream_strategy == "null":
-            stdout_target = subprocess.DEVNULL
-            stderr_target = subprocess.DEVNULL
-
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=stdout_target,
-                stderr=stderr_target,
-                env=env,
-                cwd=cwd,
-            )
-        except Exception:
-            for fh in log_files:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-            raise
-
-        self.processes[service_name] = process
-        self._process_stream_strategy[service_name] = stream_strategy
-
-        if stream_strategy == "thread":
-            threads: List[threading.Thread] = []
-            if process.stdout is not None:
-                threads.append(self._start_stream_thread(service_name, process.stdout, is_stderr=False))
-            if process.stderr is not None:
-                threads.append(self._start_stream_thread(service_name, process.stderr, is_stderr=True))
-            if threads:
-                self._process_log_threads[service_name] = threads
-        elif stream_strategy == "files":
-            self._process_log_files[service_name] = log_files
-
-        return process
-
-    def _build_service_definitions(self) -> None:
-        """Build service definitions for managed components."""
-        base_dir = os.path.join(os.path.dirname(__file__), '..', '..')
-        venv_python = os.path.join(base_dir, 'macbot_env', 'bin', 'python')
-        py = venv_python if os.path.exists(venv_python) else sys.executable
-        env = os.environ.copy()
-        env['PYTHONPATH'] = os.path.join(base_dir, 'src')
-
-        # Web dashboard
-        wd_host, wd_port = CFG.get_web_dashboard_host_port()
-        self.service_definitions['web_gui'] = ServiceDefinition(
-            name='web_gui',
-            command=[py, '-m', 'macbot.web_dashboard'],
-            health_endpoint=f"http://{wd_host}:{wd_port}",
-            env=env,
-            cwd=base_dir,
-        )
-
-        # RAG service
-        rag_host, rag_port = CFG.get_rag_host_port()
-        self.service_definitions['rag'] = ServiceDefinition(
-            name='rag',
-            command=[py, '-m', 'macbot.rag_server'],
-            health_endpoint=f"http://{rag_host}:{rag_port}/health",
-            env=env,
-            cwd=base_dir,
-        )
-
-        # Voice assistant
-        va_host, va_port = CFG.get_voice_assistant_host_port()
-        self.service_definitions['voice_assistant'] = ServiceDefinition(
-            name='voice_assistant',
-            command=[py, '-m', 'macbot.voice_assistant'],
-            health_endpoint=f"http://{va_host}:{va_port}/info",
-            env=env,
-            cwd=base_dir,
-        )
-    
-    
-    def start_message_bus(self) -> bool:
-        """Start the message bus system"""
-        try:
-            logger.info("Starting in-process message bus...")
-            
-            # Start message bus server
-            self.message_bus = start_message_bus(
-                host=self.config.get('communication', {}).get('message_bus', {}).get('host', 'localhost'),
-                port=self.config.get('communication', {}).get('message_bus', {}).get('port', 8082)
-            )
-            
-            # Start orchestrator client
-            self.bus_client = MessageBusClient(
-                host=self.config.get('communication', {}).get('message_bus', {}).get('host', 'localhost'),
-                port=self.config.get('communication', {}).get('message_bus', {}).get('port', 8082),
-                service_type='orchestrator'
-            )
-            self.bus_client.start()
-            
-            # Register message handlers
-            self._register_message_handlers()
-            
-            # Wait for connection
-            timeout = 10
-            start_time = time.time()
-            while not self.bus_client.is_connected() and (time.time() - start_time) < timeout:
-                time.sleep(0.1)
-            
-            if self.bus_client.is_connected():
-                logger.info("✅ Message bus connected")
-                return True
-            else:
-                logger.error("❌ Message bus connection failed")
-                return False
-
-        except Exception as e:
-            logger.error(f"Failed to start message bus: {e}")
-            return False
-
-    def start_ws_message_bus(self) -> bool:
-        """Start the WebSocket message bus server (cross-process)."""
-        host = CFG.get('communication.message_bus.host', '127.0.0.1')
-        port = int(CFG.get('communication.message_bus.port', 8082))
-        
-        try:
-            logger.info(f"Starting WS message bus on ws://{host}:{port} ...")
-            self.ws_bus_server = start_message_bus_server(host=host, port=port)
-            logger.info("✅ WS message bus started")
-            return True
-        except OSError as e:
-            if "Address already in use" in str(e):
-                logger.warning(f"Port {port} already in use, trying to continue without WS message bus")
-                return False
-            else:
-                logger.error(f"Failed to start WS message bus: {e}")
-                return False
-        except Exception as e:
-            logger.warning(f"Failed to start WS message bus: {e}")
-            return False
-    
-    def stop_message_bus(self):
-        """Stop the message bus system"""
-        try:
-            if self.bus_client:
-                self.bus_client.stop()
-                self.bus_client = None
-
-            if self.message_bus:
-                stop_message_bus()
-                self.message_bus = None
-
-            if self.ws_bus_server:
-                try:
-                    self.ws_bus_server.stop()
-                except Exception:
-                    pass
-                self.ws_bus_server = None
-
-            logger.info("✅ Message bus stopped")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop message bus: {e}")
-            return False
-    
-    def _register_message_handlers(self):
-        """Register message handlers for the orchestrator"""
-        if not self.bus_client:
-            return
-            
-        # Handle service registration
-        self.bus_client.register_handler('service_registered', self._sync_handle_service_registered)
-        
-        # Handle status updates
-        self.bus_client.register_handler('status_update', self._sync_handle_status_update)
-        
-        # Handle conversation messages
-        self.bus_client.register_handler('conversation_message', self._sync_handle_conversation_message)
-        
-        # Handle errors
-        self.bus_client.register_handler('error', self._sync_handle_error)
-    
-    def _run_async_handler(self, coro_factory: Callable[[], Awaitable[Any]], handler_name: str) -> None:
-        """Execute or schedule an async handler regardless of sync/async context."""
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                # Create a new event loop for this thread
-                asyncio.run(self._ensure_coroutine(coro_factory()))
-            except Exception as e:
-                logger.error(f"Error running {handler_name} handler: {e}")
-            return
-
-        try:
-            loop.create_task(self._ensure_coroutine(coro_factory()))
-        except Exception as e:
-            logger.error(f"Error scheduling {handler_name} handler: {e}")
-            try:
-                asyncio.run(self._ensure_coroutine(coro_factory()))
-            except Exception as inner:
-                logger.error(f"Fallback run failed for {handler_name} handler: {inner}")
-    
-    def _ensure_coroutine(self, awaitable: Awaitable[Any]) -> Any:
-        """Ensure the awaitable is properly handled as a coroutine."""
-        import asyncio
-        if asyncio.iscoroutine(awaitable):
-            return awaitable
-        # If it's not a coroutine, wrap it in a coroutine
-        async def wrapper():
-            return await awaitable
-        return wrapper()
-
-    def _sync_handle_service_registered(self, data: Dict[str, Any]) -> None:
-        """Synchronous wrapper for service registration handler"""
-        self._run_async_handler(lambda: self._handle_service_registered(data), "service registration")
-
-    def _sync_handle_status_update(self, data: Dict[str, Any]) -> None:
-        """Synchronous wrapper for status update handler"""
-        self._run_async_handler(lambda: self._handle_status_update(data), "status update")
-
-    def _sync_handle_conversation_message(self, data: Dict[str, Any]) -> None:
-        """Synchronous wrapper for conversation message handler"""
-        self._run_async_handler(lambda: self._handle_conversation_message(data), "conversation message")
-
-    def _sync_handle_error(self, data: Dict[str, Any]) -> None:
-        """Synchronous wrapper for error handler"""
-        self._run_async_handler(lambda: self._handle_error(data), "error")
-    
-    async def _handle_service_registered(self, data: dict):
-        """Handle service registration messages"""
-        service_id = data.get('service_id')
-        service_type = data.get('service_type')
-        capabilities = data.get('capabilities', [])
-        
-        if service_id:
-            self.service_status[service_id] = {
-                'type': service_type,
-                'capabilities': capabilities,
-                'status': 'registered',
-                'last_seen': time.time()
-            }
-            
-            logger.info(f"Service registered: {service_type} ({service_id})")
-    
-    async def _handle_status_update(self, data: dict):
-        """Handle status update messages"""
-        service_id = data.get('client_id')
-        status = data.get('status', {})
-        
-        if service_id in self.service_status:
-            self.service_status[service_id].update({
-                'status': status,
-                'last_seen': time.time()
-            })
-    
-    async def _handle_conversation_message(self, data: dict):
-        """Handle conversation messages"""
-        text = data.get('text', '')
-        source = data.get('source', 'unknown')
-        service_type = data.get('service_type', 'unknown')
-        
-        logger.info(f"Conversation from {service_type}: {text[:100]}...")
-        
-        # Broadcast to other services
-        if self.bus_client:
-            self.bus_client.send_message({
-                'type': 'conversation_broadcast',
-                'original_source': service_type,
-                'text': text,
-                'timestamp': time.time()
-            })
-    
-    async def _handle_error(self, data: dict):
-        """Handle error messages"""
-        error = data.get('error', 'Unknown error')
-        service_type = data.get('service_type', 'unknown')
-        
-        logger.error(f"Error from {service_type}: {error}")
-
-        # Could implement error recovery logic here
-    def start_service(self, service: ServiceDefinition, retries: int = 5, backoff: float = 1.0) -> Dict[str, Any]:
-        """Generic service starter with retry/backoff."""
-        result: Dict[str, Any] = {'service': service.name, 'success': False}
-        try:
-            logger.info(f"Starting {service.name}...")
-            process = self._spawn_service_process(
-                service.name,
-                service.command,
-                env=service.env,
-                cwd=service.cwd,
-            )
-
-            if service.health_endpoint:
-                delay = backoff
-                for _ in range(retries):
-                    # Check if process is still alive
-                    if process.poll() is not None:
-                        logger.error(f"❌ {service.name} process died during startup")
-                        self._log_process_output(service.name, process)
-                        self._cleanup_process_streams(service.name)
-                        self.processes.pop(service.name, None)
-                        result['error'] = 'process died during startup'
-                        return result
-
-                    try:
-                        r = requests.get(service.health_endpoint, timeout=2)
-                        if r.status_code == 200:
-                            logger.info(f"✅ {service.name} ready")
-                            result['success'] = True
-                            return result
-                    except Exception as e:
-                        result['error'] = str(e)
-                    time.sleep(delay)
-                    delay *= 2
-                # Failed health check
-                result['error'] = result.get('error', 'health check failed')
-                logger.error(f"❌ {service.name} failed to start: {result['error']}")
-                return result
-
-            result['success'] = True
-            return result
-        except Exception as e:
-            result['error'] = str(e)
-            handle_error(
-                e,
-                component="orchestrator",
-                operation="start_service",
-                severity=ErrorSeverity.HIGH,
-                service_name=service.name,
-                service_command=service.command
-            )
-            process = self.processes.get(service.name)
-            if process:
-                if process.poll() is None:
-                    try:
-                        process.terminate()
-                        process.wait(timeout=5)
-                    except Exception:
-                        try:
-                            process.kill()
-                        except Exception:
-                            pass
-                self._cleanup_process_streams(service.name)
-                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-                self.processes.pop(service.name, None)
-            return result
-
-    def start_llama_server(self) -> bool:
-        """Start the llama.cpp server"""
-        try:
-            # Get model path and parameters from config
-            model_path = CFG.get_llm_model_path()
-            if not os.path.exists(model_path):
-                logger.error(f"LLM model not found at: {model_path}")
-                return False
-            
-            # Build command to start llama-server directly
-            # Determine threads: if config is <=0, compute a higher value favoring performance
-            cfg_threads = CFG.get_llm_threads()
-            try:
-                logical = os.cpu_count() or 1
-            except Exception:
-                logical = 1
-            try:
-                import psutil as _ps
-                physical = _ps.cpu_count(logical=False) or (logical // 2) or 1
-            except Exception:
-                physical = (logical // 2) or 1
-            # Double physical cores but don't exceed logical
-            computed_threads = cfg_threads if cfg_threads and cfg_threads > 0 else min(logical, max(1, physical * 2))
-
-            cmd = [
-                os.path.join(os.getcwd(), 'models', 'llama.cpp', 'build', 'bin', 'llama-server'),
-                '-m', model_path,
-                '-c', str(CFG.get_llm_context_length()),
-                '-t', str(computed_threads),
-                '-ngl', '999',  # offload max layers to Metal
-                '--port', '8080',
-                '--host', '127.0.0.1'
+    def definitions(self):
+        s = self.settings
+        common = {
+            **os.environ,
+            "MACBOT_DATA_DIR": str(s.data_dir),
+            "MACBOT_CONFIG": str(s.config_path),
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "ANONYMIZED_TELEMETRY": "False",
+            "DO_NOT_TRACK": "1",
+        }
+        if s.models.llm_backend == "llama":
+            keyfile = s.data_dir / "run" / "llama-key"
+            atomic_write(keyfile, self.auth.keys["llm"].encode())
+            url = urlsplit(s.models.llm_url)
+            assert url.hostname is not None
+            command = [
+                str(s.data_dir / "bin/llama-server"),
+                "-m",
+                str(model_file(s, s.models.llm, ".gguf")),
+                "--host",
+                url.hostname,
+                "--port",
+                str(url.port),
+                "-c",
+                str(s.models.context_length),
+                "-t",
+                str(s.models.threads),
+                "-ngl",
+                "999",
+                "-np",
+                "1",
+                "--jinja",
+                "--reasoning",
+                "off",
+                "--api-key-file",
+                str(keyfile),
             ]
-            
-            logger.info("Starting llama.cpp server...")
-            logger.info(f"Command: {' '.join(cmd)}")
-            
-            process = self._spawn_service_process(
-                'llama',
-                cmd,
-                cwd=os.getcwd(),
-                stream_strategy='files',
+            self.service_definitions["llm"] = ServiceDefinition(
+                "llm", command, s.models.llm_url + "/v1/models", url.port, common
             )
-            logger.debug("llama.cpp output redirected to logs/services/llama.*.log")
-            
-            # Wait for server to be ready
-            for _ in range(60):  # 60 second timeout for model loading
-                try:
-                    response = requests.get('http://localhost:8080/v1/models', timeout=2)
-                    if response.status_code == 200:
-                        # Try to extract model info for helpful logs
-                        model_name = None
-                        try:
-                            data = response.json()
-                            models = data.get('data') or data.get('models') or []
-                            if isinstance(models, list) and models:
-                                m0 = models[0]
-                                model_name = m0.get('id') or m0.get('name') or m0.get('model')
-                        except Exception:
-                            pass
+        for name, module in [
+            ("rag", "rag_server"),
+            ("assistant", "voice_assistant"),
+            ("dashboard", "web_dashboard"),
+        ]:
+            endpoint = s.endpoint(name)
+            self.service_definitions[name] = ServiceDefinition(
+                name,
+                [sys.executable, "-m", "macbot." + module],
+                endpoint.url + "/ready",
+                endpoint.port,
+                common,
+            )
 
-                        # Memory stats for llama process
-                        mem_info = None
-                        try:
-                            p = psutil.Process(process.pid)
-                            rss = p.memory_info().rss
-                            mem_pct = p.memory_percent()
-                            mem_info = (rss, mem_pct)
-                        except Exception:
-                            mem_info = None
+    def acquire(self):
+        self._instance_file = (self.settings.data_dir / "run/orchestrator.lock").open("a+")
+        try:
+            fcntl.flock(self._instance_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another MacBot supervisor owns this data directory") from None
+        atomic_write(
+            self.settings.data_dir / "run/orchestrator.json",
+            json.dumps({"pid": os.getpid(), "created": psutil.Process().create_time()}).encode(),
+        )
 
-                        if model_name and mem_info:
-                            rss_mb = mem_info[0] / (1024*1024)
-                            logger.info(f"✅ llama.cpp server ready | model={model_name} | ctx={CFG.get_llm_context_length()} | threads={computed_threads} | RSS={rss_mb:.1f} MB | mem%={mem_info[1]:.2f}")
-                        elif model_name:
-                            logger.info(f"✅ llama.cpp server ready | model={model_name} | ctx={CFG.get_llm_context_length()} | threads={computed_threads}")
-                        else:
-                            logger.info("✅ llama.cpp server ready")
-                        return True
-                except (requests.exceptions.RequestException, ValueError) as e:
-                    logger.debug(f"LLM server not ready yet: {e}")
-                    time.sleep(1)
-            
-            logger.error("❌ llama.cpp server failed to start")
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except Exception:
+    def start_service(
+        self, service: ServiceDefinition, retries: int = 60, backoff: float = 0.5
+    ) -> dict:
+        with self.lifecycle_lock:
+            return self._start_service(service, retries, backoff)
+
+    def _start_service(self, service: ServiceDefinition, retries: int, backoff: float) -> dict:
+        with self.lock:
+            self.readiness[service.name] = False
+            if service.name in self.processes and self.processes[service.name].poll() is None:
+                return {"success": False, "error": "Service is already owned and running"}
+            if service.port:
+                with socket.socket() as sock:
                     try:
-                        process.kill()
-                    except Exception:
-                        pass
-            self._log_process_output('llama', process)
-            self._cleanup_process_streams('llama')
-            self.processes.pop('llama', None)
-            handle_error(
-                RuntimeError("LLM server failed to start within timeout"),
-                component="orchestrator",
-                operation="start_llama_server",
-                severity=ErrorSeverity.HIGH
-            )
-            return False
+                        sock.bind(("127.0.0.1", service.port))
+                    except OSError:
+                        return {
+                            "success": False,
+                            "error": f"Port {service.port} is occupied; no process was stopped",
+                        }
+            log = (self.settings.data_dir / "logs" / (service.name + ".log")).open("ab")
+            try:
+                process = subprocess.Popen(
+                    service.command,
+                    stdout=log,
+                    stderr=log,
+                    env=service.env or None,
+                    cwd=service.cwd,
+                    start_new_session=True,
+                )
+            except Exception:
+                log.close()
+                raise
+            self.processes[service.name], self.logs[service.name] = process, log
+        for _ in range(retries):
+            if process.poll() is not None:
+                break
+            if not service.health_endpoint:
+                return {"success": True, "pid": process.pid}
+            try:
+                r = self.client.get(
+                    service.health_endpoint, headers=self.auth.headers(service.name)
+                )
+                if r.is_success and (service.name == "llm" or r.json().get("pid") == process.pid):
+                    self.failures.pop(service.name, None)
+                    self.readiness[service.name] = True
+                    self.health_failures[service.name] = 0
+                    return {"success": True, "pid": process.pid}
+            except (httpx.HTTPError, ValueError):
+                pass
+            if self.stopping.wait(backoff):
+                break
+        self.stop_service(service.name)
+        self.failures[service.name] = "Service failed readiness; inspect its private log"
+        return {"success": False, "error": self.failures[service.name]}
 
-        except Exception as e:
-            handle_error(
-                e,
-                component="orchestrator",
-                operation="start_llama_server",
-                severity=ErrorSeverity.HIGH
-            )
-            process = self.processes.get('llama')
+    def stop_service(self, name: str):
+        with self.lifecycle_lock:
+            self._stop_service(name)
+
+    def _stop_service(self, name: str):
+        with self.lock:
+            self.readiness[name] = False
+            process = self.processes.pop(name, None)
             if process and process.poll() is None:
                 try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except Exception:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-            self._cleanup_process_streams('llama')
-            self.processes.pop('llama', None)
-            return False
-    
-    
-    def check_web_dependencies(self) -> bool:
-        """Check if web GUI dependencies are installed"""
-        try:
-            import flask  # type: ignore
-            import psutil
-            import requests
-            return True
-        except ImportError:
-            return False
-    
-    def install_web_dependencies(self):
-        """Install web GUI dependencies"""
-        try:
-            subprocess.run([
-                sys.executable, '-m', 'pip', 'install',
-                'flask', 'psutil', 'requests'
-            ], check=True)
-            logger.info("Web GUI dependencies installed")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to install web dependencies: {e}")
-    
-    def monitor_system(self):
-        """Monitor system resources"""
-        while self.running:
-            try:
-                # Get system stats
-                cpu_percent = psutil.cpu_percent(interval=1)
-                memory = psutil.virtual_memory()
-                disk = psutil.disk_usage('/')
-                
-                # Log system stats
-                logger.info(f"System: CPU {cpu_percent}% | RAM {memory.percent}% | Disk {disk.percent}%")
-                
-                # Check process health
-                self.check_process_health()
-                
-                time.sleep(30)  # Check every 30 seconds
-                
-            except Exception as e:
-                logger.error(f"System monitoring error: {e}")
-                time.sleep(30)
-    
-    def check_process_health(self):
-        """Check if all processes are still running"""
-        for name, process in list(self.processes.items()):
-            if process.poll() is not None:
-                logger.warning(f"Process {name} died, restarting...")
-                self._log_process_output(name, process)
-                self._cleanup_process_streams(name)
-                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-                self.processes.pop(name, None)
-                self.restart_process(name)
-    
-    def restart_process(self, name: str) -> Dict[str, Any]:
-        """Restart a specific process"""
-        proc = self.processes.get(name)
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
                     pass
-
-        if proc:
-            self._cleanup_process_streams(name)
-            for stream in (getattr(proc, 'stdout', None), getattr(proc, 'stderr', None)):
-                if stream is not None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
                     try:
-                        stream.close()
-                    except Exception:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
                         pass
-            self.processes.pop(name, None)
-        else:
-            self._cleanup_process_streams(name)
+                    process.wait(timeout=3)
+            log = self.logs.pop(name, None)
+            if log:
+                log.close()
 
-        if name == 'llama':
-            success = self.start_llama_server()
-            return {'service': 'llama', 'success': success}
-
-        service = self.service_definitions.get(name)
-        if service:
-            return self.start_service(service)
-
-        return {'service': name, 'success': False, 'error': 'unknown service'}
+    def restart_process(self, name: str) -> dict:
+        with self.lifecycle_lock:
+            if name not in self.service_definitions:
+                raise ValueError("Unknown managed service")
+            self.stop_service(name)
+            return self.start_service(self.service_definitions[name])
 
     def start_all(self) -> bool:
-        """Start all services"""
-        logger.info("🚀 Starting MacBot Orchestrator...")
-
-        # Message bus must be available before any other core services
-        if not self.start_message_bus():
-            logger.error("Failed to start message bus, stopping all services")
-            self.stop_all()
-            return False
-
-        # Core services first
-        core_services = [
-            ('ws_bus', self.start_ws_message_bus),
-            ('llama', self.start_llama_server),
-        ]
-
-        for name, start_func in core_services:
-            if not start_func():
-                logger.error(f"Failed to start {name}, stopping all services")
+        self.definitions()
+        for service in self.service_definitions.values():
+            result = self.start_service(service)
+            if not result["success"]:
                 self.stop_all()
-                return False
-
-        # Generic services
-        for name in ['web_gui', 'rag', 'voice_assistant']:
-            svc = self.service_definitions.get(name)
-            if not svc:
-                continue
-            result = self.start_service(svc)
-            if not result.get('success'):
-                if name == 'rag':
-                    logger.warning("RAG service failed to start, continuing without it")
-                    continue
-                logger.error(f"Failed to start {name}, stopping all services")
-                self.stop_all()
-                return False
-        
-        # Start health monitoring
-        self.health_monitor.start_monitoring()
-        logger.info("✅ Health monitoring started")
-        
-        # Start system monitoring
-        self.running = True
-        monitor_thread = threading.Thread(target=self.monitor_system, daemon=True)
-        monitor_thread.start()
-        self.threads['monitor'] = monitor_thread
-        
-        logger.info("🎉 All services started successfully!")
-        host, port = CFG.get_web_dashboard_host_port()
-        # Display user-friendly URL (localhost instead of 0.0.0.0)
-        display_host = "127.0.0.1" if host == "0.0.0.0" else host
-        logger.info(f"🌐 Web GUI: http://{display_host}:{port}")
-        logger.info(f"🤖 Voice Assistant: Ready")
-        logger.info(f"🔍 RAG Service: {'Ready' if self.config.get('rag', {}).get('enabled', True) else 'Disabled'}")
-
-        # Start control server
-        try:
-            self.start_control_server()
-        except Exception as e:
-            logger.warning(f"Failed to start orchestrator control server: {e}")
-
+                raise RuntimeError(f"{service.name}: {result['error']}")
         return True
-    
-    def stop_all(self):
-        """Stop all services"""
-        logger.info("🛑 Stopping all services...")
-        self.running = False
 
-        try:
-            self.health_monitor.stop_monitoring()
-        except Exception as e:
-            logger.error(f"Error stopping health monitor: {e}")
-
-        # Stop all processes
-        for name, process in list(self.processes.items()):
-            try:
-                process.terminate()
-                process.wait(timeout=5)
-                logger.info(f"Stopped {name}")
-            except subprocess.TimeoutExpired:
-                process.kill()
-                logger.warning(f"Force killed {name}")
-                try:
-                    process.wait(timeout=5)
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.error(f"Error stopping {name}: {e}")
-            finally:
-                self._cleanup_process_streams(name)
-                for stream in (getattr(process, 'stdout', None), getattr(process, 'stderr', None)):
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-
-        self.processes.clear()
-        self._process_log_threads.clear()
-        self._process_log_files.clear()
-        self._process_stream_strategy.clear()
-        logger.info("All services stopped")
-
-        # Ensure message bus components shut down
-        self.stop_message_bus()
-
-    def start_control_server(self):
-        """Start a lightweight HTTP server exposing /health and /status"""
-        try:
-            from flask import Flask, jsonify  # type: ignore
-        except ImportError:
-            logger.warning("Flask not available, skipping control server")
-            return
-            
-        from . import config as CFG
-
-        app = Flask("macbot_orchestrator")
-
-        @app.route('/health')
-        def health():
-            req_id = str(uuid.uuid4())
-            logger.info(f"orc_req id={req_id} path=/health")
-            return jsonify({'status':'ok','timestamp': time.time(), 'req_id': req_id})
-
-        @app.route('/status')
-        @optional_auth
-        def status():
-            req_id = str(uuid.uuid4())
-            procs = {}
-            for name, proc in self.processes.items():
-                procs[name] = {
-                    'running': proc.poll() is None,
-                    'pid': proc.pid if proc and proc.poll() is None else None
-                }
-            from flask import g
-            authenticated = getattr(g, 'authenticated', False)
-            logger.info(f"orc_req id={req_id} path=/status processes={list(procs.keys())} authenticated={authenticated}")
-            return jsonify({'processes': procs, 'req_id': req_id, 'authenticated': authenticated})
-
-        @app.route('/services')
-        @optional_auth
-        def services():
-            """List known services and their status."""
-            procs: Dict[str, Any] = {}
-            for name in self.service_definitions.keys():
-                proc = self.processes.get(name)
-                procs[name] = {
-                    'running': proc.poll() is None if proc else False,
-                    'pid': proc.pid if proc and proc.poll() is None else None,
-                }
-            # include llama if tracked separately
-            if 'llama' in self.processes:
-                p = self.processes['llama']
-                procs['llama'] = {
-                    'running': p.poll() is None,
-                    'pid': p.pid if p and p.poll() is None else None,
-                }
-            return jsonify({'services': procs})
-
-        @app.route('/service/<name>/restart', methods=['POST'])
-        @optional_auth
-        def restart_service_endpoint(name: str):
-            result = self.restart_process(name)
-            status_code = 200 if result.get('success') else 500
-            return jsonify(result), status_code
-
-        @app.route('/metrics')
-        @optional_auth
-        def metrics():
-            req_id = str(uuid.uuid4())
-            data = {'req_id': req_id, 'timestamp': time.time()}
-            # LLM metrics
-            llm = {}
-            try:
-                models_ep = CFG.get_llm_models_endpoint()
-                r = requests.get(models_ep, timeout=2)
-                if r.ok:
-                    j = r.json()
-                    models = j.get('data') or j.get('models') or []
-                    if isinstance(models, list) and models:
-                        m0 = models[0]
-                        llm['model'] = m0.get('id') or m0.get('name') or m0.get('model')
-                llm['context'] = CFG.get_llm_context_length()
-                llm['threads'] = CFG.get_llm_threads()
-                llm['gpu_layers'] = 999
-                try:
-                    llm['max_tokens'] = CFG.get_llm_max_tokens()
-                except Exception:
-                    pass
-                # process RSS
-                p = self.processes.get('llama')
-                if p and p.poll() is None:
+    def status(self) -> dict:
+        with self.lock:
+            services = {}
+            for name, definition in self.service_definitions.items():
+                process = self.processes.get(name)
+                alive = bool(process and process.poll() is None)
+                rss = None
+                if alive and process is not None:
                     try:
-                        proc = psutil.Process(p.pid)  # type: ignore
-                        rss = proc.memory_info().rss
-                        llm['rss_mb'] = round(rss / (1024*1024), 1)
-                    except Exception:
+                        parent = psutil.Process(process.pid)
+                        rss = sum(
+                            p.memory_info().rss for p in [parent, *parent.children(recursive=True)]
+                        )
+                    except psutil.Error:
                         pass
-            except Exception as e:
-                logger.debug(f"metrics llm error: {e}")
-            data['llm'] = llm
-
-            # Voice assistant info
-            va = {}
-            try:
-                vhost, vport = CFG.get_voice_assistant_host_port()
-                r = requests.get(f"http://{vhost}:{vport}/info", timeout=2)
-                if r.ok:
-                    va = r.json()
-            except Exception as e:
-                logger.debug(f"metrics va error: {e}")
-            data['voice_assistant'] = va
-
-            # RAG stats
-            rag = {}
-            try:
-                rhost, rport = CFG.get_rag_host_port()
-                r = requests.get(f"http://{rhost}:{rport}/api/stats", timeout=2)
-                if r.ok:
-                    rag = r.json()
-            except Exception as e:
-                logger.debug(f"metrics rag error: {e}")
-            data['rag'] = rag
-
-            # System memory usage
-            try:
-                import psutil
-                memory_info = psutil.virtual_memory()
-                system_memory = memory_info
-                data['system_memory'] = {
-                    'total_mb': round(system_memory.total / (1024*1024), 1),
-                    'available_mb': round(system_memory.available / (1024*1024), 1),
-                    'percent_used': system_memory.percent,
-                    'used_mb': round(system_memory.used / (1024*1024), 1)
+                services[name] = {
+                    "running": alive,
+                    "pid": process.pid if process else None,
+                    "rss_bytes": rss,
+                    "ready": alive and self.readiness.get(name, False),
+                    "port": definition.port,
+                    "error": self.failures.get(name),
+                    "restarts": self.restarts.get(name, 0),
                 }
+            return {
+                "pid": os.getpid(),
+                "supervisor_rss_bytes": psutil.Process().memory_info().rss,
+                "services": services,
+                "ready": bool(services)
+                and all(s["ready"] and not s["error"] for s in services.values()),
+            }
 
-                # Process-specific memory
-                process_memory = {}
-                for name, proc in self.processes.items():
-                    if proc and proc.poll() is None:
-                        try:
-                            p = psutil.Process(proc.pid)  # type: ignore
-                            rss = p.memory_info().rss
-                            process_memory[name] = {
-                                'rss_mb': round(rss / (1024*1024), 1),
-                                'cpu_percent': p.cpu_percent()
-                            }
-                        except Exception as e:
-                            process_memory[name] = {'error': str(e)}
+    def monitor(self):
+        while not self.stopping.wait(2):
+            for name in list(self.service_definitions):
+                if not self.lifecycle_lock.acquire(blocking=False):
+                    continue
+                try:
+                    self._check_service(name)
+                finally:
+                    self.lifecycle_lock.release()
 
-                data['process_memory'] = process_memory
-
-            except Exception as e:
-                logger.debug(f"memory metrics error: {e}")
-                data['memory_error'] = str(e)
-
-            return jsonify(data)
-
-        @app.route('/pipeline-check')
-        @optional_auth
-        def pipeline_check():
-            """Lightweight end-to-end readiness check across components."""
-            results: Dict[str, Any] = {'timestamp': time.time()}
-            # LLM quick chat
+    def _check_service(self, name: str):
+        process = self.processes.get(name)
+        healthy = bool(process and process.poll() is None)
+        definition = self.service_definitions[name]
+        if healthy and process is not None and definition.health_endpoint:
             try:
-                chat_ep = CFG.get_llm_chat_endpoint()
-                payload = {
-                    "model": "local",
-                    "messages": [{"role":"user","content":"ping"}],
-                    "max_tokens": 8,
-                    "temperature": 0.1
-                }
-                r = requests.post(chat_ep, json=payload, timeout=5)
-                results['llm'] = {'ok': r.ok, 'code': r.status_code}
-            except Exception as e:
-                results['llm'] = {'ok': False, 'error': str(e)}
+                response = self.client.get(
+                    definition.health_endpoint, headers=self.auth.headers(name)
+                )
+                healthy = response.is_success and (
+                    name == "llm" or response.json().get("pid") == process.pid
+                )
+            except (httpx.HTTPError, ValueError):
+                healthy = False
+        self.readiness[name] = healthy
+        if healthy:
+            self.health_failures[name] = 0
+            return
+        self.health_failures[name] = self.health_failures.get(name, 0) + 1
+        if process and process.poll() is None and self.health_failures[name] < 3:
+            return
+        if not healthy:
+            count = self.restarts.get(name, 0)
+            if count >= 3:
+                self.failures[name] = "Restart limit reached"
+                return
+            self.restarts[name] = count + 1
+            if self.stopping.wait(min(2**count, 8)):
+                return
+            self.restart_process(name)
 
-            # STT presence
-            try:
-                from . import config as _C
-                stt_bin = _C.get_stt_bin()
-                stt_model = _C.get_stt_model()
-                results['stt'] = {
-                    'bin_exists': os.path.exists(stt_bin),
-                    'model_exists': os.path.exists(stt_model)
-                }
-            except Exception as e:
-                results['stt'] = {'ok': False, 'error': str(e)}
+    def stop_all(self):
+        self.stopping.set()
+        for name in reversed(list(self.processes)):
+            self.stop_service(name)
 
-            # Voice assistant info (STT/TTS)
-            try:
-                vh, vp = CFG.get_voice_assistant_host_port()
-                r = requests.get(f"http://{vh}:{vp}/info", timeout=3)
-                if r.ok:
-                    info = r.json()
-                    results['voice_assistant'] = {
-                        'stt': info.get('stt') or {},
-                        'tts': info.get('tts') or {}
-                    }
-                    results['tts'] = {'engine': (info.get('tts') or {}).get('engine'), 'ok': (info.get('tts') or {}).get('engine') is not None}
-                else:
-                    results['voice_assistant'] = {}
-                    results['tts'] = {'ok': False, 'code': r.status_code}
-            except Exception as e:
-                results['voice_assistant'] = {}
-                results['tts'] = {'ok': False, 'error': str(e)}
 
-            # RAG
-            try:
-                rh, rp = CFG.get_rag_host_port()
-                r = requests.get(f"http://{rh}:{rp}/health", timeout=3)
-                results['rag'] = {'ok': r.ok, 'code': r.status_code}
-            except Exception as e:
-                results['rag'] = {'ok': False, 'error': str(e)}
+def create_app(supervisor: MacBotOrchestrator):
+    app = Flask(__name__)
+    install_security(app, supervisor.settings, "orchestrator", supervisor.auth)
 
-            results['overall'] = all([
-                results.get('llm',{}).get('ok', True),
-                results.get('stt',{}).get('bin_exists', True),
-                results.get('stt',{}).get('model_exists', True),
-                results.get('tts',{}).get('ok', True),
-                results.get('rag',{}).get('ok', True),
-            ])
-            return jsonify(results)
+    @app.get("/health")
+    def health():
+        return jsonify(status="alive")
 
-        host, port = CFG.get("services.orchestrator.host", "0.0.0.0"), int(CFG.get("services.orchestrator.port", 8090))
+    @app.get("/ready")
+    @app.get("/status")
+    @app.get("/services")
+    @app.get("/metrics")
+    def status():
+        data = supervisor.status()
+        # Status must remain readable during recovery; only readiness is a gate.
+        return jsonify(data), 503 if request.path == "/ready" and not data["ready"] else 200
 
-        def run():
-            try:
-                app.run(host=host, port=port, debug=False, use_reloader=False)
-            except OSError as e:
-                if "Address already in use" in str(e):
-                    logger.warning(f"Port {port} already in use, skipping control server")
-                else:
-                    logger.warning(f"Control server failed: {e}")
-            except Exception as e:
-                logger.warning(f"Control server failed: {e}")
+    @app.post("/service/<name>/restart")
+    def restart(name):
+        if name not in supervisor.service_definitions:
+            return jsonify(error="Unknown service"), 404
+        result = supervisor.restart_process(name)
+        return jsonify(result), 200 if result["success"] else 503
 
-        self.control_thread = threading.Thread(target=run, daemon=True)
-        self.control_thread.start()
-        logger.info(f"Orchestrator control server on http://{host}:{port}")
-    
-    def signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(f"Received signal {signum}, shutting down...")
-        self.stop_all()
-        sys.exit(0)
-    
-    def status(self):
-        """Show status of all services"""
-        print("\n🔍 MacBot Status Report")
-        print("=" * 50)
-        
-        for name, process in self.processes.items():
-            if process.poll() is None:
-                print(f"✅ {name}: Running (PID: {process.pid})")
-            else:
-                print(f"❌ {name}: Stopped")
-        
-        # System stats
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        print(f"\n💻 System: CPU {cpu_percent}% | RAM {memory.percent}%")
-        
-        # Service URLs
-        host, port = CFG.get_web_dashboard_host_port()
-        # Display user-friendly URL (localhost instead of 0.0.0.0)
-        display_host = "127.0.0.1" if host == "0.0.0.0" else host
-        print(f"\n🌐 Web GUI: http://{display_host}:{port}")
-        print(f"🤖 LLM API: {CFG.get_llm_models_endpoint().rsplit('/v1',1)[0]}")
+    @app.post("/shutdown")
+    def shutdown():
+        supervisor.stopping.set()
+        return jsonify(state="accepted"), 202
+
+    return app
+
 
 def main():
-    """Main entry point"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='MacBot Orchestrator')
-    parser.add_argument('--config', default='config.yaml', help='Configuration file path')
-    parser.add_argument('--status', action='store_true', help='Show status and exit')
-    parser.add_argument('--stop', action='store_true', help='Stop all services and exit')
-    
-    args = parser.parse_args()
-    
-    orchestrator = MacBotOrchestrator(args.config)
-    
-    if args.status:
-        orchestrator.status()
-        return
-    
-    if args.stop:
-        orchestrator.stop_all()
-        return
-    
+    from werkzeug.serving import make_server
+
+    supervisor = MacBotOrchestrator()
+    supervisor.acquire()
+    server = make_server(
+        supervisor.settings.services.orchestrator.host,
+        supervisor.settings.services.orchestrator.port,
+        create_app(supervisor),
+        threaded=True,
+    )
+    signal.signal(signal.SIGTERM, lambda *_: supervisor.stopping.set())
+    signal.signal(signal.SIGINT, lambda *_: supervisor.stopping.set())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     try:
-        if orchestrator.start_all():
-            logger.info("Press Ctrl+C to stop all services")
-            # Keep main thread alive
-            while orchestrator.running:
-                time.sleep(1)
-        else:
-            logger.error("Failed to start services")
-            sys.exit(1)
-    except KeyboardInterrupt:
-        logger.info("Received interrupt, shutting down...")
+        supervisor.start_all()
+        supervisor.monitor()
     finally:
-        orchestrator.stop_all()
+        supervisor.stop_all()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        supervisor.client.close()
+        supervisor.auth.close()
+        if supervisor._instance_file:
+            supervisor._instance_file.close()
+
 
 if __name__ == "__main__":
     main()

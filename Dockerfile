@@ -1,3 +1,4 @@
+# UNSUPPORTED LEGACY: does not provide native MacBot voice, Metal, or desktop integration.
 # MacBot Dockerfile
 FROM python:3.11-slim
 

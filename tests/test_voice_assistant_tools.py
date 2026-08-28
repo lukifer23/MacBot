@@ -1,86 +1,119 @@
-import os
-import sys
-from unittest.mock import MagicMock
+"""Actual llama inference and RAG services exercising the shared turn runtime."""
+
+import socket
+import time
 
 import pytest
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from macbot.config import Settings, load, prepare, save
+from macbot.orchestrator import MacBotOrchestrator
+from macbot.runtime import Runtime
 
-from macbot import voice_assistant as va
-
-
-class _DummyResponse:
-    def __init__(self):
-        self.status_code = 200
-        self._lines = [
-            'data: {"choices": [{"delta": {"content": "Hi"}}]}',
-            'data: [DONE]'
-        ]
-
-    def raise_for_status(self):
-        return None
-
-    def iter_lines(self, decode_unicode=True):
-        for line in self._lines:
-            yield line
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
+pytestmark = pytest.mark.models
 
 
-@pytest.fixture(autouse=True)
-def _stub_environment(monkeypatch):
-    monkeypatch.setattr(va, "_notify_dashboard_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(va, "INTERRUPTION_ENABLED", False)
-    dummy_audio = type("DummyAudio", (), {"interrupt_requested": False, "check_voice_activity": lambda *args, **kwargs: False})()
-    monkeypatch.setattr(va.tts_manager, "audio_handler", dummy_audio, raising=False)
-    monkeypatch.setattr(va.tts_manager, "speak", lambda *args, **kwargs: None)
+def port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
-@pytest.fixture
-def llm_post(monkeypatch):
-    post_mock = MagicMock(side_effect=lambda *args, **kwargs: _DummyResponse())
-    monkeypatch.setattr(va.requests, "post", post_mock)
-    return post_mock
+@pytest.fixture(scope="module")
+def engine(tmp_path_factory):
+    root = load().data_dir
+    s = Settings(data_dir=tmp_path_factory.mktemp("real-runtime"))
+    prepare(s)
+    for name in ["qwen3.5-2b", "parakeet", "amy", "silero", "minilm"]:
+        assert (root / "models" / name).is_dir(), f"Provision required real model {name}"
+        (s.data_dir / "models" / name).symlink_to(root / "models" / name, target_is_directory=True)
+    assert (root / "bin/llama-server").is_file(), "Build inference binaries before testing"
+    (s.data_dir / "bin").symlink_to(root / "bin", target_is_directory=True)
+    s.models.llm = "qwen3.5-2b"
+    s.models.temperature = 0
+    s.models.llm_url = f"http://127.0.0.1:{port()}"
+    for endpoint in [
+        s.services.rag,
+        s.services.assistant,
+        s.services.dashboard,
+        s.services.orchestrator,
+    ]:
+        endpoint.port = port()
+    save(s)
+    supervisor = MacBotOrchestrator(s)
+    runtime = None
+    try:
+        supervisor.definitions()
+        for name in ["llm", "rag"]:
+            result = supervisor.start_service(supervisor.service_definitions[name], retries=120)
+            assert result["success"], result
+        runtime = Runtime(s)
+        yield runtime
+    finally:
+        if runtime:
+            runtime.close()
+        supervisor.stop_all()
+        supervisor.client.close()
+        supervisor.auth.close()
 
 
-TOOL_CASES = [
-    ("web_search", "search the web for cats", "web_search"),
-    ("app_launcher", "open app safari", "open_app"),
-    ("screenshot", "please take a screenshot", "take_screenshot"),
-    ("weather", "what's the weather today", "get_weather"),
-    ("system_monitor", "show system info", "get_system_info"),
-    ("rag_search", "search knowledge base for docs", "search_knowledge_base"),
-]
+def until(engine, turn, predicate, timeout=20):
+    deadline = time.monotonic() + timeout
+    cursor = 0
+    events = []
+    while time.monotonic() < deadline:
+        data = engine.events.read(cursor, timeout=0.1)
+        cursor = data["cursor"]
+        events.extend(e for e in data["events"] if e["turn_id"] == turn.id)
+        if any(predicate(e) for e in events):
+            return events
+    raise AssertionError(f"Turn did not reach expected state: {events}")
 
 
-@pytest.mark.parametrize("tool_name,user_text,method_name", TOOL_CASES)
-def test_llama_chat_calls_enabled_tools(monkeypatch, llm_post, tool_name, user_text, method_name):
-    monkeypatch.setattr(va.CFG, "get_enabled_tools", lambda: [tool_name])
-    monkeypatch.setattr(va, "tool_caller", va.ToolCaller())
+def test_real_generation_and_clear_no_deadlock(engine):
+    engine.clear()
+    turn = engine.submit(
+        "What is two plus two? Answer with the number.", speak=False, session_id="test-session"
+    )
+    events = until(engine, turn, lambda e: e["state"] in {"completed", "failed"})
+    assert events[-1]["state"] == "completed"
+    assert "4" in "".join(e["data"]["text"] for e in events if e["kind"] == "delta")
+    assert len(engine.history) == 2
+    engine.clear()
+    assert not engine.history
 
-    tool_mock = MagicMock(return_value="TOOL RESPONSE")
-    monkeypatch.setattr(va.tool_caller, method_name, tool_mock)
 
-    va.llama_chat(user_text)
+def test_real_tool_proposal_requires_bound_dashboard_decision(engine):
+    engine.clear()
+    turn = engine.submit("Open Calculator.", speak=False, session_id="requesting-session")
+    events = until(
+        engine, turn, lambda e: e["state"] in {"approval_required", "failed", "completed"}
+    )
+    approvals = [e for e in events if e["kind"] == "approval"]
+    assert approvals, events
+    action = approvals[0]["data"]["action_id"]
+    with pytest.raises(PermissionError):
+        engine.decide(action, turn.id, True, "other-session")
+    result = engine.decide(action, turn.id, False, "requesting-session")
+    assert result["status"] == "denied"
+    with pytest.raises(PermissionError):
+        engine.decide(action, turn.id, True, "requesting-session")
+    events = until(engine, turn, lambda e: e["state"] in {"completed", "failed"})
+    assert events[-1]["state"] == "completed"
 
-    assert tool_mock.call_count == 1
-    assert llm_post.call_count == 0
 
-
-@pytest.mark.parametrize("tool_name,user_text,method_name", TOOL_CASES)
-def test_llama_chat_skips_disabled_tools(monkeypatch, llm_post, tool_name, user_text, method_name):
-    monkeypatch.setattr(va.CFG, "get_enabled_tools", lambda: [])
-    monkeypatch.setattr(va, "tool_caller", va.ToolCaller())
-
-    tool_mock = MagicMock(return_value="TOOL RESPONSE")
-    monkeypatch.setattr(va.tool_caller, method_name, tool_mock)
-
-    va.llama_chat(user_text)
-
-    assert tool_mock.call_count == 0
-    # Should fall back to LLM streaming when tools are disabled
-    assert llm_post.call_count == 1
+@pytest.mark.parametrize("attempt", range(5))
+def test_interruption_discards_late_output_before_next_turn(engine, attempt):
+    engine.clear()
+    turn = engine.submit("Explain photosynthesis in detailed numbered steps.", speak=False)
+    until(engine, turn, lambda e: e["kind"] == "delta")
+    engine.interrupt()
+    cutoff = engine.events.seq
+    replacement = engine.submit("What is the capital of France? Answer briefly.", speak=False)
+    events = until(engine, replacement, lambda e: e["state"] in {"completed", "failed"})
+    assert events[-1]["state"] == "completed"
+    assert "Paris" in "".join(e["data"]["text"] for e in events if e["kind"] == "delta")
+    assert not any(
+        e["turn_id"] == turn.id and e["kind"] == "delta"
+        for e in engine.events.read(cutoff)["events"]
+    )
+    assert engine.turns.qsize() <= 4 and engine.speech.qsize() <= 4

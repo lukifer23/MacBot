@@ -1,28 +1,46 @@
-from macbot.message_bus import MessageBus
+"""The bounded event journal replaces thread-per-event message buses."""
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from macbot.events import EventJournal
 
 
-def test_publish_to_specific_client():
-    bus = MessageBus()
-    bus.start()
-    try:
-        client_queue = bus.register_client("client1", "serviceA")
-        bus.publish({"type": "test", "content": 123}, target_client="client1")
-        message = client_queue.get(timeout=1)
-        assert message["content"] == 123
-    finally:
-        bus.stop()
+def test_bounded_delivery_reports_reconnect_gap():
+    journal = EventJournal(capacity=3)
+    for i in range(5):
+        journal.publish("s", "turn", "running", value=i)
+    data = journal.read(after=1)
+    assert data["gap"]
+    assert [e["seq"] for e in data["events"]] == [3, 4, 5]
+    assert data["cursor"] == 5
+    assert all(e["session_id"] == "s" and e["turn_id"] == "turn" for e in data["events"])
+    assert journal.read(after=5)["events"] == []
 
 
-def test_publish_to_service_type():
-    bus = MessageBus()
-    bus.start()
-    try:
-        q1 = bus.register_client("client1", "serviceA")
-        q2 = bus.register_client("client2", "serviceA")
-        bus.publish({"type": "broadcast", "value": "hi"}, target_service="serviceA")
-        m1 = q1.get(timeout=1)
-        m2 = q2.get(timeout=1)
-        assert m1["value"] == "hi"
-        assert m2["value"] == "hi"
-    finally:
-        bus.stop()
+def test_concurrent_publish_is_ordered_and_close_wakes_reader():
+    journal = EventJournal(capacity=100)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda n: journal.publish("s", str(n), "completed"), range(80)))
+    assert [e["seq"] for e in journal.read(0)["events"]] == list(range(1, 81))
+    result = []
+    thread = threading.Thread(target=lambda: result.append(journal.read(80, timeout=10)))
+    thread.start()
+    journal.close()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert result[0]["events"] == []
+
+
+def test_restarted_journal_resets_cursor_even_when_empty():
+    first = EventJournal()
+    first.publish("s", "old", "completed")
+    old = first.read(0)
+    restarted = EventJournal()
+    empty = restarted.read(old["cursor"], timeout=10, epoch=old["epoch"])
+    assert empty["reset"] and empty["cursor"] == 0
+    assert empty["epoch"] != old["epoch"]
+    restarted.publish("s", "new", "running")
+    result = restarted.read(20, epoch=old["epoch"])
+    assert result["reset"] and result["events"][0]["turn_id"] == "new"
+    assert not restarted.read(1, epoch=result["epoch"])["reset"]
