@@ -23,6 +23,25 @@ for path in artifacts:
     elif path.name.endswith(".tar.gz"):
         with tarfile.open(path) as archive:
             names = archive.getnames()
+        # Anchor the source allowlist at the archive root. A bare "docs" or
+        # "tests" Hatch pattern also matches vendor submodule directories.
+        allowed = {
+            "src",
+            "tests",
+            "scripts",
+            "docs",
+            "config",
+            "pyproject.toml",
+            "uv.lock",
+            "README.md",
+            "Makefile",
+            "LICENSE",
+            "PKG-INFO",
+            ".gitignore",
+        }
+        assert all(name.split("/")[1] in allowed for name in names), (
+            "Unexpected source archive root"
+        )
     else:
         continue
     bad = [

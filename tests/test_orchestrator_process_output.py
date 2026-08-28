@@ -63,6 +63,48 @@ def test_startup_failure_closes_its_child(tmp_path):
         supervisor.auth.close()
 
 
+def test_closed_stream_time_wait_does_not_block_restart(tmp_path):
+    import os
+
+    from macbot.config import save
+
+    # Close the server end first to leave a real TCP TIME_WAIT record. There
+    # is no live listener and nothing that the supervisor may terminate.
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as client:
+            peer, _ = listener.accept()
+            with peer:
+                peer.shutdown(socket.SHUT_WR)
+                assert client.recv(1) == b""
+                client.shutdown(socket.SHUT_WR)
+                assert peer.recv(1) == b""
+    settings = Settings(data_dir=tmp_path)
+    settings.services.dashboard.port = port
+    supervisor = MacBotOrchestrator(settings)
+    save(settings)
+    service = ServiceDefinition(
+        "dashboard",
+        [sys.executable, "-m", "macbot.web_dashboard"],
+        health_endpoint=settings.services.dashboard.url + "/ready",
+        port=port,
+        env={
+            **os.environ,
+            "MACBOT_DATA_DIR": str(tmp_path),
+            "MACBOT_CONFIG": str(settings.config_path),
+        },
+    )
+    try:
+        assert supervisor.start_service(service)["success"]
+    finally:
+        supervisor.stop_all()
+        supervisor.client.close()
+        supervisor.auth.close()
+
+
 def test_status_remains_available_when_readiness_fails(tmp_path):
     from macbot.orchestrator import create_app
 

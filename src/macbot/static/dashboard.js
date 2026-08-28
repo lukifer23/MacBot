@@ -176,7 +176,7 @@ async function refresh() {
   refreshing = true;
   try {
     const results = await Promise.allSettled([api('/api/status'), api('/api/services')]);
-    if (results[0].status === 'fulfilled') showStatus(results[0].value); else {setPhase('failed', 'failed'); $('model-label').textContent = 'Assistant unavailable · retrying'; $('metric-ttft').textContent = '—'; $('metric-audio').textContent = '—'; $('metric-queue').textContent = '—'; $('metric-queue-note').textContent = 'Assistant telemetry unavailable';}
+    if (results[0].status === 'fulfilled') showStatus(results[0].value); else {setPhase('failed', 'failed'); $('model-label').textContent = 'Assistant unavailable · retrying'; showMetric(null); showContext(); activeModels = null; definitionList('pipeline', [['Status', 'Unavailable · reconnecting']]); $('sample-count').textContent = 'Unknown'; $('metric-ttft-note').textContent = 'Telemetry unavailable'; $('metric-queue').textContent = '—'; $('metric-queue-note').textContent = 'Assistant telemetry unavailable';}
     if (results[1].status === 'fulfilled') showServices(results[1].value); else {$('updated').textContent = 'Telemetry unavailable'; $('metric-memory').textContent = '—'; for (const row of serviceRows.values()) {row.dot.dataset.ready = 'false'; row.meta.textContent = 'State unknown · connection unavailable';}}
     const denied = results.find(r => r.status === 'rejected' && r.reason.status === 401);
     if (denied) {disconnect(); fail(new Error('Session expired. Run macbot open to reconnect.'));}

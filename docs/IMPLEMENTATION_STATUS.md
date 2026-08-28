@@ -15,11 +15,15 @@ Checkpoint checks: **67 software/model tests passed in 28.67 seconds**; one phys
 
 The context/cancellation follow-up passed **83 software/model tests in 34.38 seconds**, including 20 repeated real-generation interruptions and a token-overflow history test. One device test remains deselected. Ruff, mypy and JavaScript syntax checks passed. Cancellation now shuts down the stream socket to wake the reader and leaves response cleanup to that reader, avoiding a cross-thread close race observed during testing.
 
+Hosted software CI also passed for `68cf984`. Follow-up verification found and fixed the supervisor's port probe rejecting closed TCP streams in TIME_WAIT; its probe now matches server address-reuse semantics while continuing to reject live listeners. The source archive allowlist is anchored at its root to exclude vendor submodule documents/tests. Offline installed-wheel checks use an OS loopback-only network policy and isolated temporary data; see the reproducible command in [verification](VERIFICATION.md).
+
+The recovery patch passed **84 software/model tests in 47.84 seconds**, with one physical-device test still deselected. Live browser verification confirmed service restart, automatic reconnection, a new conversation epoch and cleared context/turn metrics. During service failures the dashboard now removes stale model/audio telemetry instead of displaying it as current.
+
 ## Still open
 
 - Extended long-conversation behavior and semantic compaction. The follow-up context patch exposes the real token budget and preserves complete tool exchanges while pruning old turns; it does not implement semantic compaction.
 - Broader model/tool-selection accuracy. Initial 20-case results did not generalize fully to the additional 30-case screening. Small/faster models are candidates, not proven replacements.
-- Final end-to-end offline wheel validation after the latest edits. Hosted software CI passed for checkpoint `742e3ef` ([run 33204304226](https://github.com/lukifer23/MacBot/actions/runs/33204304226)); this excludes model inference and physical-device acceptance.
+- Recheck release artifacts after subsequent changes. The context patch's installed wheel passed an isolated native startup, authenticated dashboard text stream, context metrics and document import/retrieval with external networking denied by macOS. This did not open audio devices. Hosted software CI passed for checkpoint `742e3ef` ([run 33204304226](https://github.com/lukifer23/MacBot/actions/runs/33204304226)); this excludes model inference and physical-device acceptance.
 - Built-in microphone/speaker behavior, browser recording, acoustic latency/interruption measurements, a 30-minute conversation soak and user listening acceptance.
 - Final model/voice selection, remaining runtime recovery checks and complete release evidence.
 

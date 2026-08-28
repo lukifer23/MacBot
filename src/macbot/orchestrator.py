@@ -129,13 +129,21 @@ class MacBotOrchestrator:
             if service.name in self.processes and self.processes[service.name].poll() is None:
                 return {"success": False, "error": "Service is already owned and running"}
             if service.port:
-                with socket.socket() as sock:
+                host = urlsplit(service.health_endpoint or "").hostname or "127.0.0.1"
+                family = socket.AF_INET6 if ":" in host else socket.AF_INET
+                with socket.socket(family) as sock:
+                    # Match the actual server's bind semantics: TIME_WAIT from
+                    # a closed stream is not an unrelated live listener.
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     try:
-                        sock.bind(("127.0.0.1", service.port))
+                        sock.bind((host, service.port))
                     except OSError:
+                        self.failures[service.name] = (
+                            f"Port {service.port} is occupied; no process was stopped"
+                        )
                         return {
                             "success": False,
-                            "error": f"Port {service.port} is occupied; no process was stopped",
+                            "error": self.failures[service.name],
                         }
             log = (self.settings.data_dir / "logs" / (service.name + ".log")).open("ab")
             try:
