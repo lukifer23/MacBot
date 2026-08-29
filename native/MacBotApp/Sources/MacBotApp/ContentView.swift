@@ -220,13 +220,38 @@ private struct SettingsView: View {
                 LabeledContent("Voice", value: state.voiceName)
             }
             Section("Privacy") {
-                LabeledContent("Conversation history", value: state.historyAvailable ? "Encrypted · 30 days" : "Unavailable")
+                LabeledContent("Conversation history", value: state.historyAvailable ? "Encrypted · \(state.retentionDays) days" : "Unavailable")
                 Text("Conversation content stays on this Mac. Raw microphone audio is not retained.").foregroundStyle(.secondary)
+                Stepper("Retention: \(state.retentionDays) days", value: $state.retentionDays, in: 1...3650)
             }
             Section("Web search") {
-                Text("Brave Search is used when its Keychain credential is configured. The no-key provider is labeled as degraded in results.")
+                LabeledContent("Brave Search", value: state.searchCredentialConfigured ? "Configured in Keychain" : "Not configured")
+                SecureField("Brave Search API key", text: $state.searchCredential)
+                HStack {
+                    Button("Save to Keychain", action: state.saveSearchCredential)
+                        .disabled(state.searchCredential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if state.searchCredentialConfigured {
+                        Button("Remove credential", role: .destructive, action: state.deleteSearchCredential)
+                    }
+                }
+                Text("When no key is configured, DDGS results are explicitly labeled degraded.")
                     .foregroundStyle(.secondary)
             }
+            Section("Conversation") {
+                Stepper("Endpoint silence: \(state.endpointMilliseconds) ms", value: $state.endpointMilliseconds, in: 150...2000, step: 25)
+                Picker("Context target", selection: $state.contextLength) {
+                    Text("8K").tag(8192)
+                    Text("16K").tag(16_384)
+                    Text("32K").tag(32_768)
+                }
+                Toggle("Enable browser diagnostics fallback", isOn: $state.browserFallbackEnabled)
+                Button("Save runtime settings", action: state.saveRuntimeSettings)
+                if state.restartRequired {
+                    Label("Quit and reopen MacBot to apply these changes.", systemImage: "arrow.clockwise")
+                        .foregroundStyle(.orange)
+                }
+            }
         }.formStyle(.grouped).navigationTitle("Settings")
+            .task { await state.refreshSettings() }
     }
 }

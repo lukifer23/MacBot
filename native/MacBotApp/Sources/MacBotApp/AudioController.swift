@@ -17,6 +17,10 @@ final class AudioController: @unchecked Sendable {
     private var descriptor: Int32 = -1
     private var converter: AVAudioConverter?
     private var running = false
+    private var capturing = false
+    private var pending: [UInt64: Int] = [:]
+    private var ended: Set<UInt64> = []
+    private var scheduled: Set<UInt64> = []
 
     func connect(path: String, token: String) throws {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -44,6 +48,7 @@ final class AudioController: @unchecked Sendable {
         guard reply["ok"] as? Bool == true else {
             close(); throw NativeClientError.protocolError("Native audio authentication failed")
         }
+        try startPlaybackOnly()
         playbackQueue.async { [weak self] in self?.readPlayback() }
     }
 
@@ -54,7 +59,14 @@ final class AudioController: @unchecked Sendable {
         guard granted else {
             throw NSError(domain: "MacBot", code: 4, userInfo: [NSLocalizedDescriptionKey: "Microphone access is required for hands-free conversation"])
         }
-        if running { return }
+        if capturing { return }
+        if running {
+            engine.stop()
+            player.stop()
+            engine.disconnectNodeOutput(player)
+            engine.disconnectNodeOutput(engine.mainMixerNode)
+            running = false
+        }
         try engine.inputNode.setVoiceProcessingEnabled(true)
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
@@ -63,26 +75,7 @@ final class AudioController: @unchecked Sendable {
         else { throw NativeClientError.protocolError("The built-in microphone format is unavailable") }
         conversion.channelMap = [0]
         converter = conversion
-        if !engine.attachedNodes.contains(player) {
-            engine.attach(player)
-            guard let playbackFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: 48_000,
-                channels: 1,
-                interleaved: false
-            ) else {
-                throw NativeClientError.protocolError("The playback format is unavailable")
-            }
-            engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
-        }
-        let outputChannels = engine.outputNode.inputFormat(forBus: 0).channelCount
-        guard outputChannels > 0,
-              let outputFormat = AVAudioFormat(
-                standardFormatWithSampleRate: inputFormat.sampleRate,
-                channels: outputChannels
-              )
-        else { throw NativeClientError.protocolError("The built-in speaker format is unavailable") }
-        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)
+        try connectPlaybackGraph(outputSampleRate: inputFormat.sampleRate)
         engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             guard let self, let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
                   let source = buffer.floatChannelData, let destination = copy.floatChannelData else { return }
@@ -97,30 +90,84 @@ final class AudioController: @unchecked Sendable {
         try engine.start()
         player.play()
         running = true
+        capturing = true
+        sendEventSynchronously([
+            "event": "ready",
+            "aec": engine.inputNode.isVoiceProcessingEnabled,
+            "input_sample_rate": inputFormat.sampleRate,
+            "output_sample_rate": engine.outputNode.inputFormat(forBus: 0).sampleRate,
+        ])
     }
 
     func stopCapture() {
-        guard running else { return }
+        guard capturing else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         player.stop()
+        engine.disconnectNodeOutput(player)
+        engine.disconnectNodeOutput(engine.mainMixerNode)
+        try? engine.inputNode.setVoiceProcessingEnabled(false)
+        converter = nil
+        capturing = false
         running = false
+        try? startPlaybackOnly()
     }
 
     func setMuted(_ muted: Bool) {
-        guard running else { return }
+        guard capturing else { return }
         engine.inputNode.isVoiceProcessingInputMuted = muted
     }
 
     func close() {
-        stopCapture()
+        if capturing { engine.inputNode.removeTap(onBus: 0) }
+        engine.stop()
+        player.stop()
+        capturing = false
+        running = false
         let fd = descriptor
         descriptor = -1
         if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) }
     }
 
+    private func startPlaybackOnly() throws {
+        if running { return }
+        let deviceFormat = engine.outputNode.inputFormat(forBus: 0)
+        guard deviceFormat.sampleRate > 0 else {
+            throw NativeClientError.protocolError("The built-in speaker format is unavailable")
+        }
+        try connectPlaybackGraph(outputSampleRate: deviceFormat.sampleRate)
+        engine.prepare()
+        try engine.start()
+        player.play()
+        running = true
+        sendEventSynchronously([
+            "event": "ready",
+            "aec": false,
+            "output_sample_rate": engine.outputNode.inputFormat(forBus: 0).sampleRate,
+        ])
+    }
+
+    private func connectPlaybackGraph(outputSampleRate: Double) throws {
+        if !engine.attachedNodes.contains(player) { engine.attach(player) }
+        guard let playbackFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ) else { throw NativeClientError.protocolError("The playback format is unavailable") }
+        let outputChannels = engine.outputNode.inputFormat(forBus: 0).channelCount
+        guard outputChannels > 0,
+              let outputFormat = AVAudioFormat(
+                standardFormatWithSampleRate: outputSampleRate,
+                channels: outputChannels
+              )
+        else { throw NativeClientError.protocolError("The built-in speaker format is unavailable") }
+        engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)
+    }
+
     private func convertAndSend(_ source: AVAudioPCMBuffer, to format: AVAudioFormat) {
-        guard running, descriptor >= 0, let converter else { return }
+        guard capturing, descriptor >= 0, let converter else { return }
         let capacity = AVAudioFrameCount(Double(source.frameLength) * 16_000 / source.format.sampleRate + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
         var supplied = false
@@ -140,13 +187,15 @@ final class AudioController: @unchecked Sendable {
                 let frame = try readFrame(limit: 2 * 1024 * 1024)
                 guard let kind = frame.first else { continue }
                 if kind == 3 { schedulePCM(frame.dropFirst()) }
-                else if kind == 4 { player.stop(); if running { player.play() } }
+                else if kind == 4 { stopPlayback(frame.dropFirst()) }
+                else if kind == 5 { finishPlayback(frame.dropFirst()) }
             } catch { close(); return }
         }
     }
 
     private func schedulePCM(_ body: Data.SubSequence) {
         guard body.count >= 12, (body.count - 12) % 4 == 0 else { return }
+        let generation = body.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         let rate = body.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         let sampleData = Data(body.dropFirst(12))
         let count = sampleData.count / 4
@@ -155,8 +204,58 @@ final class AudioController: @unchecked Sendable {
               let destination = buffer.floatChannelData else { return }
         buffer.frameLength = AVAudioFrameCount(count)
         _ = sampleData.withUnsafeBytes { memcpy(destination[0], $0.baseAddress!, sampleData.count) }
-        player.scheduleBuffer(buffer)
+        pending[generation, default: 0] += 1
+        if scheduled.insert(generation).inserted {
+            sendEvent(["event": "playback_scheduled", "generation": generation])
+        }
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            guard let controller = self else { return }
+            controller.playbackQueue.async { controller.played(generation) }
+        }
         if !player.isPlaying { player.play() }
+    }
+
+    private func stopPlayback(_ body: Data.SubSequence) {
+        guard body.count == 8 else { return }
+        let generation = body.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        player.stop()
+        pending.removeAll()
+        ended.removeAll()
+        scheduled.removeAll()
+        if running { player.play() }
+        sendEvent(["event": "stopped", "generation": generation])
+    }
+
+    private func finishPlayback(_ body: Data.SubSequence) {
+        guard body.count == 8 else { return }
+        let generation = body.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        ended.insert(generation)
+        emitDrainedIfReady(generation)
+    }
+
+    private func played(_ generation: UInt64) {
+        pending[generation] = max(0, (pending[generation] ?? 1) - 1)
+        emitDrainedIfReady(generation)
+    }
+
+    private func emitDrainedIfReady(_ generation: UInt64) {
+        guard ended.contains(generation), pending[generation, default: 0] == 0 else { return }
+        pending[generation] = nil
+        ended.remove(generation)
+        scheduled.remove(generation)
+        sendEvent(["event": "drained", "generation": generation])
+    }
+
+    private func sendEvent(_ value: [String: Any]) {
+        guard let encoded = try? JSONSerialization.data(withJSONObject: value) else { return }
+        let frame = Data([1]) + encoded
+        writeQueue.async { [weak self] in try? self?.sendFrame(frame) }
+    }
+
+    private func sendEventSynchronously(_ value: [String: Any]) {
+        guard let encoded = try? JSONSerialization.data(withJSONObject: value) else { return }
+        let frame = Data([1]) + encoded
+        writeQueue.sync { try? sendFrame(frame) }
     }
 
     private func sendJSON(_ value: [String: Any]) throws {

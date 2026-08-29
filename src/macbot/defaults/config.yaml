@@ -1,5 +1,6 @@
 version: 2
 services:
+  browser_fallback_enabled: false
   dashboard:
     host: 127.0.0.1
     port: 3000

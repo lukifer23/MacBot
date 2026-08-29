@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from macbot.config import Settings, load, prepare
@@ -91,6 +92,24 @@ def test_search_rejects_malformed_payload(documents, payload):
         auth.close()
 
 
+def test_authenticated_embedding_endpoint_returns_real_normalized_vectors(documents):
+    settings, store = documents
+    app = create_app(settings, store)
+    auth = app.extensions["macbot_auth"]
+    try:
+        response = app.test_client().post(
+            settings.services.rag.url + "/api/embed",
+            json={"texts": ["cobalt", "ocean blue"]},
+            headers=auth.headers("rag"),
+        )
+        assert response.status_code == 200
+        vectors = np.asarray(response.get_json()["vectors"], dtype=np.float32)
+        assert vectors.shape == (2, 384)
+        np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1, atol=1e-5)
+    finally:
+        auth.close()
+
+
 def test_migration_preserves_ids_duplicates_and_backup(documents, tmp_path):
     _, store = documents
     source = tmp_path / "legacy"
@@ -122,6 +141,34 @@ def test_rebuild_changes_index_and_keeps_previous(documents):
     assert store.active_name != previous
     assert store.revision_count(previous) == 1
     assert "Saturn" in store.search("Which planet has rings?")[0]["content"]
+
+
+def test_missing_derived_index_is_backed_up_and_rebuilt(tmp_path):
+    source = load().data_dir / "models/minilm"
+    settings = Settings(data_dir=tmp_path / "runtime")
+    prepare(settings)
+    (settings.data_dir / "models/minilm").symlink_to(source, target_is_directory=True)
+    store = DocumentStore(settings)
+    document_id = store.add("The recovery phrase is cobalt lantern.", "Recovery")
+    missing_revision = store.active_name
+    assert missing_revision
+    store.close()
+
+    (settings.data_dir / "rag" / "indexes" / missing_revision / "vectors.npy").unlink()
+    recovered = DocumentStore(settings)
+    try:
+        assert recovered.active_name != missing_revision
+        assert recovered.recovery_backup is not None
+        backup = recovered.recovery_backup
+        assert (backup / "documents.sqlite3").is_file()
+        assert not (backup / "indexes" / missing_revision / "vectors.npy").exists()
+        assert recovered.get(document_id)["content"] == "The recovery phrase is cobalt lantern."
+        assert (
+            recovered.search("What is the recovery phrase?")[0]["metadata"]["document_id"]
+            == document_id
+        )
+    finally:
+        recovered.close()
 
 
 def test_restore_preserves_previous_store_and_restores_source(documents):

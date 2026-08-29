@@ -1,7 +1,10 @@
+import json
 import os
 import secrets
 import socket
 import struct
+import threading
+import time
 
 import numpy as np
 
@@ -35,6 +38,27 @@ def test_native_ipc_authentication_and_bounded_status(tmp_path):
             assert response == {"ok": True, "protocol": 1, "sample_rate": 16000}
             payload = bytes([2]) + np.zeros(512, dtype="<f4").tobytes()
             audio.sendall(struct.pack(">I", len(payload)) + payload)
+            ready = (
+                bytes([1])
+                + json.dumps({"event": "ready", "aec": True, "input_sample_rate": 48000}).encode()
+            )
+            audio.sendall(struct.pack(">I", len(ready)) + ready)
+            deadline = time.monotonic() + 1
+            while not runtime.native_aec and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert runtime.audio_status()["native_audio"]
+            assert runtime.audio_status()["aec"]
+            done = runtime.native_playback_done[7] = threading.Event()
+            drained = bytes([1]) + json.dumps({"event": "drained", "generation": 7}).encode()
+            audio.sendall(struct.pack(">I", len(drained)) + drained)
+            assert done.wait(1)
+            runtime.last_interrupt_requested_ns = time.monotonic_ns()
+            stopped = bytes([1]) + json.dumps({"event": "stopped", "generation": 8}).encode()
+            audio.sendall(struct.pack(">I", len(stopped)) + stopped)
+            deadline = time.monotonic() + 1
+            while not runtime.interruption_ms and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert runtime.interruption_ms[-1] < 250
         assert not token_path.exists()
         assert server.path.stat().st_mode & 0o077 == 0
         assert server.audio_path.stat().st_mode & 0o077 == 0

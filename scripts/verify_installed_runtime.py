@@ -45,6 +45,9 @@ def verify(provisioned, model, report):
         )
     with tempfile.TemporaryDirectory(prefix="macbot-wheel-runtime-") as temporary:
         s = Settings(data_dir=Path(temporary) / "state")
+        # This verifier explicitly exercises the optional authenticated browser
+        # adapter. Normal native installs keep it disabled.
+        s.services.browser_fallback_enabled = True
         s.models.llm = model
         s.models.temperature = 0
         s.models.max_tokens = 128

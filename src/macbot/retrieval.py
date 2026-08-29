@@ -119,6 +119,7 @@ class DocumentStore:
         self.embedder = Embedder(settings)
         self.vectors: np.ndarray = np.empty((0, 384), dtype=np.float32)
         self.chunks: list[dict[str, Any]] = []
+        self.recovery_backup: Path | None = None
         if self.active_name is None:
             with self.lock, self.db:
                 self._rebuild()
@@ -130,7 +131,13 @@ class DocumentStore:
                 raise RuntimeError(
                     "Embedding configuration changed; rebuild the index before serving queries"
                 )
-            self._load(self._required_active())
+            active = self._required_active()
+            if self._active_files_missing(active):
+                self.recovery_backup = self.backup(prefix="incomplete-rag")
+                with self.lock, self.db:
+                    self._rebuild()
+            else:
+                self._load(active)
 
     @property
     def active_name(self) -> str | None:
@@ -159,6 +166,10 @@ class DocumentStore:
             raise RuntimeError("Active retrieval index count verification failed")
         self.vectors = vectors
         self.chunks = chunks
+
+    def _active_files_missing(self, name: str) -> bool:
+        root = self.indexes / name
+        return not (root / "vectors.npy").is_file() or not (root / "chunks.json").is_file()
 
     def _cached_vectors(self, entries: list[dict[str, Any]]) -> np.ndarray:
         vectors: dict[str, np.ndarray] = {}
@@ -306,6 +317,18 @@ class DocumentStore:
                 for index in indices
             ]
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if (
+            not isinstance(texts, list)
+            or not 1 <= len(texts) <= 32
+            or any(
+                not isinstance(text, str) or not text.strip() or len(text) > 10_000
+                for text in texts
+            )
+        ):
+            raise ValueError("Embedding input must contain 1–32 nonempty bounded strings")
+        return self.embedder.encode(texts).tolist()
+
     def list(self) -> list[dict[str, Any]]:
         with self.lock:
             return [
@@ -345,8 +368,10 @@ class DocumentStore:
             raise ValueError("Unknown retrieval revision")
         return int(row[0])
 
-    def backup(self) -> Path:
-        destination = self.settings.data_dir / "backups" / ("rag-" + uuid.uuid4().hex)
+    def backup(self, *, prefix: str = "rag") -> Path:
+        if not prefix.replace("-", "").isalnum():
+            raise ValueError("Backup prefix must be alphanumeric with optional hyphens")
+        destination = self.settings.data_dir / "backups" / (prefix + "-" + uuid.uuid4().hex)
         destination.mkdir(parents=True, mode=0o700)
         with self.lock:
             with sqlite3.connect(destination / "documents.sqlite3") as target:
@@ -426,6 +451,7 @@ class DocumentStore:
                 "index": self.active_name,
                 "index_type": "exact_cosine_mmap",
                 "embedding": self.embedder.signature,
+                "recovery_backup": str(self.recovery_backup) if self.recovery_backup else None,
             }
 
     def close(self) -> None:

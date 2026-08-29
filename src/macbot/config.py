@@ -28,6 +28,7 @@ class Endpoint(StrictModel):
 
 
 class Services(StrictModel):
+    browser_fallback_enabled: bool = False
     dashboard: Endpoint = Endpoint(port=3000)
     assistant: Endpoint = Endpoint(port=8123)
     rag: Endpoint = Endpoint(port=8001)
@@ -35,7 +36,7 @@ class Services(StrictModel):
 
     @model_validator(mode="after")
     def unique_ports(self):
-        ports = [getattr(self, name).port for name in type(self).model_fields]
+        ports = [self.dashboard.port, self.assistant.port, self.rag.port, self.orchestrator.port]
         if len(ports) != len(set(ports)):
             raise ValueError("Service ports must be distinct")
         return self
@@ -127,7 +128,10 @@ class Settings(StrictModel):
     @model_validator(mode="after")
     def unique_model_port(self):
         if urlsplit(self.models.llm_url).port in [
-            getattr(self.services, n).port for n in Services.model_fields
+            self.services.dashboard.port,
+            self.services.assistant.port,
+            self.services.rag.port,
+            self.services.orchestrator.port,
         ]:
             raise ValueError("LLM port conflicts with a MacBot service")
         return self

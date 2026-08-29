@@ -59,6 +59,19 @@ class IntentRouter:
             + json.dumps(self.tools.settings.tools.allowed_apps)
             + ". Argument schemas: "
             + json.dumps({name: fields for name, (_, fields) in SCHEMAS.items()})
+            + '. Required examples: "Hello, how are you?" => '
+            '{"mode":"respond","actions":[],"clarification":""}; '
+            '"What is my verification word?" => '
+            '{"mode":"respond","actions":[],"clarification":""}; '
+            '"What time is it?" => {"mode":"act","actions":[{"name":"local_time",'
+            '"arguments":{},"source_span":"What time is it?"}],"clarification":""}; '
+            '"Open Calculator and Notes" => {"mode":"act","actions":['
+            '{"name":"open_app","arguments":{"app":"Calculator"},"source_span":"Open Calculator"},'
+            '{"name":"open_app","arguments":{"app":"Notes"},"source_span":"Notes"}],'
+            '"clarification":""}; "Search my documents for the project codename without searching '
+            'the web." => {"mode":"act","actions":[{"name":"rag_search","arguments":'
+            '{"query":"project codename"},"source_span":"Search my documents for the project codename"}],'
+            '"clarification":""}. Never choose web_search when the user excludes web search.'
         )
         chunks = self.llm.stream(
             [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
@@ -116,6 +129,9 @@ class IntentRouter:
             raise ValueError("Only act mode may contain actions")
         if mode == "clarify" and not clarification.strip():
             raise ValueError("Clarify mode requires a question")
-        if mode != "clarify" and clarification:
-            raise ValueError("Only clarify mode may contain clarification text")
+        if mode != "clarify":
+            # Small local models sometimes populate every schema field. This
+            # field has no authority outside clarify mode, so normalize it away
+            # after the mode/action invariants above have passed.
+            clarification = ""
         return Intent(mode, tuple(actions), clarification)

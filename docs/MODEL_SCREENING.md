@@ -1,22 +1,51 @@
-# Local model screening — 2026-08-28
+# Local model screening — 2026-08-29
 
-These are actual llama.cpp v0.3.0 runs on the M3 Pro, not vendor benchmark claims. The registry pins each GGUF revision and hash. The `context-v4` reports use the same MacBot system prompt, updated tool descriptions, temperature 0, 4,096-token context and 128-token output cap. Each suite ran twice; the table uses the second pass.
+These are actual runs on this M3 Pro using the source-built llama.cpp **b10509**
+binary (`fe8156f789011f6ea0baf6917ea09f88b89d9554`, installed
+`llama-server` SHA-256
+`bef7e191773c494a259b5b85d4b981e4c9a792e1f078cdf4a6c75be07e3804a8`).
+Both candidates used Q4_K_M weights, the same current MacBot prompt and tool
+schema, temperature zero, a 16,384-token context target, and a 128-token output
+cap. Each suite ran twice; the table reports the warm pass.
 
-| Model | Quantization | Core (20) | Additional cases (30) | Warm p95 first output, core / additional | Maximum sampled process RSS |
-| --- | --- | --- | --- | --- | --- |
-| Qwen3-1.7B | Q4_K_M | 19/20 | 28/30 | 151 / 155 ms | 1.77 GB |
-| Qwen3.5-0.8B | Q4_K_M | 19/20 | 28/30 | 112 / 112 ms | 0.90 GB |
-| Qwen3.5-2B | Q4_K_M | 20/20 | 30/30 | 307 / 359 ms | 1.66 GB |
+| Model | Core | Additional cases | Combined selection | Warm p95 first output, core / additional | Maximum sampled process RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.5-2B | 20/20 | 29/30 | 49/50 (98%) | 193 / 195 ms | 1.79 GB |
+| Qwen3-1.7B | 19/20 | 28/30 | 47/50 (94%) | 143 / 144 ms | 3.16 GB |
 
-Qwen3.5-2B is the leading candidate under this configuration. The smaller models missed enough selections to remain below 95% over the combined 50 cases. The packaged default is not changed until broader quality and device acceptance. Qwen3-1.7B is not Qwen3.5-1.7B and is not Qwen3-ASR-1.7B.
+Qwen3.5-2B remains the selected default because it passes the 95% routing gate;
+Qwen3-1.7B does not. The smaller model's text onset was faster, but it missed
+more actions and used more sampled RSS at this context size. Qwen3-1.7B is not
+Qwen3.5-1.7B and is not Qwen3-ASR-1.7B.
 
-## Limits and reproducibility
+## Provenance and limits
 
-- First output means a streamed text or tool-call fragment. It is not first audible speech, completed answer time, or a guarantee that the fragment is useful.
-- No proposed tool executed in these screens. Approval safety has separate integration tests.
-- The additional suite was initially a holdout, but its failures informed the general web-search tool description. These reruns are regression evidence, not an untouched test set. Fifty cases do not establish broad assistant accuracy.
-- Runs were sequential without another MacBot model workload. Other desktop activity and thermal state were not controlled. Do not compare earlier runs with different tool schemas as an isolated model improvement.
-- RSS sums the benchmark Python process and llama server at case boundaries. It is not peak GPU/unified-memory accounting or the full voice stack's memory gate.
-- Raw JSONL and summaries remain in the private data directory's `reports` folder, named `<model>-<core|holdout>-context-v4.*`. Summaries record artifact hashes, runtime versions, binary hash, prompt/schema hashes and settings; raw rows retain every response, selection and timing. Failed cases are not omitted.
+- The installed Qwen3.5 file is the pinned Unsloth Q4_K_M artifact derived from
+  the official `Qwen/Qwen3.5-2B` model. Its exact revision and file hash are in
+  the catalog and receipt. A locally reproduced conversion from pinned official
+  source weights is still a release gate; this report does not mislabel the
+  community GGUF as an official Qwen artifact.
+- First output means the first streamed text or tool-call fragment. It is not
+  first audible speech, completed answer time, or proof that the fragment is
+  useful.
+- No proposed desktop action executed in these screens. Real runtime tests cover
+  the typed planner, tool-result response phase, compaction, interruption, and
+  required regressions without substituting a fake inference backend.
+- The additional suite was initially a holdout, but earlier failures informed
+  the general web-search description. These reruns are regression evidence, not
+  an untouched benchmark.
+- RSS sums the benchmark Python process and llama server at case boundaries. It
+  is not peak unified-memory accounting or the full voice stack's memory gate.
+- Raw immutable JSONL and summaries are retained under the private reports
+  directory with `b10509-16k` in their names. Summaries include artifact,
+  binary, prompt, schema, settings, runtime, timing, and RSS provenance.
 
-Run `scripts/benchmark_models.py MODEL --case-set core|holdout --output /new/report/path.jsonl` using `uv run --frozen --all-extras python`. Reports refuse overwrite. For the next release decision, add unseen conversational and adversarial cases, long context, recorded speech, cancellation, and operator listening tests.
+Run candidates sequentially with unrelated workloads stopped:
+
+```bash
+uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b \
+  --case-set core --output /new/private/report.jsonl
+```
+
+Reports refuse overwrite. Device speech latency, acoustic echo behavior, broad
+assistant quality, and user listening acceptance remain separate gates.

@@ -13,6 +13,13 @@ Configuration migration keeps a private copy of the original, maps supported set
 RAG migration first copies the source. Legacy JSON records and authoritative
 SQLite records are reconciled by document ID. Conflicting content or metadata
 stops migration; resolve the discrepancy in a separate source copy and retry.
+
+The exact vector index is derived data. If the authoritative SQLite database
+references an index revision whose files are missing, startup first creates an
+owner-only `incomplete-rag-*` backup and builds a new verified revision from the
+preserved documents. Present-but-corrupt indexes and embedding-signature changes
+still fail closed and require explicit inspection or `rebuild-index`; they are
+not silently replaced.
 The original source and backup remain unchanged. Source IDs and content are
 retained, including duplicate legacy IDs with identical content. Repeat ordinary
 imports deduplicate. A Chroma-only store without authoritative source content

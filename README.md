@@ -26,10 +26,11 @@ uv run --frozen macbot models download qwen3.5-2b parakeet kokoro minilm silero
 open "$HOME/Applications/MacBot.app"
 ```
 
-The build produces and ad hoc signs `MacBot.app`, including microphone purpose
-metadata and the audio-input entitlement. The development bundle currently
-uses the repository's locked Python runtime; clean wheel installation and a
-self-contained runtime layout remain release gates.
+The install build creates a clean Python 3.12 environment from the locked graph,
+installs the built wheel under `~/Library/Application Support/MacBot/runtime`,
+preserves the prior runtime under `backups` for rollback, and ad hoc signs
+`MacBot.app`. The installed application contains no checkout path. A build
+without `--install` remains a repository-linked development bundle.
 
 All mutable settings, models, documents, credentials, history, and logs live
 under `~/Library/Application Support/MacBot`. Normal operation never rewrites
@@ -74,8 +75,9 @@ never own a second assistant, microphone, playback worker, or history pipeline.
 uv run ruff format --check src tests
 uv run ruff check src tests
 uv run mypy src/macbot
-uv run pytest -m 'not models and not device'
-uv run pytest -m models tests/test_rag_server_api.py
+uv run pytest -m 'not device'
+uv run pip-audit --local
+uv build && python3 scripts/inspect_package.py
 ./scripts/build_native_app.sh
 ```
 

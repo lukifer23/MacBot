@@ -6,6 +6,13 @@ package_root="$repo_root/native/MacBotApp"
 output_root="$repo_root/build/native"
 app="$output_root/MacBot.app"
 cli="$repo_root/.venv/bin/macbot"
+source_root="$repo_root/src"
+
+if [[ "${1:-}" == "--install" ]]; then
+  "$repo_root/scripts/install_runtime.sh"
+  cli="$HOME/Library/Application Support/MacBot/runtime/bin/macbot"
+  source_root=""
+fi
 
 if [[ ! -x "$cli" ]]; then
   echo "MacBot CLI is not installed in the project environment. Run: uv sync --frozen --all-extras" >&2
@@ -22,10 +29,11 @@ if path.exists():
 (path / "Contents/Resources").mkdir(parents=True)
 PY
 cp "$package_root/.build/release/MacBotApp" "$app/Contents/MacOS/MacBotApp"
-python3 - "$package_root/Info.plist.in" "$app/Contents/Info.plist" "$cli" "$repo_root/src" <<'PY'
+python3 - "$package_root/Info.plist.in" "$app/Contents/Info.plist" "$cli" "$source_root" <<'PY'
 import pathlib, sys
-template, output, cli, source = map(pathlib.Path, sys.argv[1:])
-text = template.read_text().replace("__MACBOT_CLI__", str(cli)).replace("__MACBOT_SOURCE__", str(source))
+template, output, cli = map(pathlib.Path, sys.argv[1:4])
+source = sys.argv[4]
+text = template.read_text().replace("__MACBOT_CLI__", str(cli)).replace("__MACBOT_SOURCE__", source)
 output.write_text(text)
 PY
 # Cloud-synchronized workspaces can attach Finder metadata while the bundle is

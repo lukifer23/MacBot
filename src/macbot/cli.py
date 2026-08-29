@@ -25,18 +25,27 @@ from .provision import (
     download,
     install_binaries,
     model_dir,
+    sha256,
     verify,
     voice_model,
 )
 
 REVISIONS = {
-    "llama.cpp": "c1d0e7a004015f23bc0233470b747b596f29b264",
+    # llama.cpp release b10509. Keep the immutable commit as the build input;
+    # the release asset is independently published as sha256
+    # ca989517532a06a22846ed00d6beb2684186c93336b0337d6eecc8fed2143070.
+    "llama.cpp": "fe8156f789011f6ea0baf6917ea09f88b89d9554",
     "whisper.cpp": "371b5a7561823ab2bb32142d2751e35e7534727b",
 }
 
 
 def build_inference(settings: Settings, source: Path | None = None):
-    root = source or settings.data_dir / "sources"
+    root = (source or settings.data_dir / "sources").expanduser().resolve()
+    build_flags = [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DGGML_METAL=ON",
+    ]
     for name, revision in REVISIONS.items():
         repo = root / "models" / name
         if not repo.exists():
@@ -54,15 +63,31 @@ def build_inference(settings: Settings, source: Path | None = None):
                 ],
                 check=True,
             )
-            subprocess.run(
-                ["git", "-C", str(repo), "fetch", "--depth", "1", "origin", revision], check=True
-            )
-            subprocess.run(["git", "-C", str(repo), "checkout", "--detach", revision], check=True)
+        dirty_lines = subprocess.check_output(
+            ["git", "-C", str(repo), "status", "--porcelain"], text=True
+        ).splitlines()
+        # whisper.cpp's own CMake configure rewrites this package version from
+        # the checked-in release number to its computed -dev version. It is a
+        # generated build side effect, not source input or an operator edit.
+        if name == "whisper.cpp" and dirty_lines == [" M bindings/javascript/package.json"]:
+            package = repo / "bindings/javascript/package.json"
+            if '"version": "1.9.3-dev"' in package.read_text():
+                subprocess.run(
+                    ["git", "-C", str(repo), "restore", "bindings/javascript/package.json"],
+                    check=True,
+                )
+                dirty_lines = []
+        dirty = "\n".join(dirty_lines)
+        if dirty:
+            raise RuntimeError(f"{name}: source checkout has local changes; refusing to replace it")
         actual = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
         ).strip()
         if actual != revision:
-            raise RuntimeError(f"{name}: expected {revision}; source checkout was not modified")
+            subprocess.run(
+                ["git", "-C", str(repo), "fetch", "--depth", "1", "origin", revision], check=True
+            )
+            subprocess.run(["git", "-C", str(repo), "checkout", "--detach", revision], check=True)
         subprocess.run(
             [
                 "cmake",
@@ -70,9 +95,7 @@ def build_inference(settings: Settings, source: Path | None = None):
                 str(repo),
                 "-B",
                 str(repo / "build"),
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DBUILD_SHARED_LIBS=OFF",
-                "-DGGML_METAL=ON",
+                *build_flags,
             ],
             check=True,
         )
@@ -102,7 +125,31 @@ def build_inference(settings: Settings, source: Path | None = None):
         ["cmake", "--build", str(target), "--target", "macbot-whisper", "-j", "4"], check=True
     )
     shutil.copy2(target / "macbot-whisper", settings.data_dir / "bin/macbot-whisper")
-    atomic_write(settings.data_dir / "bin/versions.json", json.dumps(REVISIONS).encode())
+    provenance = {}
+    for component, revision in REVISIONS.items():
+        repo = root / "models" / component
+        names = (
+            ["llama-server", "llama-bench"]
+            if component == "llama.cpp"
+            else ["whisper-server", "whisper-cli", "macbot-whisper"]
+        )
+        provenance[component] = {
+            "source": "https://github.com/ggml-org/" + component,
+            "revision": revision,
+            "release": "b10509" if component == "llama.cpp" else None,
+            "build_flags": build_flags,
+            "license": "MIT",
+            "license_sha256": sha256(repo / "LICENSE"),
+            "binaries": {
+                name: sha256(settings.data_dir / "bin" / name)
+                for name in names
+                if (settings.data_dir / "bin" / name).is_file()
+            },
+        }
+    atomic_write(
+        settings.data_dir / "bin/versions.json",
+        json.dumps(provenance, indent=2, sort_keys=True).encode(),
+    )
 
 
 def doctor(settings: Settings) -> dict:
@@ -129,7 +176,11 @@ def doctor(settings: Settings) -> dict:
         "ready_to_start": all(c["present"] for c in checks.values()),
         "checks": checks,
         "device_acceptance": "not_verified",
-        "model_selection": "candidate_not_benchmarked",
+        "model_selection": {
+            "selected": settings.models.llm,
+            "software_benchmark": "passed",
+            "device_and_listening_acceptance": "pending",
+        },
     }
 
 
@@ -290,6 +341,10 @@ def main():
         auth = AuthStore(settings.data_dir)
         try:
             if args.command == "open":
+                if not settings.services.browser_fallback_enabled:
+                    raise RuntimeError(
+                        "Browser diagnostics are disabled; enable services.browser_fallback_enabled first"
+                    )
                 token = auth.issue_login()
                 webbrowser.open(settings.services.dashboard.url + "/#token=" + token)
                 print("Opened a single-use local login link (expires in 60 seconds).")

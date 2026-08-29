@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import BinaryIO, TextIO
 from urllib.parse import urlsplit
 
@@ -53,6 +54,8 @@ class MacBotOrchestrator:
 
     def definitions(self):
         s = self.settings
+        package_root = str(Path(__file__).resolve().parents[1])
+        python_path = os.environ.get("PYTHONPATH")
         common = {
             **os.environ,
             "MACBOT_DATA_DIR": str(s.data_dir),
@@ -61,6 +64,9 @@ class MacBotOrchestrator:
             "TRANSFORMERS_OFFLINE": "1",
             "ANONYMIZED_TELEMETRY": "False",
             "DO_NOT_TRACK": "1",
+            "PYTHONPATH": (
+                package_root + os.pathsep + python_path if python_path else package_root
+            ),
         }
         if s.models.llm_backend == "llama":
             keyfile = s.data_dir / "run" / "llama-key"
@@ -92,11 +98,10 @@ class MacBotOrchestrator:
             self.service_definitions["llm"] = ServiceDefinition(
                 "llm", command, s.models.llm_url + "/v1/models", url.port, common
             )
-        for name, module in [
-            ("rag", "rag_server"),
-            ("assistant", "voice_assistant"),
-            ("dashboard", "web_dashboard"),
-        ]:
+        modules = [("rag", "rag_server"), ("assistant", "voice_assistant")]
+        if s.services.browser_fallback_enabled:
+            modules.append(("dashboard", "web_dashboard"))
+        for name, module in modules:
             endpoint = s.endpoint(name)
             self.service_definitions[name] = ServiceDefinition(
                 name,

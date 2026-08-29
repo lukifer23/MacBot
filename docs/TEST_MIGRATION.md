@@ -8,7 +8,7 @@ Test replacements preserve the behavioral concerns rather than mocked implementa
 | --- | --- |
 | Config boolean parsing and permissive validation | Explicit configuration precedence, typed validation, rejected legacy/missing configurations and unregistered models |
 | Auth token lists / localhost bypass | Real SQLite sessions, service-specific keys, single use, expiry, CSRF, Host and Origin |
-| Mocked model loading / dummy Chroma | Real local ONNX, Chroma and SQLite; source provenance, CRUD, migration conflict and backup checks |
+| Mocked model loading / dummy vector storage | Real local ONNX and SQLite exact-index implementations; source provenance, CRUD, migration conflict and backup checks |
 | Message bus dispatch, reconnect and state locks | Bounded ordered event replay, reconnect gaps, concurrent delivery, close wakeup and real runtime interruption/clear |
 | Mocked tool selection / requests | Actual llama inference and local RAG service; exact session/turn approval, denial, replay and cancellation |
 | Fake transcription and concurrent TTS workers | Pinned human recording through both resident recognizers; real Piper output/cache/cancellation and one runtime queue |

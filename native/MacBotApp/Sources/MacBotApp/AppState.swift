@@ -21,6 +21,13 @@ final class AppState: ObservableObject {
     @Published var documentResults: [String] = []
     @Published var importingDocuments = false
     @Published var documentQuery = ""
+    @Published var browserFallbackEnabled = false
+    @Published var retentionDays = 30
+    @Published var endpointMilliseconds = 350
+    @Published var contextLength = 16_384
+    @Published var searchCredentialConfigured = false
+    @Published var searchCredential = ""
+    @Published var restartRequired = false
 
     private let services = ServiceManager()
     private var client: NativeClient?
@@ -52,6 +59,7 @@ final class AppState: ObservableObject {
                 connected = true
                 phase = .idle
                 await refreshStatus()
+                await refreshSettings()
                 await eventLoop(native)
             } catch {
                 connected = false
@@ -192,17 +200,92 @@ final class AppState: ObservableObject {
             if let history = status["history"] as? [String: Any] {
                 historyAvailable = history["available"] as? Bool ?? false
             }
+            let observations = status["metrics"] as? [[String: Any]] ?? []
+            let ttft = observations.compactMap { $0["ttft_ms"] as? Double }
+            let firstAudio = observations.compactMap { $0["first_audio_scheduled_ms"] as? Double }
+            let stt = observations.compactMap { $0["stt_ms"] as? Double }
+            let interrupt = status["interruption_ms"] as? [Double] ?? []
             let turnQueue = status["turn_queue"] as? Int ?? 0
             let speechQueue = status["speech_queue"] as? Int ?? 0
             let dropped = status["audio_dropped"] as? Int ?? 0
             let errors = status["errors"] as? Int ?? 0
             metrics = [
+                .init(id: "ttft", label: "First text p50 / p95", value: latencyPair(ttft)),
+                .init(id: "audio", label: "Speech end → audio queued p50 / p95", value: latencyPair(firstAudio)),
+                .init(id: "stt", label: "Transcription p50 / p95", value: latencyPair(stt)),
+                .init(id: "interrupt", label: "Playback stop ack p50 / p95", value: latencyPair(interrupt)),
                 .init(id: "turn", label: "Turn queue", value: "\(turnQueue)"),
                 .init(id: "speech", label: "Speech queue", value: "\(speechQueue)"),
                 .init(id: "dropped", label: "Dropped frames", value: "\(dropped)"),
                 .init(id: "errors", label: "Turn errors", value: "\(errors)"),
             ]
+            if let supervisor = status["supervisor"] as? [String: Any],
+               let services = supervisor["services"] as? [String: [String: Any]] {
+                for (name, service) in services.sorted(by: { $0.key < $1.key }) {
+                    let ready = service["ready"] as? Bool == true ? "Ready" : "Unavailable"
+                    let rss = (service["rss_bytes"] as? Double).map { String(format: "%.2f GiB", $0 / 1_073_741_824) } ?? "—"
+                    metrics.append(.init(id: "service-\(name)", label: name.capitalized, value: "\(ready) · \(rss)"))
+                }
+            }
         } catch { show(error) }
+    }
+
+    func refreshSettings() async {
+        guard let client else { return }
+        do {
+            let response = try await client.request(JSONPayload(["op": "settings"])).value
+            guard let settings = response["settings"] as? [String: Any] else { return }
+            browserFallbackEnabled = settings["browser_fallback_enabled"] as? Bool ?? false
+            retentionDays = settings["retention_days"] as? Int ?? 30
+            endpointMilliseconds = settings["endpoint_ms"] as? Int ?? 350
+            contextLength = settings["context_length"] as? Int ?? 16_384
+            searchCredentialConfigured = KeychainStore.hasSearchCredential()
+        } catch { show(error) }
+    }
+
+    func saveRuntimeSettings() {
+        guard let client else { return }
+        Task {
+            do {
+                _ = try await client.request(JSONPayload([
+                    "op": "update_settings",
+                    "values": [
+                        "browser_fallback_enabled": browserFallbackEnabled,
+                        "retention_days": retentionDays,
+                        "endpoint_ms": endpointMilliseconds,
+                        "context_length": contextLength,
+                    ],
+                ]))
+                restartRequired = true
+            } catch { show(error) }
+        }
+    }
+
+    func saveSearchCredential() {
+        do {
+            let value = searchCredential.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { throw NSError(domain: "MacBot", code: 5, userInfo: [NSLocalizedDescriptionKey: "Enter a Brave Search API key"]) }
+            try KeychainStore.setSearchCredential(value)
+            searchCredential = ""
+            searchCredentialConfigured = true
+        } catch { show(error) }
+    }
+
+    func deleteSearchCredential() {
+        do {
+            try KeychainStore.deleteSearchCredential()
+            searchCredential = ""
+            searchCredentialConfigured = false
+        } catch { show(error) }
+    }
+
+    private func latencyPair(_ values: [Double]) -> String {
+        guard !values.isEmpty else { return "No samples" }
+        let sorted = values.sorted()
+        func percentile(_ value: Double) -> Double {
+            sorted[min(sorted.count - 1, Int(ceil(value * Double(sorted.count))) - 1)]
+        }
+        return String(format: "%.0f / %.0f ms", percentile(0.5), percentile(0.95))
     }
 
     private func eventLoop(_ native: NativeClient) async {

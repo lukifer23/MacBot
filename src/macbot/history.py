@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import Any, Iterable
 
+import numpy as np
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import Settings
@@ -151,11 +152,83 @@ class HistoryStore:
             raise ValueError("Message limit out of range")
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,nonce,ciphertext FROM messages WHERE session_id=? "
+                "SELECT id,turn_id,nonce,ciphertext FROM messages WHERE session_id=? "
                 "ORDER BY created_ns DESC, ordinal DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        return [self._open("messages", row[0], row[1], row[2]) for row in reversed(rows)]
+            compacted = {
+                turn_id
+                for (source_ids,) in self.db.execute(
+                    "SELECT source_ids FROM summaries WHERE session_id=?", (session_id,)
+                )
+                for turn_id in json.loads(source_ids)
+            }
+        messages: list[dict[str, Any]] = []
+        for row_id, turn_id, nonce, ciphertext in reversed(rows):
+            if turn_id in compacted:
+                continue
+            message = self._open("messages", row_id, nonce, ciphertext)
+            message["_id"] = row_id
+            message["_turn_id"] = turn_id
+            messages.append(message)
+        return messages
+
+    def save_summary(
+        self,
+        session_id: str,
+        source_turn_ids: list[str],
+        content: str,
+        embedding: np.ndarray,
+    ) -> str:
+        if not source_turn_ids or len(set(source_turn_ids)) != len(source_turn_ids):
+            raise ValueError("Summary source turns must be unique and nonempty")
+        vector = np.asarray(embedding, dtype=np.float32)
+        if vector.shape != (384,) or not np.isfinite(vector).all():
+            raise ValueError("Summary embedding is invalid")
+        row_id = uuid.uuid4().hex
+        now = time.time_ns()
+        payload = {"content": content, "embedding": vector.tolist()}
+        nonce, ciphertext = self._seal("summaries", row_id, payload)
+        with self.lock, self.db:
+            self._session(session_id, now)
+            self.db.execute(
+                "INSERT INTO summaries VALUES(?,?,?,?,?,?)",
+                (
+                    row_id,
+                    session_id,
+                    json.dumps(source_turn_ids, separators=(",", ":")),
+                    nonce,
+                    ciphertext,
+                    now,
+                ),
+            )
+        return row_id
+
+    def search_summaries(
+        self, session_id: str, query_embedding: np.ndarray, limit: int = 3
+    ) -> list[dict[str, Any]]:
+        vector = np.asarray(query_embedding, dtype=np.float32)
+        if vector.shape != (384,) or not np.isfinite(vector).all() or not 1 <= limit <= 10:
+            raise ValueError("Summary query is invalid")
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT id,source_ids,nonce,ciphertext FROM summaries WHERE session_id=?",
+                (session_id,),
+            ).fetchall()
+        results = []
+        for row_id, source_ids, nonce, ciphertext in rows:
+            payload = self._open("summaries", row_id, nonce, ciphertext)
+            stored = np.asarray(payload["embedding"], dtype=np.float32)
+            results.append(
+                {
+                    "id": row_id,
+                    "source_turn_ids": json.loads(source_ids),
+                    "content": payload["content"],
+                    "score": float(stored @ vector),
+                }
+            )
+        results.sort(key=lambda item: item["score"], reverse=True)
+        return results[:limit]
 
     def save_task(self, task: dict[str, Any]) -> None:
         row_id = str(task["task_id"])

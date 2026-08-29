@@ -35,4 +35,47 @@ enum KeychainStore {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
         }
     }
+
+    static func hasSearchCredential() -> Bool {
+        SecItemCopyMatching(query(service: "local.macbot.brave-search", returnData: false) as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func setSearchCredential(_ value: String) throws {
+        let data = Data(value.utf8)
+        let service = "local.macbot.brave-search"
+        let existing = query(service: service, returnData: false)
+        let update = [kSecValueData as String: data]
+        let status: OSStatus
+        if SecItemCopyMatching(existing as CFDictionary, nil) == errSecSuccess {
+            status = SecItemUpdate(existing as CFDictionary, update as CFDictionary)
+        } else {
+            var add = existing
+            add[kSecAttrAccount as String] = "api-key"
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            add[kSecValueData as String] = data
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    static func deleteSearchCredential() throws {
+        let status = SecItemDelete(query(service: "local.macbot.brave-search", returnData: false) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    private static func query(service: String, returnData: Bool) -> [String: Any] {
+        var value: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        if returnData {
+            value[kSecReturnData as String] = true
+            value[kSecMatchLimit as String] = kSecMatchLimitOne
+        }
+        return value
+    }
 }

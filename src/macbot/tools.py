@@ -139,8 +139,6 @@ class Tools:
         if not source_span or source_span not in text:
             raise PermissionError("Action is not grounded in the current request")
         evidence = source_span.casefold()
-        if re.search(r"\b(?:don't|do not|never|without)\b", evidence):
-            raise PermissionError("Negated actions cannot execute")
         required: dict[str, tuple[str, ...]] = {
             "local_time": ("time", "date", "day", "clock"),
             "system_info": ("cpu", "memory", "disk", "system"),
@@ -151,6 +149,22 @@ class Tools:
             "browse_website": ("open", "visit", "browse"),
             "screenshot": ("screenshot", "capture", "screen"),
         }
+        negative_targets = {
+            "local_time": r"(?:time|date|clock)",
+            "system_info": r"(?:cpu|memory|disk|system)",
+            "rag_search": r"(?:(?:search|look in|check)\s+(?:my\s+)?(?:documents|library|knowledge base))",
+            "web_search": r"(?:(?:search|look up|check)(?:ing)?\s+(?:the\s+)?(?:web|internet|online)|web search)",
+            "weather": r"(?:weather|forecast|temperature)",
+            "open_app": r"(?:open|launch|start|bring up)",
+            "browse_website": r"(?:open|visit|browse)",
+            "screenshot": r"(?:screenshot|capture(?: the)? screen)",
+        }
+        if re.search(
+            rf"\b(?:don't|do not|never|without)\b[^.!?]{{0,60}}{negative_targets[name]}",
+            text,
+            re.I,
+        ):
+            raise PermissionError("The current request explicitly negates this action")
         if not any(token in evidence for token in required[name]):
             raise PermissionError("Action evidence does not express the requested capability")
         if name == "open_app" and arguments["app"].casefold() not in evidence:

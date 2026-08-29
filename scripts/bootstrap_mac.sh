@@ -13,5 +13,11 @@ for tool in uv git cmake ffmpeg xcrun; do
 done
 xcrun --find swiftc >/dev/null
 uv sync --frozen --all-extras --group dev
-uv run --frozen macbot setup
+# File Provider can mark newly-created .pth files hidden in synchronized
+# folders. Python 3.12 deliberately skips those files, which breaks editable
+# imports in child processes even though the parent pytest process has a source
+# path. Clear only that metadata flag; installed-wheel runtimes do not use an
+# editable .pth file.
+find .venv/lib/python3.12/site-packages -maxdepth 1 -name '*.pth' -exec chflags nohidden {} +
+PYTHONPATH="$PWD/src" .venv/bin/macbot setup
 echo 'Environment ready. Run make build and make models explicitly to provision native engines and model weights.'

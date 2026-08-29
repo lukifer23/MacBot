@@ -54,6 +54,14 @@ def create_app(settings: Settings, store: DocumentStore | None = None) -> Flask:
         data = json_object()
         return jsonify(results=documents.search(data.get("query", ""), data.get("top_k", 5)))
 
+    @app.post("/api/embed")
+    def embed():
+        data = json_object()
+        texts = data.get("texts")
+        if not isinstance(texts, list):
+            raise ValueError("Embedding input must be a list")
+        return jsonify(vectors=documents.embed(texts))
+
     @app.get("/api/stats")
     def stats():
         return jsonify(documents.stats())

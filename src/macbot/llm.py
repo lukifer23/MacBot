@@ -113,6 +113,35 @@ class LocalLLM:
             with self.lock:
                 self.response = None
 
+    def count_tokens(self, messages: list[dict]) -> int:
+        clean = copy.deepcopy(messages)
+        if self.model is not None:
+            assert self.tokenizer is not None
+            prompt = self.tokenizer.apply_chat_template(
+                clean,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            return len(self.tokenizer.encode(prompt, add_special_tokens=False))
+        formatted = self.client.post(
+            self.settings.models.llm_url + "/apply-template",
+            json={
+                "model": "local",
+                "messages": clean,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            headers=self.auth.headers("llm"),
+        )
+        formatted.raise_for_status()
+        tokens = self.client.post(
+            self.settings.models.llm_url + "/tokenize",
+            json={"content": formatted.json()["prompt"], "parse_special": True},
+            headers=self.auth.headers("llm"),
+        )
+        tokens.raise_for_status()
+        return len(tokens.json()["tokens"])
+
     def _mlx(self, messages: list[dict], definitions: list[dict], cancel: threading.Event):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler

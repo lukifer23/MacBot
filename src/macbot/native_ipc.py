@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from .config import Settings
+from .config import save as save_settings
 from .runtime import Runtime
 
 MAX_FRAME = 12 * 1024 * 1024
@@ -185,6 +186,12 @@ class NativeIPCServer:
                 if not 1 <= size <= 256 * 1024:
                     raise ValueError("Native audio frame size is invalid")
                 frame = _read_exact(connection, size)
+                if frame[0] == 1:
+                    event = json.loads(frame[1:])
+                    if not isinstance(event, dict) or len(frame) > 16_384:
+                        raise ValueError("Native audio event is invalid")
+                    self.runtime.native_audio_event(event)
+                    continue
                 if frame[0] != 2 or (len(frame) - 1) % 4:
                     raise ValueError("Native capture frame is invalid")
                 samples = np.frombuffer(frame, dtype="<f4", offset=1)
@@ -196,6 +203,10 @@ class NativeIPCServer:
                 if self.audio_connection is connection:
                     self.audio_connection = None
                     self.runtime.native_audio_sender = None
+                    self.runtime.native_audio_connected = False
+                    self.runtime.native_aec = False
+                    for completed in self.runtime.native_playback_done.values():
+                        completed.set()
                     self.runtime.listen_native(False, session_id="native")
             connection.close()
 
@@ -223,7 +234,55 @@ class NativeIPCServer:
     def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
         if op == "status":
-            return {"status": self.runtime.status()}
+            status = self.runtime.status()
+            try:
+                response = self.runtime.tools.client.get(
+                    self.settings.services.orchestrator.url + "/status",
+                    headers=self.runtime.auth.headers("orchestrator"),
+                )
+                response.raise_for_status()
+                status["supervisor"] = response.json()
+            except Exception as exc:
+                status["supervisor"] = {
+                    "ready": False,
+                    "error": f"Supervisor status unavailable: {type(exc).__name__}",
+                }
+            return {"status": status}
+        if op == "settings":
+            return {
+                "settings": {
+                    "browser_fallback_enabled": self.settings.services.browser_fallback_enabled,
+                    "retention_days": self.settings.privacy.retention_days,
+                    "endpoint_ms": self.settings.audio.endpoint_ms,
+                    "context_length": self.settings.models.context_length,
+                }
+            }
+        if op == "update_settings":
+            values = request.get("values")
+            if not isinstance(values, dict) or set(values) - {
+                "browser_fallback_enabled",
+                "retention_days",
+                "endpoint_ms",
+                "context_length",
+            }:
+                raise ValueError("Unsupported settings update")
+            if "browser_fallback_enabled" in values:
+                value = values["browser_fallback_enabled"]
+                if not isinstance(value, bool):
+                    raise ValueError("Browser fallback setting must be boolean")
+                self.settings.services.browser_fallback_enabled = value
+            for key, target in {
+                "retention_days": self.settings.privacy,
+                "endpoint_ms": self.settings.audio,
+                "context_length": self.settings.models,
+            }.items():
+                if key in values:
+                    value = values[key]
+                    if type(value) is not int:
+                        raise ValueError(f"{key} must be an integer")
+                    setattr(target, key, value)
+            save_settings(self.settings)
+            return {"state": "saved", "restart_required": True}
         if op == "events":
             after = request.get("after", 0)
             epoch = request.get("epoch")
@@ -319,6 +378,8 @@ class NativeIPCServer:
                 self.audio_connection.close()
             self.audio_connection = None
             self.runtime.native_audio_sender = None
+            self.runtime.native_audio_connected = False
+            self.runtime.native_aec = False
         if self.thread:
             self.thread.join(timeout=2)
         if self.audio_thread:
