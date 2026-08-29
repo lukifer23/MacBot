@@ -12,7 +12,14 @@ pytestmark = pytest.mark.models
 
 
 @pytest.mark.parametrize(
-    "voice,rate", [("lessac", 22050), ("kokoro-heart", 24000), ("kokoro-michael", 24000)]
+    "voice,rate",
+    [
+        ("lessac", 22050),
+        ("kokoro-heart", 24000),
+        ("kokoro-michael", 24000),
+        ("qwen-aiden-0.6b", 24000),
+        ("qwen-aiden-1.7b", 24000),
+    ],
 )
 def test_real_synthesis_cache_and_cancellation(voice, rate):
     settings = load()

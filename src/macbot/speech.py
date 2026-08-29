@@ -16,7 +16,7 @@ import soundfile as sf
 
 from .config import Settings
 from .pipe_io import read_exact, write_all
-from .provision import KOKORO_VOICES, model_dir, model_file, voices
+from .provision import KOKORO_VOICES, QWEN_TTS_VOICES, model_dir, model_file, voices
 
 
 def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
@@ -192,8 +192,17 @@ class Synthesizer:
             raise ValueError("TTS voice is not registered")
         self.voice_id = name
         self.kokoro = None
+        self.qwen = None
         self.voice = None
-        if name in KOKORO_VOICES:
+        if name in QWEN_TTS_VOICES:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            from mlx_audio.tts.utils import load_model
+
+            model_name, self.qwen_speaker = QWEN_TTS_VOICES[name]
+            self.path = model_dir(settings, model_name)
+            self.qwen = load_model(self.path)
+        elif name in KOKORO_VOICES:
             import onnxruntime as ort
             from kokoro_onnx import Kokoro
 
@@ -215,6 +224,26 @@ class Synthesizer:
         self.cache_bytes = 0
 
     def _generate(self, text: str, cancel: threading.Event):
+        if self.qwen is not None:
+            generator = self.qwen.generate_custom_voice(
+                text=text,
+                speaker=self.qwen_speaker,
+                language="English",
+                instruct="Speak naturally, warmly, and conversationally.",
+                stream=True,
+                streaming_interval=0.32,
+                temperature=0.8,
+            )
+            try:
+                for result in generator:
+                    if cancel.is_set():
+                        return
+                    samples = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                    if samples.size:
+                        yield samples, int(result.sample_rate)
+            finally:
+                generator.close()
+            return
         if self.kokoro is not None:
             phrases, _ = split_speech(text, final=True)
             for phrase in phrases:

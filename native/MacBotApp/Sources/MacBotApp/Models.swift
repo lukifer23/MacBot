@@ -56,6 +56,27 @@ struct ServiceMetric: Identifiable {
     let value: String
 }
 
+struct VoiceOption: Identifiable, Equatable {
+    let id: String
+    let installed: Bool
+
+    var label: String { Self.label(for: id) }
+
+    static func label(for id: String) -> String {
+        switch id {
+        case "qwen-aiden-1.7b": "Aiden · Qwen3-TTS 1.7B candidate"
+        case "qwen-ryan-1.7b": "Ryan · Qwen3-TTS 1.7B candidate"
+        case "qwen-aiden-0.6b": "Aiden · Qwen3-TTS 0.6B candidate"
+        case "qwen-ryan-0.6b": "Ryan · Qwen3-TTS 0.6B candidate"
+        case "kokoro-heart": "Heart · Kokoro fallback"
+        case "kokoro-michael": "Michael · Kokoro fallback"
+        case "lessac": "Lessac · Piper fallback"
+        case "amy": "Amy · Piper fallback"
+        default: id
+        }
+    }
+}
+
 struct DocumentItem: Identifiable, Equatable {
     let id: String
     let title: String

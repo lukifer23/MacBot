@@ -177,7 +177,7 @@ def verify(provisioned, model, report):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--provisioned", type=Path, required=True)
-    parser.add_argument("--model", default="qwen3.5-2b")
+    parser.add_argument("--model", default="qwen3.5-2b-official")
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     verify(args.provisioned.resolve(), args.model, args.report.resolve())

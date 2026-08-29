@@ -20,8 +20,8 @@ cd MacBot
 ./scripts/bootstrap_mac.sh
 uv sync --frozen --all-extras
 uv run --frozen macbot setup
-uv run --frozen macbot build-inference --source "$PWD"
-uv run --frozen macbot models download qwen3.5-2b parakeet kokoro minilm silero
+uv run --frozen macbot build-inference
+uv run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
 ./scripts/build_native_app.sh --install
 open "$HOME/Applications/MacBot.app"
 ```
@@ -36,6 +36,12 @@ All mutable settings, models, documents, credentials, history, and logs live
 under `~/Library/Application Support/MacBot`. Normal operation never rewrites
 tracked defaults. Runtime models are provisioned explicitly and must work
 offline; a failed backend is never silently replaced.
+
+The selected LLM is built locally from pinned official Qwen source weights with
+llama.cpp b10509 and verified against registered F16 and Q4_K_M hashes. Model
+conversion occurs only during explicit provisioning. The current Qwen3-TTS
+1.7B Aiden voice is an audition candidate, not a listening-approved release
+voice.
 
 ## Current architecture
 

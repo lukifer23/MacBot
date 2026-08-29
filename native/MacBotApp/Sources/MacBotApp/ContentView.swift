@@ -217,7 +217,17 @@ private struct SettingsView: View {
         Form {
             Section("Models") {
                 LabeledContent("Language model", value: state.modelName)
-                LabeledContent("Voice", value: state.voiceName)
+                Picker("Voice candidate", selection: $state.selectedVoice) {
+                    ForEach(state.availableVoices) { voice in
+                        Text(voice.label + (voice.installed ? "" : " · not installed"))
+                            .tag(voice.id)
+                            .disabled(!voice.installed)
+                    }
+                }
+                LabeledContent("Active voice", value: VoiceOption.label(for: state.voiceName))
+                Button("Preview active voice", systemImage: "speaker.wave.2", action: state.previewVoice)
+                Text("A saved voice becomes active after MacBot restarts. Qwen candidates are locally converted from pinned official weights; final selection requires listening approval.")
+                    .foregroundStyle(.secondary)
             }
             Section("Privacy") {
                 LabeledContent("Conversation history", value: state.historyAvailable ? "Encrypted · \(state.retentionDays) days" : "Unavailable")

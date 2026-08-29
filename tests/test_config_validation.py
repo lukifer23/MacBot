@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from macbot.config import Settings, load, prepare, save
-from macbot.provision import model_dir
+from macbot.provision import catalog, model_dir, voice_model, voices
 from macbot.validation import decode_audio, validate_chat_message
 
 
@@ -54,6 +54,47 @@ def test_inaccessible_or_unregistered_models_never_download(tmp_path):
     with pytest.raises(FileNotFoundError):
         model_dir(settings, "minilm")
     assert not (tmp_path / "models").exists()
+
+
+def test_qwen_voice_registry_has_pinned_reproducible_sources_and_outputs():
+    entries = catalog()
+    for voice in ("qwen-aiden-0.6b", "qwen-ryan-0.6b", "qwen-aiden-1.7b", "qwen-ryan-1.7b"):
+        assert voice in voices()
+        item = entries[voice_model(voice)]
+        assert len(item["revision"]) == 40
+        assert item["repo"].startswith("Qwen/")
+        assert item["license"] == "apache-2.0"
+        assert item["conversion"] == {
+            "type": "mlx_audio_q4",
+            "runtime": "mlx-audio",
+            "version": "0.5.0",
+            "quantization": "4-bit affine",
+            "q_bits": 4,
+            "q_group_size": 64,
+            "model_domain": "tts",
+        }
+        assert item["source_files"] and item["files"]
+        assert all(len(entry["sha256"]) == 64 for entry in item["source_files"])
+        assert all(len(entry["sha256"]) == 64 for entry in item["files"])
+
+
+def test_selected_llm_has_official_reproducible_source_and_quantized_output():
+    item = catalog()["qwen3.5-2b-official"]
+    assert item["repo"] == "Qwen/Qwen3.5-2B"
+    assert item["license"] == "apache-2.0"
+    assert len(item["revision"]) == 40
+    assert item["conversion"]["type"] == "llama_cpp_q4_k_m"
+    assert item["conversion"]["release"] == "b10509"
+    assert item["conversion"]["quantization"] == "Q4_K_M"
+    assert len(item["source_files"]) >= 10
+    assert all(len(entry["sha256"]) == 64 for entry in item["source_files"])
+    assert item["files"] == [
+        {
+            "name": "Qwen3.5-2B-Q4_K_M.gguf",
+            "size": 1312164736,
+            "sha256": "9a766254d3d0b309b199a39a67e6519c66ab963c40b8564ca6baf40a0f5cf5bf",
+        }
+    ]
 
 
 def test_browser_data_url_and_invalid_audio():

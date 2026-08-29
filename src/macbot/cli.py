@@ -45,6 +45,11 @@ def build_inference(settings: Settings, source: Path | None = None):
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DGGML_METAL=ON",
+        # MacBot uses only llama-server's authenticated API. Building the
+        # unrelated upstream browser UI adds npm/network work and can hang an
+        # otherwise complete native provisioning run.
+        "-DLLAMA_BUILD_UI=OFF",
+        "-DLLAMA_USE_PREBUILT_UI=OFF",
     ]
     for name, revision in REVISIONS.items():
         repo = root / "models" / name
@@ -99,8 +104,13 @@ def build_inference(settings: Settings, source: Path | None = None):
             ],
             check=True,
         )
+        if name == "llama.cpp":
+            # Conversion tooling is isolated from MacBot's runtime dependency graph.
+            # This is an explicit provisioning step; inference never invokes uv or
+            # accesses the network.
+            subprocess.run(["uv", "sync", "--project", str(repo)], check=True, timeout=1800)
         targets = (
-            ["llama-server", "llama-bench"]
+            ["llama-server", "llama-bench", "llama-quantize"]
             if name == "llama.cpp"
             else ["whisper-server", "whisper-cli"]
         )
@@ -129,7 +139,7 @@ def build_inference(settings: Settings, source: Path | None = None):
     for component, revision in REVISIONS.items():
         repo = root / "models" / component
         names = (
-            ["llama-server", "llama-bench"]
+            ["llama-server", "llama-bench", "llama-quantize"]
             if component == "llama.cpp"
             else ["whisper-server", "whisper-cli", "macbot-whisper"]
         )

@@ -16,6 +16,7 @@ import numpy as np
 
 from .config import Settings
 from .config import save as save_settings
+from .provision import model_dir, voice_model, voices
 from .runtime import Runtime
 
 MAX_FRAME = 12 * 1024 * 1024
@@ -249,12 +250,22 @@ class NativeIPCServer:
                 }
             return {"status": status}
         if op == "settings":
+            available_voices = []
+            for voice in voices():
+                try:
+                    model_dir(self.settings, voice_model(voice))
+                    installed = True
+                except (FileNotFoundError, ValueError):
+                    installed = False
+                available_voices.append({"id": voice, "installed": installed})
             return {
                 "settings": {
                     "browser_fallback_enabled": self.settings.services.browser_fallback_enabled,
                     "retention_days": self.settings.privacy.retention_days,
                     "endpoint_ms": self.settings.audio.endpoint_ms,
                     "context_length": self.settings.models.context_length,
+                    "tts_voice": self.settings.models.tts_voice,
+                    "voices": available_voices,
                 }
             }
         if op == "update_settings":
@@ -264,6 +275,7 @@ class NativeIPCServer:
                 "retention_days",
                 "endpoint_ms",
                 "context_length",
+                "tts_voice",
             }:
                 raise ValueError("Unsupported settings update")
             if "browser_fallback_enabled" in values:
@@ -281,6 +293,12 @@ class NativeIPCServer:
                     if type(value) is not int:
                         raise ValueError(f"{key} must be an integer")
                     setattr(target, key, value)
+            if "tts_voice" in values:
+                voice = values["tts_voice"]
+                if not isinstance(voice, str) or voice not in voices():
+                    raise ValueError("TTS voice is not registered")
+                model_dir(self.settings, voice_model(voice))
+                self.settings.models.tts_voice = voice
             save_settings(self.settings)
             return {"state": "saved", "restart_required": True}
         if op == "events":
@@ -297,6 +315,14 @@ class NativeIPCServer:
             turn = self.runtime.submit(
                 request.get("message"),
                 speak=bool(request.get("speak", True)),
+                session_id="native",
+            )
+            return {"state": "accepted", "turn_id": turn.id}
+        if op == "preview_voice":
+            turn = self.runtime.submit(
+                "Hey, I’m MacBot. I’m ready when you are.",
+                speak=True,
+                synthesis_only=True,
                 session_id="native",
             )
             return {"state": "accepted", "turn_id": turn.id}

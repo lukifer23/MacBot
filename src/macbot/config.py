@@ -43,7 +43,7 @@ class Services(StrictModel):
 
 
 class Models(StrictModel):
-    llm: str = "qwen3.5-2b"
+    llm: str = "qwen3.5-2b-official"
     llm_backend: Literal["llama", "mlx"] = "llama"
     llm_url: str = "http://127.0.0.1:8080"
     context_length: int = Field(default=16384, ge=512, le=32768)
@@ -52,7 +52,7 @@ class Models(StrictModel):
     threads: int = Field(default=4, ge=1, le=32)
     stt: Literal["parakeet", "whisper"] = "parakeet"
     tts_voice: str = "amy"
-    tts_speed: float = Field(default=1.1, ge=0.5, le=2)
+    tts_speed: float = Field(default=1.0, ge=0.5, le=2)
     embedding: Literal["minilm"] = "minilm"
 
     @field_validator("llm_url")

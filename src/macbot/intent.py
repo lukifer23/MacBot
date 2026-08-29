@@ -10,6 +10,25 @@ from .llm import LocalLLM
 from .tasks import Intent, PlannedAction, SafetyClass
 from .tools import READ_ONLY, SCHEMAS, Tools
 
+ACTION_VARIANTS = [
+    {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "arguments", "source_span"],
+        "properties": {
+            "name": {"const": name},
+            "arguments": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": list(fields),
+                "properties": {key: {"type": kind} for key, kind in fields.items()},
+            },
+            "source_span": {"type": "string", "minLength": 1, "maxLength": 300},
+        },
+    }
+    for name, (_, fields) in SCHEMAS.items()
+]
+
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -19,16 +38,7 @@ SCHEMA: dict[str, Any] = {
         "actions": {
             "type": "array",
             "maxItems": 4,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "arguments", "source_span"],
-                "properties": {
-                    "name": {"type": "string", "enum": list(SCHEMAS)},
-                    "arguments": {"type": "object"},
-                    "source_span": {"type": "string", "minLength": 1, "maxLength": 300},
-                },
-            },
+            "items": {"oneOf": ACTION_VARIANTS},
         },
         "clarification": {"type": "string", "maxLength": 300},
     },
@@ -52,7 +62,9 @@ class IntentRouter:
             "request. Multiple applications require separate open_app actions. Local time uses local_time. "
             "Weather uses weather, not web_search. Local documents use rag_search. An explicitly requested "
             "internet lookup or current information uses web_search. A screenshot requires an explicit "
-            "capture request. File creation/deletion, messaging, purchases, account changes, and system "
+            "capture request. Empty-schema tools local_time, system_info, and screenshot must use exactly "
+            "an empty arguments object {}. Do not add inferred fields to any action. "
+            "File creation/deletion, messaging, purchases, account changes, and system "
             "settings are unsupported and require clarification without actions. Enabled tools: "
             + json.dumps(self.tools.settings.tools.enabled)
             + ". Allowed applications: "

@@ -25,14 +25,14 @@ def engine(tmp_path_factory):
     root = load().data_dir
     settings = Settings(data_dir=tmp_path_factory.mktemp("real-runtime"))
     prepare(settings)
-    for name in ["qwen3.5-2b", "parakeet", "amy", "silero", "minilm"]:
+    for name in ["qwen3.5-2b-official", "parakeet", "amy", "silero", "minilm"]:
         assert (root / "models" / name).is_dir(), f"Provision required real model {name}"
         (settings.data_dir / "models" / name).symlink_to(
             root / "models" / name, target_is_directory=True
         )
     assert (root / "bin/llama-server").is_file(), "Build inference binaries before testing"
     (settings.data_dir / "bin").symlink_to(root / "bin", target_is_directory=True)
-    settings.models.llm = "qwen3.5-2b"
+    settings.models.llm = "qwen3.5-2b-official"
     settings.models.temperature = 0
     settings.models.llm_url = f"http://127.0.0.1:{port()}"
     for endpoint in [

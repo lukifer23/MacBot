@@ -37,6 +37,12 @@ continues from the last cursor; an epoch change forces a state refresh. Turn IDs
 bind transcription, actions, synthesis, cancellation, and UI updates so stale
 output cannot enter a newer turn.
 
+While speech is active, a size-one interim queue periodically sends the latest
+bounded capture window through the same resident transcriber used for the final
+utterance. Interim and final events share one capture/turn ID. A capture epoch
+invalidates late work after Stop, interruption, or a new utterance; final audio
+is still flushed through the ordered turn queue.
+
 ## Native IPC
 
 The control socket and audio socket are created in an owner-only runtime

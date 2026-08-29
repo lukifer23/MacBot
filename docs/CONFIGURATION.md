@@ -21,8 +21,9 @@ Version 2 settings include:
 | `tools` | Enabled tool names, allowed applications, screenshot directory, and legacy approval lifetime. Supported planner actions are automatically executed only after exact current-request authorization. |
 | `privacy` | Encrypted history enablement and retention in days (default 30). The encryption key is held in Keychain. |
 
-Qwen3.5-2B Q4_K_M is the current leading configured candidate, not a completed
-benchmark selection. Change `models.llm` explicitly to compare another
+`qwen3.5-2b-official` is the selected registered LLM. Its catalog entry contains
+the official source revision and source-file hashes plus the pinned llama.cpp
+b10509 F16 and Q4_K_M conversion hashes. Change `models.llm` explicitly to compare another
 registered candidate. MLX names have `-mlx` suffix and require `llm_backend:
 mlx` and the `mlx` extra. Selecting a missing backend/model fails; no
 substitution or runtime downloads occur.
@@ -45,10 +46,10 @@ current turn that cannot fit fails explicitly. Clearing a conversation deletes
 that session and its context metrics. Cancellation prevents late history writes
 from restoring cleared turns.
 
-Durable encrypted history is implemented. Source-linked semantic compaction over
-older turns is still a release gate; until it lands, overflow uses whole-turn
-pruning. Older facts can therefore be forgotten. No summary, history record, or
-retrieved text can grant action authority.
+Durable encrypted history and source-linked semantic compaction are implemented.
+Compaction begins at 70%, binds summaries structurally to the exact source turn
+IDs, retains recent complete turns, and retrieves relevant older summaries with
+MiniLM. No summary, history record, or retrieved text can grant action authority.
 
 Dashboard changes support output length, voice and speech speed. They save validated user settings and require an assistant restart. Other settings require editing the user configuration and restarting MacBot. `start` persists the effective configuration so child services agree.
 
@@ -56,7 +57,12 @@ Mute uses AVAudioEngine's voice-processing input mute. The audio device may rema
 
 ## Voice choices
 
-Piper voices `amy` and `lessac` remain available. To try Kokoro locally, run `macbot models download kokoro` and `macbot models verify kokoro`, then select `kokoro-heart` or `kokoro-michael` in Settings. The two voices share one resident 82M model. Start at speed `1.0`; no voice-quality claim replaces listening acceptance. Missing models fail explicitly. Uninstalled voices are disabled in the dashboard selector.
+Qwen audition voices are `qwen-aiden-0.6b`, `qwen-ryan-0.6b`,
+`qwen-aiden-1.7b`, and `qwen-ryan-1.7b`. Provision their registered model before
+selection. Qwen streaming currently uses the model's native speaking rate;
+`tts_speed` applies only to Kokoro and Piper. Piper `amy`/`lessac` and Kokoro
+Heart/Michael remain explicit fast fallbacks. No voice-quality claim replaces
+listening acceptance. Missing models fail explicitly and are disabled in the UI.
 
 After updating from the earlier audio helper, run `macbot build-audio` and restart MacBot. Native IPC protocol 2 uses 16 kHz capture and 48 kHz playback so the voice is no longer downsampled to the STT input rate. The Python bridge rejects an outdated helper with a rebuild instruction. Roll back code, wheel and helper together; voice rollback is selecting a provisioned Piper voice and restarting the assistant.
 

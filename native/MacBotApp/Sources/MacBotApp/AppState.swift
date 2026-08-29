@@ -16,6 +16,8 @@ final class AppState: ObservableObject {
     @Published var errorMessage: String?
     @Published var modelName = "Loading…"
     @Published var voiceName = "Loading…"
+    @Published var selectedVoice = ""
+    @Published var availableVoices: [VoiceOption] = []
     @Published var historyAvailable = false
     @Published var documents: [DocumentItem] = []
     @Published var documentResults: [String] = []
@@ -207,6 +209,7 @@ final class AppState: ObservableObject {
             let interrupt = status["interruption_ms"] as? [Double] ?? []
             let turnQueue = status["turn_queue"] as? Int ?? 0
             let speechQueue = status["speech_queue"] as? Int ?? 0
+            let partialQueue = status["partial_queue"] as? Int ?? 0
             let dropped = status["audio_dropped"] as? Int ?? 0
             let errors = status["errors"] as? Int ?? 0
             metrics = [
@@ -215,7 +218,7 @@ final class AppState: ObservableObject {
                 .init(id: "stt", label: "Transcription p50 / p95", value: latencyPair(stt)),
                 .init(id: "interrupt", label: "Playback stop ack p50 / p95", value: latencyPair(interrupt)),
                 .init(id: "turn", label: "Turn queue", value: "\(turnQueue)"),
-                .init(id: "speech", label: "Speech queue", value: "\(speechQueue)"),
+                .init(id: "speech", label: "Speech / interim queues", value: "\(speechQueue) / \(partialQueue)"),
                 .init(id: "dropped", label: "Dropped frames", value: "\(dropped)"),
                 .init(id: "errors", label: "Turn errors", value: "\(errors)"),
             ]
@@ -239,6 +242,11 @@ final class AppState: ObservableObject {
             retentionDays = settings["retention_days"] as? Int ?? 30
             endpointMilliseconds = settings["endpoint_ms"] as? Int ?? 350
             contextLength = settings["context_length"] as? Int ?? 16_384
+            selectedVoice = settings["tts_voice"] as? String ?? voiceName
+            availableVoices = (settings["voices"] as? [[String: Any]] ?? []).compactMap { item in
+                guard let id = item["id"] as? String else { return nil }
+                return VoiceOption(id: id, installed: item["installed"] as? Bool == true)
+            }
             searchCredentialConfigured = KeychainStore.hasSearchCredential()
         } catch { show(error) }
     }
@@ -254,9 +262,19 @@ final class AppState: ObservableObject {
                         "retention_days": retentionDays,
                         "endpoint_ms": endpointMilliseconds,
                         "context_length": contextLength,
+                        "tts_voice": selectedVoice,
                     ],
                 ]))
                 restartRequired = true
+            } catch { show(error) }
+        }
+    }
+
+    func previewVoice() {
+        guard let client else { return }
+        Task {
+            do {
+                _ = try await client.request(JSONPayload(["op": "preview_voice"]))
             } catch { show(error) }
         }
     }
@@ -319,11 +337,24 @@ final class AppState: ObservableObject {
         let turnID = event["turn_id"] as? String ?? UUID().uuidString
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
-        case "transcription", "user":
+        case "transcription":
             let text = data["text"] as? String ?? ""
             heard = text
-            if !text.isEmpty, !messages.contains(where: { $0.id == "user-\(turnID)" }) {
-                messages.append(.init(id: "user-\(turnID)", role: .user, text: text))
+            if !text.isEmpty {
+                if let index = messages.firstIndex(where: { $0.id == "user-\(turnID)" }) {
+                    messages[index].text = text
+                } else {
+                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text))
+                }
+            }
+        case "user":
+            let text = data["text"] as? String ?? ""
+            if !text.isEmpty {
+                if let index = messages.firstIndex(where: { $0.id == "user-\(turnID)" }) {
+                    messages[index].text = text
+                } else {
+                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text))
+                }
             }
         case "delta":
             let text = data["text"] as? String ?? ""

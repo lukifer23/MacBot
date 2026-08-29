@@ -216,7 +216,14 @@ class Tools:
         if name not in self.settings.tools.enabled or name not in SCHEMAS:
             raise PermissionError("Tool is disabled or unknown")
         if not isinstance(arguments, dict) or set(arguments) != set(SCHEMAS[name][1]):
-            raise ValueError("Tool arguments do not match its schema")
+            actual = (
+                sorted(arguments) if isinstance(arguments, dict) else [type(arguments).__name__]
+            )
+            expected = sorted(SCHEMAS[name][1])
+            raise ValueError(
+                f"Tool arguments for {name} do not match its schema; "
+                f"expected keys {expected}, got {actual}"
+            )
         if any(not isinstance(v, str) or len(v) > 2000 or "\x00" in v for v in arguments.values()):
             raise ValueError("Invalid tool argument value")
         if name == "open_app" and arguments["app"] not in self.settings.tools.allowed_apps:

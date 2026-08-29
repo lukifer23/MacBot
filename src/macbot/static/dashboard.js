@@ -4,7 +4,7 @@ let csrf = sessionStorage.getItem('macbot_csrf') || '';
 let cursor = 0, epoch = '', listening = false, recorder = null, eventFeed = null;
 let connected = false, pollTimer = null, refreshing = false, sending = false;
 let activeModels = null, pendingSettings = false, audioTimer = null, captureEpoch = -1;
-const voiceNames = {'kokoro-heart': 'Heart · Kokoro', 'kokoro-michael': 'Michael · Kokoro', lessac: 'Lessac · Piper', amy: 'Amy · Piper'};
+const voiceNames = {'qwen-aiden-1.7b': 'Aiden · Qwen3-TTS 1.7B candidate', 'qwen-ryan-1.7b': 'Ryan · Qwen3-TTS 1.7B candidate', 'qwen-aiden-0.6b': 'Aiden · Qwen3-TTS 0.6B candidate', 'qwen-ryan-0.6b': 'Ryan · Qwen3-TTS 0.6B candidate', 'kokoro-heart': 'Heart · Kokoro fallback', 'kokoro-michael': 'Michael · Kokoro fallback', lessac: 'Lessac · Piper fallback', amy: 'Amy · Piper fallback'};
 const messages = new Map(), approvalTimers = new Map(), serviceRows = new Map();
 const labels = {assistant: 'Assistant', dashboard: 'Dashboard', llm: 'Language model', rag: 'Document search'};
 const toolLabels = {local_time: 'Local time', open_app: 'Open an app', screenshot: 'Take a screenshot', browse_website: 'Open a website', web_search: 'Search the web', weather: 'Check weather', system_info: 'Mac system status', rag_search: 'Search local documents'};
@@ -177,9 +177,9 @@ function showStatus(s) {
   const samples = metrics.map(m => m.ttft_ms).filter(Number.isFinite).sort((a,b) => a-b);
   $('sample-count').textContent = metrics.length + (metrics.length === 1 ? ' turn' : ' turns');
   $('metric-ttft-note').textContent = samples.length ? 'p95 ' + ms(samples[Math.ceil(samples.length * .95) - 1]) + ' · ' + samples.length + ' recent turns' : 'No completed turns yet';
-  $('metric-queue').textContent = (s.turn_queue + s.speech_queue) + ' / ' + s.audio_dropped;
+  $('metric-queue').textContent = (s.turn_queue + s.speech_queue + (s.partial_queue || 0)) + ' / ' + s.audio_dropped;
   $('metric-queue-note').textContent = s.errors + ' turn errors · ' + s.playback_chunks + ' playback chunks';
-  definitionList('pipeline', [['Capture', s.browser_recording ? 'Browser' : s.listening ? 'Native · active' : 'Off'], ['Voice processing', s.audio_ready ? s.aec ? 'Enabled' : 'Unavailable' : 'Not started'], ['Transcription', s.stt_loaded ? s.models?.stt || 'Loaded' : 'Not loaded'], ['Voice synthesis', s.tts_loaded ? (voiceNames[s.models?.tts_voice] || s.models?.tts_voice || 'Loaded') : 'Not loaded'], ['Turn / speech queue', s.turn_queue + ' / ' + s.speech_queue], ['Capture frames queued', String(s.audio_queue)]]);
+  definitionList('pipeline', [['Capture', s.browser_recording ? 'Browser' : s.listening ? 'Native · active' : 'Off'], ['Voice processing', s.audio_ready ? s.aec ? 'Enabled' : 'Unavailable' : 'Not started'], ['Transcription', s.stt_loaded ? s.models?.stt || 'Loaded' : 'Not loaded'], ['Voice synthesis', s.tts_loaded ? (voiceNames[s.models?.tts_voice] || s.models?.tts_voice || 'Loaded') : 'Not loaded'], ['Turn / speech / interim queues', s.turn_queue + ' / ' + s.speech_queue + ' / ' + (s.partial_queue || 0)], ['Capture frames queued', String(s.audio_queue)]]);
 }
 async function restartService(name, button) {
   if (!confirm('Restart ' + (labels[name] || name) + '? Active work in that service will stop.')) return;
@@ -234,7 +234,7 @@ async function connect() {
   const settings = await api('/api/settings'); connected = true;
   $('login').hidden = true; $('application').hidden = false; $('logout').hidden = false;
   $('voice').replaceChildren(); for (const voice of settings.voices) {const option = document.createElement('option'); option.value = voice; option.textContent = voiceNames[voice] || voice; option.disabled = !settings.installed_voices.includes(voice); if (option.disabled) option.textContent += ' · not installed'; $('voice').append(option);}
-  $('voice').value = settings.models.tts_voice; $('tokens').value = settings.models.max_tokens; $('speed').value = settings.models.tts_speed;
+  $('voice').value = settings.models.tts_voice; $('tokens').value = settings.models.max_tokens; $('speed').value = settings.models.tts_speed; updateVoiceSpeedControl();
   // Authenticated HTTP long polling also works when browser extensions block
   // WebSockets. Each response replays from the last successfully rendered event.
   eventFeed = new MacBotEventFeed(
@@ -262,6 +262,12 @@ $('mute').onclick = () => busy($('mute'), 'Muting…', async () => {const d = aw
 $('interrupt').onclick = () => busy($('interrupt'), 'Stopping…', async () => {await api('/api/interrupt', {}); setPhase('interrupted', 'interrupted');});
 $('clear').onclick = () => busy($('clear'), 'Clearing…', async () => {await api('/api/clear', {}); resetHistory();});
 $('preview').onclick = () => busy($('preview'), 'Preparing…', async () => {await api('/api/preview-voice', {text: 'Hey, I’m here. What would you like to work on?'});});
+$('voice').onchange = updateVoiceSpeedControl;
+function updateVoiceSpeedControl() {
+  const nativeRate = $('voice').value.startsWith('qwen-');
+  $('speed').disabled = nativeRate;
+  $('speed').title = nativeRate ? 'Qwen audition voices currently use their native speaking rate.' : '';
+}
 $('settings').onsubmit = async e => {e.preventDefault(); await busy($('save-settings'), 'Saving…', async () => {await api('/api/settings', {tts_voice: $('voice').value, tts_speed: Number($('speed').value), max_tokens: Number($('tokens').value)}); pendingSettings = true; $('settings-note').textContent = 'Saved. The current voice stays active until the assistant restarts.'; $('apply-settings').hidden = false;});};
 $('apply-settings').onclick = async () => {await restartService('assistant', $('apply-settings')); if (activeModels && activeModels.tts_voice === $('voice').value && activeModels.tts_speed === Number($('speed').value) && activeModels.max_tokens === Number($('tokens').value)) {pendingSettings = false; $('apply-settings').hidden = true; $('settings-note').textContent = 'Settings are active.';}};
 $('upload').onsubmit = async e => {e.preventDefault(); if (!$('files').files.length) {fail(new Error('Choose at least one document first.')); return;} const data = new FormData(); for (const file of $('files').files) data.append('files', file); await busy($('import-button'), 'Importing…', async () => {const result = await api('/api/upload-documents', data); await documents(); $('files').value = ''; $('document-status').textContent = 'Import completed.'; if (result.errors?.length) fail(new Error(JSON.stringify(result.errors)));});};

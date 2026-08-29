@@ -24,31 +24,34 @@ microphone/speaker, acoustic, voice-listening, and soak acceptance remain open.
   selected under `~/Library/Application Support/MacBot/runtime`. The installed
   app contains no checkout path.
 
-The supported non-device suite passes **117 tests**, with five physical-device
+The supported non-device suite passes **122 tests**, with five physical-device
 tests deselected. Ruff, format, mypy, JavaScript syntax, Swift release build,
-wheel inspection, installed-service readiness/shutdown, and ad hoc signature
-verification pass. The installed service tree reached ready with about 2.67 GiB
+wheel inspection, installed-service readiness/shutdown, OS-network-denied
+installed-wheel verification, and ad hoc signature verification pass. The
+installed service tree reached ready with about 2.67 GiB
 aggregate sampled RSS, then stopped without leaving MacBot processes. The
 resolved dependency audit reports no known third-party vulnerabilities after
 upgrading `cryptography` to 50.0.1.
 
 Fresh 50-case routing runs on exact llama.cpp b10509 produced 49/50 (98%) for
-Qwen3.5-2B Q4_K_M and 47/50 (94%) for Qwen3-1.7B. Qwen3.5 remains selected.
+the earlier Qwen3.5-2B Q4_K_M and 47/50 (94%) for Qwen3-1.7B. The reproducible
+official-source Qwen3.5 Q4 then passed 29/30 (96.7%) on the untouched holdout
+and all 19 real runtime regression cases. It is now selected.
 These are software task-selection results, not speech or user acceptance. See
 [model screening](MODEL_SCREENING.md) for hashes, latency, and provenance gaps.
 
 ## Release blockers
 
-- Integrate and benchmark an Apple-Silicon-local Qwen3-TTS 0.6B candidate, then
-  obtain user listening acceptance. Kokoro and Piper remain selectable fallbacks.
-- Add truthful partial transcription and complete current Parakeet/Whisper device
-  comparison with reproducible recordings.
-- Produce the selected Qwen3.5 GGUF through a pinned conversion from official
-  source weights; the currently installed candidate is a pinned derived GGUF.
+- Obtain user listening acceptance for the integrated Qwen3-TTS 0.6B and 1.7B
+  audition candidates. Kokoro and Piper remain selectable fallbacks.
+- Complete the current Parakeet/Whisper device comparison with reproducible
+  recordings. Real bounded interim transcription is implemented and shares the
+  final turn ID, but spontaneous speech still needs device acceptance.
 - Run controlled built-in microphone/speaker conversation, overlap/echo checks,
   acoustic latency measurement, interruption measurement, and a 30-minute soak.
-- Complete the clean offline installed-wheel, hostile-input/security, visual,
-  accessibility, browser fallback, and hosted-CI gates after the remaining code.
+- Complete the remaining hostile-input/security, visual, accessibility, browser
+  fallback, and hosted-CI gates. The clean installed wheel passes offline
+  service, inference, context, document retrieval, and shutdown verification.
 
 Model weights, credentials, documents, recordings, private reports, and runtime
 state are not packaged or committed.

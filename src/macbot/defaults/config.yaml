@@ -14,7 +14,7 @@ services:
     host: 127.0.0.1
     port: 8090
 models:
-  llm: qwen3.5-2b
+  llm: qwen3.5-2b-official
   llm_backend: llama
   llm_url: http://127.0.0.1:8080
   context_length: 16384
@@ -23,7 +23,7 @@ models:
   threads: 4
   stt: parakeet
   tts_voice: amy
-  tts_speed: 1.1
+  tts_speed: 1.0
   embedding: minilm
 audio:
   endpoint_ms: 350

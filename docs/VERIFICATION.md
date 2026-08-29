@@ -23,7 +23,10 @@ uv run --frozen --all-extras python scripts/benchmark_transcription.py whisper -
 uv run --frozen --all-extras python scripts/benchmark_models.py qwen3-4b --output /absolute/path/qwen3.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py lfm-1.2b --output /absolute/path/lfm.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b --output /absolute/path/qwen35.jsonl
+uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b-official --case-set holdout --output /absolute/path/qwen35-official.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b-mlx --backend mlx --output /absolute/path/qwen35-mlx.jsonl
+uv run --frozen python scripts/benchmark_tts.py qwen-aiden-0.6b --output /absolute/path/qwen-tts-06.json
+uv run --frozen python scripts/benchmark_tts.py qwen-aiden-1.7b --output /absolute/path/qwen-tts-17.json
 ```
 
 Run candidates sequentially with unrelated workloads stopped. Retain raw outputs, model hashes, runtime versions, cold load and first inference separately from warm observations. The ASR subset consists of 20 real LibriSpeech recordings and transcripts, one speaker, <=12 seconds; it is not representative of all accents or conversation. Synthetic Piper audio is useful for integration checks only.

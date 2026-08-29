@@ -19,3 +19,7 @@ environment variables, files, URLs, or logs.
 
 This is point-in-time evidence. Re-run the audit after every lockfile change and
 before a release claim; do not suppress a future advisory with a blanket ignore.
+
+The audit was repeated after adding pinned `mlx-audio 0.5.0` and its resolved
+speech stack. It again reported no known third-party vulnerabilities; MacBot
+itself remains listed only as an unauditable unpublished local package.

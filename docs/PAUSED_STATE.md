@@ -10,14 +10,17 @@ playback completion/interrupt acknowledgements, native settings and diagnostics,
 browser fallback isolation, exact llama.cpp b10509 provenance, clean versioned
 wheel installation, and safe recovery of missing derived retrieval indexes.
 
-Current local evidence: 117 non-device tests pass; Ruff, formatting, mypy,
+Current local evidence: 122 non-device tests pass; Ruff, formatting, mypy,
 JavaScript syntax, Swift release build, wheel inspection, dependency audit,
-installed-runtime readiness, and owned-process shutdown pass. Qwen3.5-2B passes
-49/50 routing cases on exact b10509 and remains selected. Services are stopped
-after verification.
+installed-runtime readiness, and owned-process shutdown pass. The selected
+Qwen3.5-2B official-source Q4 passes the 95% screening threshold and the real
+runtime regression suite. Qwen3-TTS 0.6B and 1.7B are integrated, benchmarked,
+and selectable; the 1.7B Aiden voice is configured only for owner audition.
+Real interim transcription is implemented. Services are stopped after
+verification.
 
-Do not resume by opening the app for user testing yet. First finish the natural
-Qwen3-TTS candidate and partial-transcription path, then rerun the automated and
-security gates. Device listening, acoustic latency, echo/overlap behavior, the
+The clean installed build and offline installed-runtime gates pass. The next
+controlled step is native visual/accessibility and owner device testing. Device
+listening, acoustic latency, echo/overlap behavior, the
 30-minute soak, native visual/accessibility review, and user voice acceptance
 remain release blockers.
