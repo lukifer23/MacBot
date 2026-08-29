@@ -36,6 +36,33 @@ enum KeychainStore {
         }
     }
 
+    static func historyKey() throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let encoded = item as? Data,
+              let decoded = Data(base64Encoded: encoded), decoded.count == 32 else {
+            throw NSError(
+                domain: "MacBot",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "The encrypted-history Keychain item is unavailable or invalid"]
+            )
+        }
+        return decoded
+    }
+
+    static func isTemporarilyUnavailable(_ error: Error) -> Bool {
+        let value = error as NSError
+        return value.domain == NSOSStatusErrorDomain
+            && [Int(errSecInDarkWake), Int(errSecInteractionNotAllowed)].contains(value.code)
+    }
+
     static func hasSearchCredential() -> Bool {
         SecItemCopyMatching(query(service: "local.macbot.brave-search", returnData: false) as CFDictionary, nil) == errSecSuccess
     }

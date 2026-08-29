@@ -24,14 +24,24 @@ microphone/speaker, acoustic, voice-listening, and soak acceptance remain open.
   selected under `~/Library/Application Support/MacBot/runtime`. The installed
   app contains no checkout path.
 
-The supported non-device suite passes **122 tests**, with five physical-device
-tests deselected. Ruff, format, mypy, JavaScript syntax, Swift release build,
+The supported non-device suite passes **124 tests**, with five physical-device
+tests deselected, and the native Swift suite passes **4 tests**. Ruff, format,
+mypy, JavaScript syntax, Swift release build,
 wheel inspection, installed-service readiness/shutdown, OS-network-denied
 installed-wheel verification, and ad hoc signature verification pass. The
 installed service tree reached ready with about 2.67 GiB
 aggregate sampled RSS, then stopped without leaving MacBot processes. The
 resolved dependency audit reports no known third-party vulnerabilities after
 upgrading `cryptography` to 50.0.1.
+
+The native app now passes the encrypted-history key only through inherited
+private pipes, including a fresh pipe for each supervised assistant restart.
+It waits through macOS dark wake instead of failing Keychain access, restarts
+its owned service tree after repeated IPC loss, reopens the conversation window
+from the menu bar, and renders transcript, response and action events in one
+sequence-ordered timeline. The current Mac entered dark wake during the visual
+review, so the native screenshot, VoiceOver, microphone and speaker gates remain
+open rather than being reported as passed.
 
 Fresh 50-case routing runs on exact llama.cpp b10509 produced 49/50 (98%) for
 the earlier Qwen3.5-2B Q4_K_M and 47/50 (94%) for Qwen3-1.7B. The reproducible

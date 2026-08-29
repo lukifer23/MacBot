@@ -21,6 +21,7 @@ from flask import Flask, jsonify, request
 
 from .auth import AuthStore, install_security
 from .config import Settings, atomic_write, load, prepare
+from .history import runtime_history_key
 from .provision import model_file
 
 
@@ -35,9 +36,12 @@ class ServiceDefinition:
 
 
 class MacBotOrchestrator:
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, history_key: bytes | None = None):
         self.settings = settings or load()
         prepare(self.settings)
+        if history_key is not None and len(history_key) != 32:
+            raise ValueError("History encryption requires a 256-bit key")
+        self.history_key = history_key
         self.auth = AuthStore(self.settings.data_dir)
         self.processes: dict[str, subprocess.Popen] = {}
         self.logs: dict[str, BinaryIO] = {}
@@ -68,6 +72,9 @@ class MacBotOrchestrator:
                 package_root + os.pathsep + python_path if python_path else package_root
             ),
         }
+        # A descriptor received by the supervisor has already been consumed.
+        # Each assistant launch receives a fresh pipe containing the in-memory key.
+        common.pop("MACBOT_HISTORY_KEY_FD", None)
         if s.models.llm_backend == "llama":
             keyfile = s.data_dir / "run" / "llama-key"
             atomic_write(keyfile, self.auth.keys["llm"].encode())
@@ -151,18 +158,34 @@ class MacBotOrchestrator:
                             "error": self.failures[service.name],
                         }
             log = (self.settings.data_dir / "logs" / (service.name + ".log")).open("ab")
+            read_fd: int | None = None
             try:
+                environment = dict(service.env) if service.env else None
+                pass_fds: tuple[int, ...] = ()
+                if service.name == "assistant" and self.history_key is not None:
+                    read_fd, write_fd = os.pipe()
+                    try:
+                        os.write(write_fd, self.history_key)
+                    finally:
+                        os.close(write_fd)
+                    environment = environment or dict(os.environ)
+                    environment["MACBOT_HISTORY_KEY_FD"] = str(read_fd)
+                    pass_fds = (read_fd,)
                 process = subprocess.Popen(
                     service.command,
                     stdout=log,
                     stderr=log,
-                    env=service.env or None,
+                    env=environment,
                     cwd=service.cwd,
+                    pass_fds=pass_fds,
                     start_new_session=True,
                 )
             except Exception:
                 log.close()
                 raise
+            finally:
+                if read_fd is not None:
+                    os.close(read_fd)
             self.processes[service.name], self.logs[service.name] = process, log
         for _ in range(retries):
             if process.poll() is not None:
@@ -341,7 +364,11 @@ def create_app(supervisor: MacBotOrchestrator):
 def main():
     from werkzeug.serving import make_server
 
-    supervisor = MacBotOrchestrator()
+    settings = load()
+    history_key = runtime_history_key()
+    if settings.privacy.history_enabled and history_key is None:
+        raise RuntimeError("Encrypted history requires an inherited private key pipe")
+    supervisor = MacBotOrchestrator(settings, history_key=history_key)
     supervisor.acquire()
     server = make_server(
         supervisor.settings.services.orchestrator.host,

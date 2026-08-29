@@ -3,7 +3,32 @@ import os
 import numpy as np
 
 from macbot.config import Settings, prepare
-from macbot.history import HistoryStore
+from macbot.history import HistoryStore, runtime_history_key
+
+
+def _history_pipe(monkeypatch, payload: bytes) -> int:
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, payload)
+    os.close(write_fd)
+    monkeypatch.setenv("MACBOT_HISTORY_KEY_FD", str(read_fd))
+    return read_fd
+
+
+def test_runtime_history_key_requires_an_exact_inherited_pipe(monkeypatch):
+    monkeypatch.delenv("MACBOT_HISTORY_KEY_FD", raising=False)
+    assert runtime_history_key() is None
+
+    _history_pipe(monkeypatch, b"k" * 32)
+    assert runtime_history_key() == b"k" * 32
+    assert "MACBOT_HISTORY_KEY_FD" not in os.environ
+
+    _history_pipe(monkeypatch, b"short")
+    try:
+        runtime_history_key()
+    except RuntimeError as exc:
+        assert "exactly 32 bytes" in str(exc)
+    else:
+        raise AssertionError("A short inherited history key was accepted")
 
 
 def test_history_is_encrypted_and_round_trips(tmp_path):

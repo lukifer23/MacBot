@@ -6,11 +6,11 @@ struct ServiceManager {
     let cliPath: String
     let sourcePath: String
 
-    init() {
-        dataDirectory = FileManager.default.homeDirectoryForCurrentUser
+    init(dataDirectory: URL? = nil, cliPath: String? = nil, sourcePath: String? = nil) {
+        self.dataDirectory = dataDirectory ?? FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/MacBot", directoryHint: .isDirectory)
-        cliPath = Bundle.main.object(forInfoDictionaryKey: "MacBotCLIPath") as? String ?? "macbot"
-        sourcePath = Bundle.main.object(forInfoDictionaryKey: "MacBotSourcePath") as? String ?? ""
+        self.cliPath = cliPath ?? Bundle.main.object(forInfoDictionaryKey: "MacBotCLIPath") as? String ?? "macbot"
+        self.sourcePath = sourcePath ?? Bundle.main.object(forInfoDictionaryKey: "MacBotSourcePath") as? String ?? ""
     }
 
     func prepareToken() throws -> String {
@@ -27,10 +27,10 @@ struct ServiceManager {
         return token
     }
 
-    func restart() async throws -> String {
+    func restart(historyKey: Data) async throws -> String {
         _ = try? await run(["stop"])
         let token = try prepareToken()
-        _ = try await run(["start", "--background"])
+        _ = try await run(["start", "--background"], standardInput: historyKey)
         return token
     }
 
@@ -59,13 +59,24 @@ struct ServiceManager {
         return process
     }
 
-    private func run(_ arguments: [String]) async throws -> String {
+    private func run(_ arguments: [String], standardInput: Data? = nil) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = self.configuredProcess(arguments)
             let output = Pipe()
+            let input = standardInput.map { _ in Pipe() }
             process.standardOutput = output
             process.standardError = output
+            if let input {
+                process.standardInput = input
+                var environment = process.environment ?? ProcessInfo.processInfo.environment
+                environment["MACBOT_HISTORY_KEY_FD"] = "0"
+                process.environment = environment
+            }
             try process.run()
+            if let input, let standardInput {
+                input.fileHandleForWriting.write(standardInput)
+                try? input.fileHandleForWriting.close()
+            }
             process.waitUntilExit()
             let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             guard process.terminationStatus == 0 else {

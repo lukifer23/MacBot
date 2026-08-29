@@ -7,7 +7,7 @@ The authenticated dashboard is an adapter to the assistant, not a second inferen
 - **Start hands-free** explicitly starts native capture. **Mute** disables captured input. **Stop response** cancels the current turn and invalidates its pending approvals.
 - **Record browser voice** releases the native audio device before requesting browser microphone access. Only one capture owner is allowed. Recording is bounded and stops its tracks before upload; failures release the lease.
 - Text chat uses Enter to send and Shift+Enter for a newline. Speak replies controls playback for that text turn.
-- Exact tool arguments appear in a confirmation card with a real expiry. Denied actions are reported as denied. Tool payloads are collapsed and rendered as text.
+- Supported actions explicitly bound to the current request run once and show requested, running and terminal results without an approval card. Ambiguous or unsupported actions are clarified or denied. Legacy approval events remain fail-closed compatibility data, but the current bounded tool set does not use them as a normal interaction step. Tool payloads are collapsed and rendered as text.
 - Documents and settings have separate keyboard-accessible tabs. Import, search, save and restart show pending states and errors. Saving settings does not claim they are active until the assistant restarts.
 
 ## Metrics and freshness

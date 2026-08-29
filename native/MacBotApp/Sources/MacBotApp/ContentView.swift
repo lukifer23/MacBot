@@ -13,7 +13,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 8) {
                     Circle().fill(state.connected ? .green : .orange).frame(width: 8, height: 8)
-                    Text(state.connected ? "Local and private" : "Connecting")
+                    Text(state.connectionDetail)
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                 }.padding()
@@ -54,16 +54,16 @@ private struct ConversationView: View {
                                 description: Text("Type a message or start hands-free conversation.")
                             ).padding(.top, 90)
                         }
-                        ForEach(state.messages) { item in
-                            MessageBubble(item: item).id(item.id)
-                        }
-                        ForEach(state.tasks) { item in
-                            TaskResultCard(item: item).id(item.id)
+                        ForEach(state.timeline) { item in
+                            switch item {
+                            case .message(let message): MessageBubble(item: message)
+                            case .task(let task): TaskResultCard(item: task)
+                            }
                         }
                     }.padding(24)
                 }
                 .onChange(of: state.messages.count + state.tasks.count) {
-                    if let id = state.tasks.last?.id ?? state.messages.last?.id {
+                    if let id = state.timeline.last?.id {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
@@ -137,14 +137,38 @@ private struct TaskResultCard: View {
     let item: TaskItem
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.state == "failed" ? "xmark.circle.fill" : "checkmark.circle.fill")
-                .foregroundStyle(item.state == "failed" ? .red : .green)
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 5) {
-                Text(item.title.replacingOccurrences(of: "_", with: " ").capitalized).font(.headline)
+                HStack {
+                    Text(item.title.replacingOccurrences(of: "_", with: " ").capitalized).font(.headline)
+                    Text(item.state.capitalized).font(.caption).foregroundStyle(.secondary)
+                }
                 Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(4)
             }
             Spacer()
         }.padding(14).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var symbol: String {
+        switch item.state {
+        case "running", "accepted": "clock.arrow.circlepath"
+        case "denied": "nosign"
+        case "partial": "exclamationmark.circle.fill"
+        case "failed": "xmark.circle.fill"
+        case "interrupted": "stop.circle.fill"
+        default: "checkmark.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch item.state {
+        case "running", "accepted": .blue
+        case "denied", "partial": .orange
+        case "failed": .red
+        case "interrupted": .secondary
+        default: .green
+        }
     }
 }
 

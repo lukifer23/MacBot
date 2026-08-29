@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import sqlite3
-import subprocess
 import threading
 import time
 import uuid
@@ -21,38 +19,34 @@ KEYCHAIN_SERVICE = "local.macbot.history"
 
 
 def runtime_history_key() -> bytes | None:
-    """Read a key from an inherited pipe, or an existing Keychain item.
+    """Read the history key from the supervisor's inherited private pipe.
 
-    A missing key disables durable history; it never creates a plaintext store or
-    exposes a new secret through argv, the environment, or a file.
+    The service never queries Keychain itself and never accepts the key through
+    argv, an environment value, or a file. A missing descriptor disables durable
+    history instead of falling back to a weaker transport.
     """
     descriptor = os.environ.get("MACBOT_HISTORY_KEY_FD")
-    if descriptor:
-        try:
-            fd = int(descriptor)
-            key = os.read(fd, 32)
-            os.close(fd)
-            if len(key) != 32:
-                raise RuntimeError("History key pipe did not contain 32 bytes")
-            return key
-        finally:
-            os.environ.pop("MACBOT_HISTORY_KEY_FD", None)
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5,
-    )
-    if result.returncode:
+    if descriptor is None:
         return None
     try:
-        key = base64.b64decode(result.stdout.strip(), validate=True)
-    except ValueError as exc:
-        raise RuntimeError("The MacBot history Keychain item is invalid") from exc
-    if len(key) != 32:
-        raise RuntimeError("The MacBot history Keychain key has an invalid length")
-    return key
+        fd = int(descriptor)
+        key = bytearray()
+        while len(key) < 32:
+            block = os.read(fd, 32 - len(key))
+            if not block:
+                break
+            key.extend(block)
+        if len(key) != 32 or os.read(fd, 1):
+            raise RuntimeError("History key pipe did not contain exactly 32 bytes")
+        return bytes(key)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("History key pipe descriptor is invalid") from exc
+    finally:
+        os.environ.pop("MACBOT_HISTORY_KEY_FD", None)
+        try:
+            os.close(int(descriptor))
+        except (OSError, TypeError, ValueError):
+            pass
 
 
 class HistoryStore:

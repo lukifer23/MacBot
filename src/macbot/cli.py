@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ import yaml
 
 from .auth import AuthStore
 from .config import Settings, atomic_write, load, prepare, save
+from .history import KEYCHAIN_SERVICE, runtime_history_key
 from .provision import (
     build_audio,
     catalog,
@@ -37,6 +39,51 @@ REVISIONS = {
     "llama.cpp": "fe8156f789011f6ea0baf6917ea09f88b89d9554",
     "whisper.cpp": "371b5a7561823ab2bb32142d2751e35e7534727b",
 }
+
+
+def _keychain_history_key() -> bytes | None:
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    if result.returncode:
+        return None
+    try:
+        key = base64.b64decode(result.stdout.strip(), validate=True)
+    except ValueError as exc:
+        raise RuntimeError("The MacBot history Keychain item is invalid") from exc
+    if len(key) != 32:
+        raise RuntimeError("The MacBot history Keychain key has an invalid length")
+    return key
+
+
+def _launch_history_key(settings: Settings) -> bytes | None:
+    if not settings.privacy.history_enabled:
+        return None
+    key = runtime_history_key() or _keychain_history_key()
+    if key is None:
+        raise RuntimeError(
+            "Encrypted history is enabled but its Keychain key is unavailable; "
+            "launch MacBot.app once to provision it"
+        )
+    return key
+
+
+def _history_pipe(key: bytes | None) -> tuple[int | None, dict[str, str]]:
+    environment = dict(os.environ)
+    environment.pop("MACBOT_HISTORY_KEY_FD", None)
+    if key is None:
+        return None, environment
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, key)
+    finally:
+        os.close(write_fd)
+    environment["MACBOT_HISTORY_KEY_FD"] = str(read_fd)
+    return read_fd, environment
 
 
 def build_inference(settings: Settings, source: Path | None = None):
@@ -327,20 +374,41 @@ def main():
             prepare(settings)
             # Store the effective validated config for consistent child-process settings.
             save(settings)
+            history_key = _launch_history_key(settings)
             if args.background:
                 log = (settings.data_dir / "logs/supervisor.log").open("ab")
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "macbot.cli", "orchestrator"],
-                    stdout=log,
-                    stderr=log,
-                    start_new_session=True,
-                )
-                log.close()
+                read_fd, environment = _history_pipe(history_key)
+                try:
+                    proc = subprocess.Popen(
+                        [sys.executable, "-m", "macbot.cli", "orchestrator"],
+                        stdout=log,
+                        stderr=log,
+                        env=environment,
+                        pass_fds=(() if read_fd is None else (read_fd,)),
+                        start_new_session=True,
+                    )
+                finally:
+                    if read_fd is not None:
+                        os.close(read_fd)
+                    log.close()
                 print(json.dumps({"state": "starting", "pid": proc.pid}))
                 return
             from .orchestrator import main as run
 
-            run()
+            read_fd, _ = _history_pipe(history_key)
+            previous_fd_value: str | None = os.environ.pop("MACBOT_HISTORY_KEY_FD", None)
+            try:
+                if read_fd is not None:
+                    os.environ["MACBOT_HISTORY_KEY_FD"] = str(read_fd)
+                run()
+            finally:
+                if read_fd is not None:
+                    try:
+                        os.close(read_fd)
+                    except OSError:
+                        pass
+                if previous_fd_value is not None:
+                    os.environ["MACBOT_HISTORY_KEY_FD"] = previous_fd_value
             return
         if args.command in {"orchestrator", "dashboard", "rag", "voice"}:
             import importlib

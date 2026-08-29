@@ -82,6 +82,7 @@ uv run ruff format --check src tests
 uv run ruff check src tests
 uv run mypy src/macbot
 uv run pytest -m 'not device'
+swift test --package-path native/MacBotApp -c release
 uv run pip-audit --local
 uv build && python3 scripts/inspect_package.py
 ./scripts/build_native_app.sh

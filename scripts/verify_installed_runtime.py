@@ -69,6 +69,7 @@ def verify(provisioned, model, report):
         save(s)
         env = {key: value for key, value in os.environ.items() if not key.startswith("MACBOT")}
         env.update(MACBOT_DATA_DIR=str(s.data_dir), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+        env["MACBOT_HISTORY_KEY_FD"] = "0"
         auth = AuthStore(s.data_dir)
         proc = None
         results = {
@@ -86,10 +87,14 @@ def verify(provisioned, model, report):
                     [sys.executable, "-m", "macbot.cli", "start"],
                     cwd=temporary,
                     env=env,
+                    stdin=subprocess.PIPE,
                     stdout=log,
                     stderr=log,
                     start_new_session=True,
                 )
+                assert proc.stdin is not None
+                proc.stdin.write(os.urandom(32))
+                proc.stdin.close()
                 deadline = time.monotonic() + 120
                 while time.monotonic() < deadline:
                     assert proc.poll() is None, "Installed supervisor exited during startup"
@@ -162,6 +167,17 @@ def verify(provisioned, model, report):
                 found.raise_for_status()
                 assert "cobalt" in found.text
                 results["document_import_and_retrieval"] = "passed"
+                history_files = [
+                    s.data_dir / "history.sqlite3",
+                    s.data_dir / "history.sqlite3-wal",
+                    s.data_dir / "history.sqlite3-shm",
+                ]
+                plaintext = b"What is two plus two?"
+                assert all(
+                    not path.exists() or plaintext not in path.read_bytes()
+                    for path in history_files
+                ), "Conversation plaintext was present in the encrypted history store"
+                results["encrypted_history_plaintext_scan"] = "passed"
                 results["scope"] = (
                     "Offline installed-wheel software flow; no acoustic or listening acceptance"
                 )

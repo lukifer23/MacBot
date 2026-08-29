@@ -14,6 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.async {
+            NSApp.activate()
+            NSApp.windows.first(where: { $0.canBecomeKey })?.makeKeyAndOrderFront(nil)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) { shutdown?() }
 }
 
@@ -38,20 +46,36 @@ struct MacBotApplication: App {
         }
 
         MenuBarExtra {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(state.phase.title, systemImage: state.phase.symbol)
-                Divider()
-                Button(state.listening ? "Stop hands-free" : "Start hands-free") { state.toggleListening() }
-                Button("Stop response") { state.interrupt() }
-                Button("Open MacBot") { NSApp.activate(ignoringOtherApps: true) }
-                Divider()
-                Button("Quit MacBot") {
-                    NSApp.terminate(nil)
-                }
-            }.padding(4)
+            MenuBarControls().environmentObject(state)
         } label: {
             Image(systemName: state.phase.symbol)
         }
         .menuBarExtraStyle(.menu)
+    }
+}
+
+private struct MenuBarControls: View {
+    @Environment(\.openWindow) private var openWindow
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(state.phase.title, systemImage: state.phase.symbol)
+            Divider()
+            Button(state.listening ? "Stop hands-free" : "Start hands-free") {
+                state.toggleListening()
+            }
+            Button("Stop response") { state.interrupt() }
+            Button("Open MacBot") {
+                openWindow(id: "main")
+                NSApp.activate()
+                DispatchQueue.main.async {
+                    NSApp.windows.first(where: { $0.canBecomeKey })?.makeKeyAndOrderFront(nil)
+                }
+            }
+            Divider()
+            Button("Quit MacBot") { NSApp.terminate(nil) }
+        }
+        .padding(4)
     }
 }

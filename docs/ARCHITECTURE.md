@@ -53,8 +53,14 @@ length plus JSON and are bounded to 12 MiB for document import. Audio frames use
 the same length prefix, a one-byte operation, and bounded float32 PCM payloads.
 
 No token is accepted in a URL, command-line argument, or log. The durable
-history key is generated and retained in macOS Keychain. The service reads an
-existing key without writing it to configuration or logs.
+history key is generated and retained in macOS Keychain. The native app reads
+the key and writes its 32 bytes to an inherited private pipe. The CLI passes it
+to the supervisor through another inherited pipe, and the supervisor creates a
+fresh pipe for each assistant launch or restart. The service never queries
+Keychain and never accepts the key through arguments, environment values,
+configuration, URLs, or files. During a macOS dark wake, when Security blocks
+Keychain UI access, the app shows a waiting state and starts no service tree;
+it retries after wake instead of reporting false readiness.
 
 ## Persistence and retrieval
 

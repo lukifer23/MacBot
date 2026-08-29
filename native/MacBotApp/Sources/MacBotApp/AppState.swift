@@ -6,6 +6,7 @@ final class AppState: ObservableObject {
     @Published var selectedPage: SidebarPage? = .conversation
     @Published var phase: AssistantPhase = .starting
     @Published var connected = false
+    @Published var connectionDetail = "Starting local services"
     @Published var listening = false
     @Published var muted = false
     @Published var draft = ""
@@ -38,38 +39,81 @@ final class AppState: ObservableObject {
     private var cursor = 0
     private var epoch: String?
     private var responseIndex: [String: Int] = [:]
+    private var historyKey: Data?
+
+    var timeline: [TimelineItem] {
+        (messages.map(TimelineItem.message) + tasks.map(TimelineItem.task)).sorted {
+            if $0.sequence == $1.sequence { return $0.id < $1.id }
+            return $0.sequence < $1.sequence
+        }
+    }
 
     func start() {
         guard eventTask == nil else { return }
         eventTask = Task {
             do {
-                try KeychainStore.ensureHistoryKey()
-                let token = try await services.restart()
-                let socket = services.dataDirectory.appending(path: "run/control.sock").path
-                for _ in 0..<100 {
-                    if FileManager.default.fileExists(atPath: socket) { break }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                let native = NativeClient(socketPath: socket, token: token)
-                client = native
-                let audioController = AudioController()
-                try audioController.connect(
-                    path: services.dataDirectory.appending(path: "run/audio.sock").path,
-                    token: token
-                )
-                audio = audioController
-                connected = true
-                phase = .idle
+                let historyKey = try await waitForHistoryKey()
+                self.historyKey = historyKey
+                connectionDetail = "Starting local services"
+                try await establishServices()
                 await refreshStatus()
                 await refreshSettings()
-                await eventLoop(native)
+                await eventLoop()
             } catch {
                 connected = false
+                connectionDetail = "Startup failed"
                 phase = .error
                 errorMessage = error.localizedDescription
                 eventTask = nil
             }
         }
+    }
+
+    private func establishServices() async throws {
+        guard let historyKey else {
+            throw NSError(domain: "MacBot", code: 7, userInfo: [NSLocalizedDescriptionKey: "The history key is unavailable"])
+        }
+        audio?.close()
+        audio = nil
+        client = nil
+        listening = false
+        let token = try await services.restart(historyKey: historyKey)
+        let run = services.dataDirectory.appending(path: "run")
+        let controlSocket = run.appending(path: "control.sock").path
+        let audioSocket = run.appending(path: "audio.sock").path
+        for _ in 0..<150 {
+            if FileManager.default.fileExists(atPath: controlSocket),
+               FileManager.default.fileExists(atPath: audioSocket) { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard FileManager.default.fileExists(atPath: controlSocket),
+              FileManager.default.fileExists(atPath: audioSocket) else {
+            throw NSError(domain: "MacBot", code: 8, userInfo: [NSLocalizedDescriptionKey: "Local services did not create their private sockets"])
+        }
+        let native = NativeClient(socketPath: controlSocket, token: token)
+        let audioController = AudioController()
+        try audioController.connect(path: audioSocket, token: token)
+        client = native
+        audio = audioController
+        connected = true
+        connectionDetail = "Local and private"
+        phase = .idle
+        errorMessage = nil
+    }
+
+    private func waitForHistoryKey() async throws -> Data {
+        while !Task.isCancelled {
+            do {
+                try KeychainStore.ensureHistoryKey()
+                return try KeychainStore.historyKey()
+            } catch where KeychainStore.isTemporarilyUnavailable(error) {
+                connected = false
+                phase = .starting
+                connectionDetail = "Waiting for this Mac to wake"
+                try await Task.sleep(for: .seconds(2))
+            }
+        }
+        throw CancellationError()
     }
 
     func send() {
@@ -135,6 +179,7 @@ final class AppState: ObservableObject {
         eventTask = nil
         audio?.close()
         audio = nil
+        historyKey = nil
         services.stopSynchronously()
     }
 
@@ -306,9 +351,13 @@ final class AppState: ObservableObject {
         return String(format: "%.0f / %.0f ms", percentile(0.5), percentile(0.95))
     }
 
-    private func eventLoop(_ native: NativeClient) async {
+    private func eventLoop() async {
+        var consecutiveFailures = 0
         while !Task.isCancelled {
             do {
+                guard let native = client else {
+                    throw NSError(domain: "MacBot", code: 9, userInfo: [NSLocalizedDescriptionKey: "The local event connection is unavailable"])
+                }
                 var request: [String: Any] = ["op": "events", "after": cursor]
                 if let epoch { request["epoch"] = epoch }
                 let response = try await native.request(JSONPayload(request)).value
@@ -320,12 +369,28 @@ final class AppState: ObservableObject {
                 for event in response["events"] as? [[String: Any]] ?? [] {
                     consume(event)
                 }
+                connected = true
+                connectionDetail = "Local and private"
+                consecutiveFailures = 0
+                if phase == .error { phase = listening ? .listening : .idle }
                 await refreshStatus()
             } catch {
                 if !Task.isCancelled {
+                    consecutiveFailures += 1
                     connected = false
-                    show(error)
-                    try? await Task.sleep(for: .seconds(1))
+                    connectionDetail = "Reconnecting to local services"
+                    if consecutiveFailures >= 3 {
+                        do {
+                            try await establishServices()
+                            consecutiveFailures = 0
+                        } catch {
+                            phase = .error
+                            errorMessage = error.localizedDescription
+                            try? await Task.sleep(for: .seconds(2))
+                        }
+                    } else {
+                        try? await Task.sleep(for: .seconds(1))
+                    }
                 }
             }
         }
@@ -334,6 +399,7 @@ final class AppState: ObservableObject {
     private func consume(_ event: [String: Any]) {
         let kind = event["kind"] as? String ?? ""
         let state = event["state"] as? String ?? ""
+        let sequence = event["seq"] as? Int ?? cursor
         let turnID = event["turn_id"] as? String ?? UUID().uuidString
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
@@ -344,7 +410,7 @@ final class AppState: ObservableObject {
                 if let index = messages.firstIndex(where: { $0.id == "user-\(turnID)" }) {
                     messages[index].text = text
                 } else {
-                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text))
+                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text, sequence: sequence))
                 }
             }
         case "user":
@@ -353,7 +419,7 @@ final class AppState: ObservableObject {
                 if let index = messages.firstIndex(where: { $0.id == "user-\(turnID)" }) {
                     messages[index].text = text
                 } else {
-                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text))
+                    messages.append(.init(id: "user-\(turnID)", role: .user, text: text, sequence: sequence))
                 }
             }
         case "delta":
@@ -361,20 +427,36 @@ final class AppState: ObservableObject {
             if let index = responseIndex[turnID] {
                 messages[index].text += text
             } else {
-                messages.append(.init(id: "assistant-\(turnID)", role: .assistant, text: text))
+                messages.append(.init(id: "assistant-\(turnID)", role: .assistant, text: text, sequence: sequence))
                 responseIndex[turnID] = messages.count - 1
             }
         case "planning": phase = .planning
         case "generating": phase = .thinking
-        case "action", "tool": phase = .acting
+        case "action", "tool":
+            phase = .acting
+            if let action = data["action"] as? [String: Any] {
+                upsertAction(action, eventState: "running", sequence: sequence)
+            }
         case "speaking": phase = .speaking
         case "listening":
             listening = data["enabled"] as? Bool ?? listening
             phase = listening ? .listening : .idle
         case "tool_result":
             let tool = data["tool"] as? String ?? "Action"
-            let result = data["result"].map { String(describing: $0) } ?? ""
-            tasks.append(.init(id: "\(turnID)-\(tasks.count)", title: tool, state: state, detail: result))
+            let actionID = data["action_id"] as? String ?? "\(turnID)-\(sequence)"
+            let result = data["result"] as? [String: Any] ?? [:]
+            let resultState = result["status"] as? String ?? state
+            let terminal = ["denied", "failed", "partial", "interrupted"].contains(resultState)
+                ? resultState : "completed"
+            let item = TaskItem(
+                id: actionID,
+                title: tool,
+                state: terminal,
+                detail: Self.summarize(result),
+                sequence: tasks.first(where: { $0.id == actionID })?.sequence ?? sequence
+            )
+            if let index = tasks.firstIndex(where: { $0.id == actionID }) { tasks[index] = item }
+            else { tasks.append(item) }
         default: break
         }
         if state == "completed" { phase = listening ? .listening : .idle }
@@ -382,6 +464,40 @@ final class AppState: ObservableObject {
         if state == "failed" {
             phase = .error
             errorMessage = data["message"] as? String ?? "The turn failed"
+        }
+    }
+
+    private func upsertAction(_ action: [String: Any], eventState: String, sequence: Int) {
+        guard let id = action["action_id"] as? String,
+              let name = action["name"] as? String else { return }
+        let detail = action["source_span"] as? String ?? "Requested by you"
+        let item = TaskItem(
+            id: id,
+            title: name,
+            state: eventState,
+            detail: detail,
+            sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence
+        )
+        if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = item }
+        else { tasks.append(item) }
+    }
+
+    static func summarize(_ result: [String: Any]) -> String {
+        for key in ["message", "summary", "answer", "datetime", "time", "weather", "application", "app", "opened_url", "url", "path"] {
+            if let value = result[key] as? String, !value.isEmpty { return value }
+        }
+        if let reason = result["reason"] as? String { return reason }
+        if let error = result["error"] as? String { return error }
+        if let results = result["results"] as? [[String: Any]], !results.isEmpty {
+            let titles = results.prefix(3).compactMap { $0["title"] as? String }
+            if !titles.isEmpty { return titles.joined(separator: " · ") }
+            return "Returned \(results.count) result\(results.count == 1 ? "" : "s")."
+        }
+        switch result["status"] as? String {
+        case "denied": return "The requested action was denied."
+        case "failed": return "The requested action failed."
+        case "partial": return "The request completed only in part."
+        default: return "Completed."
         }
     }
 

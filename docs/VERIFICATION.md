@@ -8,11 +8,17 @@
 - Runtime offline after explicit provisioning; no hidden model fetches.
 - Configuration precedence, read-only packaged defaults, and private data exclusion.
 - Ruff, mypy, full supported tests, dependency audit, secret scan and package inspection.
+- Swift release build and native tests for private token permissions/rotation,
+  Keychain dark-wake handling, sequenced timeline ordering and friendly tool
+  result rendering.
 - Real encrypted SQLite, exact-index, and ONNX tests; authenticated local service
   and actual model inference tests. Missing dependencies/models/hardware are
   failures or explicit unrun gates, never passing skips.
 - Authentication/Host/Origin/CSRF/Socket.IO, approval replay/expiry/session binding, disabled tools, malicious document content, invalid uploads and unregistered paths.
 - Browser text/PTT, streaming, approvals, interruption, reconnection, voice settings, document CRUD, migration/rollback and owned-process recovery.
+- Encrypted-history key handoff through inherited pipes, including a fresh pipe
+  for every supervised assistant restart and absence from arguments,
+  environment values, files, URLs and logs.
 
 ## Reproducible model screening
 
@@ -50,6 +56,11 @@ sandbox-exec -p '(version 1)(allow default)(deny network*)(allow network-inbound
 ```
 
 The script verifies that imports come from the installed environment and that the OS denies an external connection. It creates isolated temporary configuration/documents and distinct loopback ports, shares only provisioned model/binary files, starts all services, authenticates through the dashboard, streams actual model output, checks context metrics and imports/retrieves a real text document. It terminates its owned supervisor afterward. Reports refuse overwrite. It does not open the microphone/speakers, measure acoustics or satisfy listening acceptance.
+
+The verifier supplies a fresh random history key through the CLI's inherited
+standard-input pipe, never an argument or environment value. It also scans the
+SQLite database and journal files to confirm the test conversation plaintext is
+absent.
 
 ## Device and listening acceptance
 

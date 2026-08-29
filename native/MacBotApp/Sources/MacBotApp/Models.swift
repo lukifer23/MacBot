@@ -40,6 +40,7 @@ struct ChatItem: Identifiable, Equatable {
     let id: String
     let role: Role
     var text: String
+    let sequence: Int
     var createdAt = Date()
 }
 
@@ -48,6 +49,26 @@ struct TaskItem: Identifiable, Equatable {
     var title: String
     var state: String
     var detail: String
+    let sequence: Int
+}
+
+enum TimelineItem: Identifiable {
+    case message(ChatItem)
+    case task(TaskItem)
+
+    var id: String {
+        switch self {
+        case .message(let item): "message-" + item.id
+        case .task(let item): "task-" + item.id
+        }
+    }
+
+    var sequence: Int {
+        switch self {
+        case .message(let item): item.sequence
+        case .task(let item): item.sequence
+        }
+    }
 }
 
 struct ServiceMetric: Identifiable {
