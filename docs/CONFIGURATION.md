@@ -16,21 +16,39 @@ Version 2 settings include:
 | Section | Settings |
 | --- | --- |
 | `services` | Dashboard 3000, assistant 8123, RAG 8001, supervisor 8090. Loopback only, distinct ports. |
-| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), voice (`amy`), TTS speed. |
+| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), registered voice, TTS speed. |
 | `audio` | Endpoint silence 350 ms, pre-roll 256 ms, speech start 96 ms, maximum utterance 30 seconds, idle capture timeout 300 seconds, VAD threshold 0.5. |
-| `tools` | Enabled tool names, allowed applications, screenshot directory, approval lifetime (60 seconds), and `auto_run_requested` (default `false`). Set `true` to execute supported explicit requests without confirmation; restart the assistant to apply. |
+| `tools` | Enabled tool names, allowed applications, screenshot directory, and legacy approval lifetime. Supported planner actions are automatically executed only after exact current-request authorization. |
+| `privacy` | Encrypted history enablement and retention in days (default 30). The encryption key is held in Keychain. |
 
-Existing Qwen3-4B remains the default until full candidate acceptance. Change `models.llm` explicitly to compare `lfm-1.2b` or `qwen3.5-2b`. MLX names have `-mlx` suffix and require `llm_backend: mlx` and the `mlx` extra. Selecting a missing backend/model fails; no substitution or runtime downloads occur.
+Qwen3.5-2B Q4_K_M is the current leading configured candidate, not a completed
+benchmark selection. Change `models.llm` explicitly to compare another
+registered candidate. MLX names have `-mlx` suffix and require `llm_backend:
+mlx` and the `mlx` extra. Selecting a missing backend/model fails; no
+substitution or runtime downloads occur.
 
 `qwen3-1.7b` selects the pinned Unsloth Q4_K_M quantization of **Qwen3-1.7B**, not a Qwen3.5 or ASR checkpoint. Provision it explicitly with `macbot models download qwen3-1.7b`; the registry records the upstream commit, file hash and license. Its availability does not establish it as a better default.
 
 ## Conversation context
 
-The default context budget is 4,096 tokens, including the system prompt, tool schemas, history and reserved reply tokens (`models.max_tokens`). The llama backend counts the actual server-rendered chat template; MLX uses its loaded tokenizer. The dashboard reports prompt tokens, reply reserve, configured limit and turns pruned in the latest request.
+The configured context target is 16,384 tokens, including the system prompt,
+history and reserved reply tokens (`models.max_tokens`). The llama backend counts
+the actual server-rendered chat template; MLX uses its loaded tokenizer. The
+diagnostics view reports prompt tokens, reply reserve, configured limit and turns
+pruned in the latest request.
 
-Completed tool calls and their original results remain in conversation history as assistant/tool messages. When the budget is exceeded, the oldest complete user turn and its tool exchanges are removed together. The current turn is never partially truncated; a current turn that cannot fit fails explicitly. Clearing the conversation removes history and context metrics. Cancellation prevents late history writes from restoring cleared turns.
+Completed user and assistant messages are stored per conversation. Structured
+task/action results are stored separately and are introduced only as untrusted
+results during the current turn. When the budget is exceeded, the oldest complete
+user turn is removed as a unit. The current turn is never partially truncated; a
+current turn that cannot fit fails explicitly. Clearing a conversation deletes
+that session and its context metrics. Cancellation prevents late history writes
+from restoring cleared turns.
 
-This is **whole-turn pruning, not semantic compaction or durable memory**. Older facts can be forgotten; the visible transcript is not proof that a fact remains in model context. No generated summary is promoted to system instructions, and history never grants action approval. Larger context windows and semantic compaction still require long-conversation quality, latency and memory evaluation before changing defaults.
+Durable encrypted history is implemented. Source-linked semantic compaction over
+older turns is still a release gate; until it lands, overflow uses whole-turn
+pruning. Older facts can therefore be forgotten. No summary, history record, or
+retrieved text can grant action authority.
 
 Dashboard changes support output length, voice and speech speed. They save validated user settings and require an assistant restart. Other settings require editing the user configuration and restarting MacBot. `start` persists the effective configuration so child services agree.
 

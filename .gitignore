@@ -165,3 +165,6 @@ data/rag_database/
 # Tool caches and local verification artifacts
 .ruff_cache/
 .secrets.baseline
+
+# Swift Package Manager build products
+native/MacBotApp/.build/

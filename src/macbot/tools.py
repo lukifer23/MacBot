@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 import psutil
@@ -24,22 +24,26 @@ SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
     "local_time": ("Read the current date, time and UTC offset from this Mac's local clock", {}),
     "system_info": ("Read CPU, memory and disk usage on this Mac", {}),
     "rag_search": ("Search documents in the local knowledge base", {"query": "string"}),
-    "open_app": ("Open an allowed application, after user confirmation", {"app": "string"}),
+    "open_app": ("Open one explicitly requested allowed application", {"app": "string"}),
     "web_search": (
-        "Search the external web only when the user asks for an internet search or current information. Never use for ordinary factual questions, local documents, or weather (use weather). Requires user confirmation.",
+        "Return structured external web results for an explicit search or current-information request",
         {"query": "string"},
     ),
     "browse_website": (
-        "Open a public HTTP(S) website in Safari, after user confirmation",
+        "Open an explicitly requested public HTTP(S) website in the default browser",
         {"url": "string"},
     ),
-    "screenshot": ("Save a screenshot locally, after user confirmation", {}),
-    "weather": ("Open a web weather search, after user confirmation", {"location": "string"}),
+    "screenshot": ("Save an explicitly requested screenshot locally", {}),
+    "weather": (
+        "Return structured current weather for a specified location",
+        {"location": "string"},
+    ),
 }
-READ_ONLY = {"system_info", "rag_search", "local_time"}
+READ_ONLY = {"system_info", "rag_search", "local_time", "web_search", "weather"}
 # Only these implemented actions may opt into request-based execution. New tools
 # do not inherit permission to change the desktop or create files.
 AUTO_REQUESTED = {"open_app", "browse_website", "web_search", "weather", "screenshot"}
+REQUESTED_SIDE_EFFECTS = {"open_app", "browse_website", "screenshot"}
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,33 @@ class Tools:
         requested = self.requested(text)
         if name not in requested or any(arguments.get(k) != v for k, v in requested[name].items()):
             raise PermissionError("Tool action does not match the current explicit request")
+
+    def authorize_planned(
+        self, text: str, source_span: str, name: str, arguments: dict[str, Any]
+    ) -> None:
+        """Independently bind a semantic plan to exact current-message evidence."""
+        self.validate(name, arguments)
+        if not source_span or source_span not in text:
+            raise PermissionError("Action is not grounded in the current request")
+        evidence = source_span.casefold()
+        if re.search(r"\b(?:don't|do not|never|without)\b", evidence):
+            raise PermissionError("Negated actions cannot execute")
+        required: dict[str, tuple[str, ...]] = {
+            "local_time": ("time", "date", "day", "clock"),
+            "system_info": ("cpu", "memory", "disk", "system"),
+            "rag_search": ("document", "documents", "library", "knowledge"),
+            "web_search": ("search", "web", "internet", "online", "latest", "current"),
+            "weather": ("weather", "forecast", "temperature", "rain"),
+            "open_app": ("open", "launch", "start", "bring up"),
+            "browse_website": ("open", "visit", "browse"),
+            "screenshot": ("screenshot", "capture", "screen"),
+        }
+        if not any(token in evidence for token in required[name]):
+            raise PermissionError("Action evidence does not express the requested capability")
+        if name == "open_app" and arguments["app"].casefold() not in evidence:
+            raise PermissionError("Application target is not present in the request")
+        if name == "browse_website" and arguments["url"].casefold() not in text.casefold():
+            raise PermissionError("Website target is not present in the request")
 
     def definitions(self, text: str | None = None, used: set[str] | None = None) -> list[dict]:
         requested = self.requested(text) if text is not None else None
@@ -246,6 +277,10 @@ class Tools:
             )
             r.raise_for_status()
             return r.json()
+        if name == "web_search":
+            return self._web_search(args["query"])
+        if name == "weather":
+            return self._weather(args["location"])
         if name == "screenshot":
             directory = Path(self.settings.tools.screenshot_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
@@ -257,15 +292,113 @@ class Tools:
         if name == "open_app":
             subprocess.run(["open", "-a", args["app"]], check=True, timeout=10)
             return {"status": "completed", "app": args["app"]}
-        url = args.get("url")
-        if name in {"web_search", "weather"}:
-            query = args.get("query", "weather " + args.get("location", ""))
-            url = "https://www.google.com/search?" + urlencode({"q": query})
-        subprocess.run(["open", "-a", "Safari", str(url)], check=True, timeout=10)
+        url = args["url"]
+        subprocess.run(["open", str(url)], check=True, timeout=10)
         return {
             "status": "completed",
             "opened_url": url,
-            "note": "Browser opened; page content has not been read.",
+            "note": "Opened in the default browser.",
+        }
+
+    @staticmethod
+    def _keychain_secret(service: str) -> str | None:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        value = result.stdout.strip()
+        return value if result.returncode == 0 and value else None
+
+    def _web_search(self, query: str) -> dict[str, Any]:
+        key = self._keychain_secret("local.macbot.brave-search")
+        if key:
+            response = self.client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": query, "count": 5, "safesearch": "moderate"},
+                headers={"Accept": "application/json", "X-Subscription-Token": key},
+            )
+            response.raise_for_status()
+            if len(response.content) > 2_000_000:
+                raise RuntimeError("Search response exceeded the configured limit")
+            rows = response.json().get("web", {}).get("results", [])
+            results = [
+                {
+                    "title": row.get("title", ""),
+                    "url": row.get("url", ""),
+                    "snippet": row.get("description", ""),
+                }
+                for row in rows[:5]
+                if isinstance(row, dict) and row.get("url")
+            ]
+            if not results:
+                return {"status": "empty", "provider": "brave", "query": query, "results": []}
+            return {"status": "completed", "provider": "brave", "query": query, "results": results}
+        try:
+            from ddgs import DDGS
+
+            rows = list(DDGS(timeout=8).text(query, max_results=5))
+        except Exception as exc:
+            raise RuntimeError(
+                "Web search is unavailable: configure Brave Search or retry the no-key provider"
+            ) from exc
+        results = [
+            {
+                "title": row.get("title", ""),
+                "url": row.get("href", ""),
+                "snippet": row.get("body", ""),
+            }
+            for row in rows
+            if isinstance(row, dict) and row.get("href")
+        ]
+        return {
+            "status": "completed" if results else "empty",
+            "provider": "ddgs",
+            "degraded": True,
+            "query": query,
+            "results": results,
+        }
+
+    def _weather(self, location: str) -> dict[str, Any]:
+        geocode = self.client.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1, "language": "en", "format": "json"},
+        )
+        geocode.raise_for_status()
+        if len(geocode.content) > 1_000_000:
+            raise RuntimeError("Weather location response exceeded the configured limit")
+        matches = geocode.json().get("results") or []
+        if not matches:
+            return {"status": "empty", "provider": "open-meteo", "location": location}
+        place = matches[0]
+        forecast = self.client.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+                "current": "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit": "mph",
+                "timezone": "auto",
+            },
+        )
+        forecast.raise_for_status()
+        if len(forecast.content) > 1_000_000:
+            raise RuntimeError("Weather response exceeded the configured limit")
+        return {
+            "status": "completed",
+            "provider": "open-meteo",
+            "location": {
+                "name": place.get("name"),
+                "admin1": place.get("admin1"),
+                "country": place.get("country"),
+                "latitude": place.get("latitude"),
+                "longitude": place.get("longitude"),
+            },
+            "current": forecast.json().get("current", {}),
+            "units": forecast.json().get("current_units", {}),
         }
 
     def close(self):

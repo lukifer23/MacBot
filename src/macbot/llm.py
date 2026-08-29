@@ -32,7 +32,12 @@ class LocalLLM:
             self.model, self.tokenizer = loaded[0], loaded[1]
 
     def stream(
-        self, messages: list[dict], definitions: list[dict], cancel: threading.Event
+        self,
+        messages: list[dict],
+        definitions: list[dict],
+        cancel: threading.Event,
+        *,
+        schema: dict | None = None,
     ) -> Iterator[dict]:
         if self.model is not None:
             yield from self._mlx(messages, definitions, cancel)
@@ -48,6 +53,8 @@ class LocalLLM:
         if definitions:
             body["tools"] = definitions
             body["tool_choice"] = "auto"
+        if schema is not None:
+            body["response_format"] = {"type": "json_object", "schema": schema}
         # Keep canonical history in sync with pruning so the runtime does not
         # repeatedly resend evicted turns or drop half a tool exchange.
         body["messages"] = messages

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>MacBot</string>
+  <key>CFBundleExecutable</key><string>MacBotApp</string>
+  <key>CFBundleIdentifier</key><string>local.macbot.app</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>MacBot</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>2.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>MacBot uses the microphone only while hands-free conversation is active.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>MacBot transcribes speech locally with downloaded models.</string>
+  <key>MacBotCLIPath</key><string>__MACBOT_CLI__</string>
+  <key>MacBotSourcePath</key><string>__MACBOT_SOURCE__</string>
+</dict></plist>

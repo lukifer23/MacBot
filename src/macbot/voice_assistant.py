@@ -129,6 +129,10 @@ def main():
     termination_cleanup()
     settings = load()
     app = create_app(settings)
+    from .native_ipc import NativeIPCServer
+
+    native = NativeIPCServer(settings, app.extensions["macbot_runtime"])
+    native.start()
     try:
         app.run(
             host=settings.services.assistant.host,
@@ -137,6 +141,7 @@ def main():
             use_reloader=False,
         )
     finally:
+        native.close()
         app.extensions["macbot_runtime"].close()
 
 

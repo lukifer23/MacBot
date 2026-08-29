@@ -8,7 +8,9 @@
 - Runtime offline after explicit provisioning; no hidden model fetches.
 - Configuration precedence, read-only packaged defaults, and private data exclusion.
 - Ruff, mypy, full supported tests, dependency audit, secret scan and package inspection.
-- Real SQLite/Chroma/ONNX tests; authenticated local service and actual model inference tests. Missing dependencies/models/hardware are failures or explicit unrun gates, never passing skips.
+- Real encrypted SQLite, exact-index, and ONNX tests; authenticated local service
+  and actual model inference tests. Missing dependencies/models/hardware are
+  failures or explicit unrun gates, never passing skips.
 - Authentication/Host/Origin/CSRF/Socket.IO, approval replay/expiry/session binding, disabled tools, malicious document content, invalid uploads and unregistered paths.
 - Browser text/PTT, streaming, approvals, interruption, reconnection, voice settings, document CRUD, migration/rollback and owned-process recovery.
 
@@ -47,6 +49,15 @@ sandbox-exec -p '(version 1)(allow default)(deny network*)(allow network-inbound
 The script verifies that imports come from the installed environment and that the OS denies an external connection. It creates isolated temporary configuration/documents and distinct loopback ports, shares only provisioned model/binary files, starts all services, authenticates through the dashboard, streams actual model output, checks context metrics and imports/retrieves a real text document. It terminates its owned supervisor afterward. Reports refuse overwrite. It does not open the microphone/speakers, measure acoustics or satisfy listening acceptance.
 
 ## Device and listening acceptance
+
+### Native rebuild checkpoint, 2026-08-28
+
+The first rebuild slice passed Ruff, mypy, 74 non-model/non-device tests, 15
+real MiniLM retrieval tests, the Swift release build, bundle assembly, and strict
+ad hoc signature verification. The app has not been opened for microphone or
+speaker testing in this rebuild. These are foundation results only; all device,
+model-routing, listening, acoustic, soak, package, and complete security gates
+below remain open.
 
 Focused check on 2026-08-28: the previous helper reproduced Core Audio `-10875` on this Mac because its input/output client sample rates differed. After explicitly matching those rates, both device regression cases passed (direct capture start and muted start followed by capture), including real captured frames, Piper playback scheduling and cancellation acknowledgment. Start hands-free was also exercised successfully in Chrome with voice processing enabled, then capture was stopped. The separate software suite passed 84 tests. These checks do not measure acoustic latency, validate transcription of spontaneous speech, establish feedback suppression or replace the soak/listening gates below.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,10 +22,14 @@ def extract(content: bytes, suffix: str) -> str:
     with tempfile.TemporaryDirectory(prefix="macbot-document-") as directory:
         path = Path(directory) / ("input" + suffix)
         path.write_bytes(content)
+        env = os.environ.copy()
+        package_root = str(Path(__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = package_root + os.pathsep + env.get("PYTHONPATH", "")
         process = subprocess.Popen(
             [sys.executable, "-m", "macbot.document_parser", str(path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         deadline = time.monotonic() + 10
         try:

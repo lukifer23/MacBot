@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 State = Literal[
     "accepted", "running", "completed", "interrupted", "denied", "failed", "approval_required"
@@ -25,12 +25,15 @@ class TurnEvent:
 
 
 class EventJournal:
-    def __init__(self, capacity: int = 2048):
+    def __init__(
+        self, capacity: int = 2048, sink: Callable[[str, dict[str, Any]], None] | None = None
+    ):
         self.items: deque[TurnEvent] = deque(maxlen=capacity)
         self.condition = threading.Condition()
         self.seq = 0
         self.epoch = str(time.time_ns())
         self.closed = False
+        self.sink = sink
 
     def publish(
         self, session_id: str, turn_id: str, state: str, kind: str = "state", **data
@@ -40,7 +43,9 @@ class EventJournal:
             event = TurnEvent(session_id, turn_id, self.seq, state, kind, time.monotonic_ns(), data)
             self.items.append(event)
             self.condition.notify_all()
-            return event
+        if self.sink:
+            self.sink(self.epoch, asdict(event))
+        return event
 
     def read(self, after: int, timeout: float = 0, epoch: str | None = None) -> dict[str, Any]:
         with self.condition:

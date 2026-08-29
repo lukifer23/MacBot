@@ -44,7 +44,7 @@ def test_desktop_tools_require_exact_session_turn_and_single_use(registry):
 
 
 def test_cancellation_invalidates_actions_and_disabled_tools(registry):
-    action = registry.request("s", "t", "web_search", {"query": "local inference"})
+    action = registry.request("s", "t", "open_app", {"app": "Calculator"})
     registry.invalidate("t")
     with pytest.raises(PermissionError):
         registry.decide(action.id, "s", "t", True)

@@ -1,61 +1,107 @@
 # MacBot
 
-A local macOS voice assistant with a Flask/Socket.IO dashboard, request-scoped tool execution, and offline model inference.
+MacBot is a private, local macOS voice assistant. The current rebuild makes a
+native SwiftUI application the primary interface and keeps the authenticated
+loopback dashboard as a diagnostics fallback.
 
-**Modernization in progress. Not yet a verified hands-free release.** Native audio, model selection, migration, and packaging must pass the [release gates](docs/VERIFICATION.md) before deployment. Local service startup is not microphone, listening, or latency acceptance.
+**Modernization is in progress. This checkpoint is not yet a verified
+hands-free release.** The native bundle builds and its software gates pass, but
+live microphone/speaker behavior, model selection, voice quality, acoustic
+latency, and the 30-minute soak still require device and user acceptance.
 
-## Native setup
+## Build the native application
 
-Target: Apple Silicon, Python 3.12, macOS 14 or newer. Current verification machine: M3 Pro, 18 GB, macOS 27 beta. Other versions are not device-verified. Install `uv`, Git, CMake, FFmpeg, and Xcode Command Line Tools first; the bootstrap script checks these without installing system software unexpectedly.
+Target: Apple Silicon, Python 3.12, macOS 14 or newer, `uv`, Git, CMake, FFmpeg,
+and Apple Command Line Tools.
 
 ```sh
-git clone --recurse-submodules https://github.com/lukifer23/MacBot.git
+git clone https://github.com/lukifer23/MacBot.git
 cd MacBot
 ./scripts/bootstrap_mac.sh
+uv sync --frozen --all-extras
 uv run --frozen macbot setup
 uv run --frozen macbot build-inference --source "$PWD"
-uv run --frozen macbot build-audio
-uv run --frozen macbot models download qwen3-4b parakeet amy minilm silero
-uv run --frozen macbot doctor
+uv run --frozen macbot models download qwen3.5-2b parakeet kokoro minilm silero
+./scripts/build_native_app.sh --install
+open "$HOME/Applications/MacBot.app"
 ```
 
-The existing Qwen3-4B is retained as a registered selection. Candidate benchmarking also supports `lfm-1.2b`, `lfm-2.6b`, `qwen3.5-0.8b`, `qwen3.5-2b`, `lfm-1.2b-mlx`, and `qwen3.5-2b-mlx`. Select the model explicitly in the user configuration; no backend substitutes for a missing model. Install the MLX comparison backend with `uv sync --frozen --all-extras` and retain `--all-extras` on subsequent `uv run` commands when using it.
+The build produces and ad hoc signs `MacBot.app`, including microphone purpose
+metadata and the audio-input entitlement. The development bundle currently
+uses the repository's locked Python runtime; clean wheel installation and a
+self-contained runtime layout remain release gates.
 
-All mutable settings, models, documents, credentials, and logs live under `~/Library/Application Support/MacBot`. `--config PATH` overrides the configuration location; see [configuration](docs/CONFIGURATION.md). Normal operation never rewrites tracked defaults.
+All mutable settings, models, documents, credentials, history, and logs live
+under `~/Library/Application Support/MacBot`. Normal operation never rewrites
+tracked defaults. Runtime models are provisioned explicitly and must work
+offline; a failed backend is never silently replaced.
+
+## Current architecture
+
+The SwiftUI application owns microphone permission, capture, echo-referenced
+playback, mute, interruption, the conversation window, and the persistent menu
+bar control. It connects to one owned Python service tree through separate
+owner-only Unix sockets for control/events and framed PCM. Each launch uses a
+single-use 256-bit token. Quitting the app stops only the MacBot-owned service
+tree.
+
+The assistant service owns the event journal, conversation context, semantic
+planning, bounded tool execution, synthesis scheduling, and cancellation. A
+typed plan can respond, clarify, or execute at most four actions. Supported
+explicit requests include local time, weather, web search, document retrieval,
+opening named applications or URLs, and screenshots. Greetings and ordinary
+questions cannot authorize actions. Tool results are executed first, returned
+to a response-only model call as untrusted data, displayed in the timeline,
+and spoken.
+
+Brave Search uses a credential stored in Keychain. DDGS is an explicitly
+degraded no-key fallback. Weather uses structured Open-Meteo results and does
+not open a browser. Destructive, file-changing, account-changing, purchasing,
+and messaging actions are outside this release.
+
+Conversation messages, tasks, summaries, and event payloads use AES-256-GCM in
+SQLite with a Keychain key and 30-day default retention. Raw microphone audio
+is not stored. Documents remain authoritative in SQLite; a versioned,
+memory-mapped exact vector index uses the same local MiniLM ONNX embeddings for
+ingestion and queries. Previous index revisions remain available for rollback.
+
+The browser dashboard is retained for diagnostics and compatibility. It must
+never own a second assistant, microphone, playback worker, or history pipeline.
+
+## Verification
 
 ```sh
-uv run --frozen macbot start --background
-uv run --frozen macbot status
-uv run --frozen macbot open
-uv run --frozen macbot stop
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy src/macbot
+uv run pytest -m 'not models and not device'
+uv run pytest -m models tests/test_rag_server_api.py
+./scripts/build_native_app.sh
 ```
 
-`open` creates a single-use, 60-second login link. Credentials are not placed in query strings or printed to logs. Services bind only to loopback. After login, choose **Start hands-free** to activate native capture, or use browser push-to-talk. The two capture modes are mutually exclusive. Mute disables native input processing; Stop response cancels generation and queued playback. See [security](docs/SECURITY.md) for the trust boundary and microphone privacy limitations.
-
-## Architecture
-
-The assistant service owns turn history, generation, tool policy, cancellation, and one ordered speech stream. The dashboard consumes a single authenticated HTTP long-poll journal, so blocked WebSockets cannot hide the transcript. Socket.IO remains available for API clients. The latest recognized speech also stays visible above the conversation.
-
-Only tools matching the current explicit request are offered; greetings and general questions do not authorize desktop actions. Set `tools.auto_run_requested: true` for hands-free execution of requested app/URL opening, web/weather searches and screenshots. Each action runs at most once per turn, and its actual result returns to the model for the reply. With the default `false`, side effects retain single-use dashboard confirmations. Local time, system status and document lookups run automatically. Arbitrary file creation, deletion and shell execution are not supported. See [security](docs/SECURITY.md) for limits.
-
-Web/weather searches currently open browser results; they do **not** fetch page contents. MacBot must report that limitation rather than invent retrieved answers.
-
-The native Swift helper routes capture and playback through one AVAudioEngine with voice processing. Resident Silero ONNX performs endpointing. STT is explicitly selected between Parakeet MLX and the private persistent whisper.cpp worker. Piper and Kokoro are explicit local voice choices. Phrase streaming preserves word boundaries, and 48 kHz native playback preserves the voice bandwidth separately from 16 kHz STT capture. RAG uses CPU MiniLM ONNX for both ingestion and queries; SQLite owns source documents and Chroma holds a replaceable index.
+Device tests are deliberately separate because they open the built-in
+microphone and play speech. Missing device authorization is an unrun release
+gate, not a passing skip. See [verification](docs/VERIFICATION.md) for the
+required command and acceptance thresholds.
 
 ## Documentation
 
+- [Architecture and native IPC](docs/ARCHITECTURE.md)
 - [Setup and development](docs/DEVELOPMENT.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [API](docs/API_REFERENCE.md)
-- [Dashboard, metrics and live updates](docs/DASHBOARD.md)
-- [Agent harness evaluation](docs/AGENT_HARNESS.md)
-- [Security](docs/SECURITY.md)
+- [Security and privacy](docs/SECURITY.md)
 - [Migration and rollback](docs/MIGRATION.md)
 - [Verification and measured evidence](docs/VERIFICATION.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Current checkpoint](docs/PAUSED_STATE.md)
 
-Docker files are retained as **unsupported legacy material**. Containers do not provide this release's native microphone, speaker reference, Metal, or desktop integration.
+Docker files are retained as unsupported legacy material. Containers do not
+provide this release's native microphone, speaker reference, Metal, Keychain,
+or desktop integration.
 
 ## Licenses
 
-MacBot's Python source retains its existing MIT project metadata. Third-party runtimes and weights have separate licenses; the pinned model catalog records their provenance. Piper 1.7 is GPL-3.0. Review upstream model/voice terms before redistributing a bundle. A package or local test does not establish redistribution rights for third-party assets.
+MacBot's Python source retains its MIT metadata. Third-party runtimes and model
+weights have separate licenses recorded by the model catalog. Piper 1.7 is
+GPL-3.0. Review all upstream terms before redistributing any bundle.

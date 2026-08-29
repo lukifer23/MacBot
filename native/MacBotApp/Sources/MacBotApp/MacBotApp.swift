@@ -1,0 +1,57 @@
+import AppKit
+import SwiftUI
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var shutdown: (() -> Void)?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let current = ProcessInfo.processInfo.processIdentifier
+        if let existing = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "local.macbot.app"
+        ).first(where: { $0.processIdentifier != current }) {
+            existing.activate(options: [.activateAllWindows])
+            NSApp.terminate(nil)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) { shutdown?() }
+}
+
+@main
+struct MacBotApplication: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var state = AppState()
+
+    var body: some Scene {
+        WindowGroup("MacBot", id: "main") {
+            ContentView().environmentObject(state).onAppear {
+                delegate.shutdown = state.shutdown
+                state.start()
+            }
+        }
+        .defaultSize(width: 1080, height: 760)
+        .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Stop response") { state.interrupt() }.keyboardShortcut(".", modifiers: .command)
+            }
+        }
+
+        MenuBarExtra {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(state.phase.title, systemImage: state.phase.symbol)
+                Divider()
+                Button(state.listening ? "Stop hands-free" : "Start hands-free") { state.toggleListening() }
+                Button("Stop response") { state.interrupt() }
+                Button("Open MacBot") { NSApp.activate(ignoringOtherApps: true) }
+                Divider()
+                Button("Quit MacBot") {
+                    NSApp.terminate(nil)
+                }
+            }.padding(4)
+        } label: {
+            Image(systemName: state.phase.symbol)
+        }
+        .menuBarExtraStyle(.menu)
+    }
+}

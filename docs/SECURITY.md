@@ -6,7 +6,12 @@ MacBot runs for one local macOS user. Loopback is a transport restriction, not a
 - Browser login exchanges a one-use, short-lived token for an HttpOnly, SameSite=Strict cookie and separate CSRF token. Cookie authentication alone cannot mutate state. HTTP on loopback is intentional; do not expose it through a tunnel or reverse proxy.
 - Host, Origin and cross-site browser requests are checked. Socket.IO connections require the session plus CSRF token and a valid origin; event delivery checks session validity again. Wildcard CORS is not enabled.
 - Tool availability is scoped to the current user text, never model output, history or retrieved documents. Direct app and URL requests bind the target as well as the tool; disabled tools remain unavailable. Repeated calls of the same tool are denied within the turn. Ambiguous phrasing should produce clarification, not inferred desktop authority.
-- `tools.auto_run_requested: false` retains single-use confirmations for side effects. With an explicit operator opt-in to `true`, supported requested actions (app/URL opening, web/weather searches and screenshots) execute without a second confirmation. A screenshot is the only model tool that creates a file: it requires an explicit screenshot request, uses a generated filename in the configured directory, and cannot overwrite an existing named file. No arbitrary file creation/deletion or shell tool is exposed.
+- Supported bounded actions run automatically only when independently bound to
+  an exact span in the current request. App/URL opening and screenshots require
+  an explicit imperative request. A screenshot is the only planner action that
+  creates a file: it uses a generated filename in the configured directory and
+  cannot overwrite an existing named file. No arbitrary file creation/deletion
+  or shell tool is exposed.
 - Read-only local clock, system metrics and document search run automatically when requested. Action results return as tool messages; successful execution is never inferred from the model's promise. "Confirm action" spoken aloud does not approve a pending dashboard action in confirmation mode.
 - Automatic execution trusts recognized speech as the user's request. It cannot distinguish the operator from another nearby speaker or a recording. Acoustic echo rejection still needs device acceptance; use confirmation mode if untrusted audio can reach the microphone. Request routing is deliberately conservative and is not a general semantic authorization classifier.
 - Rendered model/document text uses textContent, not HTML. Uploads have request and file limits, PDF page limits and DOCX expansion limits. Audio conversion uses private temporary files, a protocol whitelist and a deadline.
@@ -17,7 +22,11 @@ MacBot runs for one local macOS user. Loopback is a transport restriction, not a
 
 Piper is GPL-3.0; model and voice licenses are separate. The model catalog records upstream terms and voice model cards. Do not assume a repository's top-level license covers a voice's training data.
 
-Chroma 1.5.9 is embedded only. Known upstream advisories affecting Chroma's remotely exposed server/collection configuration APIs require a documented reachability review; they are not silently considered patched. MacBot never runs Chroma's HTTP server and passes `embedding_function=None` plus explicit locally computed embeddings. A final dependency audit and reachability report remain release gates.
+The Chroma runtime dependency was removed. Document retrieval now uses
+SQLite-authoritative source records and a versioned local exact vector index,
+which removes Chroma's server/configuration attack surface and its large
+transitive dependency graph. A final resolved dependency audit and reachability
+report remain release gates.
 
 ## Reporting and verification
 

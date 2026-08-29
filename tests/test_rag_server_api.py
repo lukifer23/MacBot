@@ -1,4 +1,4 @@
-"""Real ONNX embeddings, embedded Chroma, and transactional SQLite in temporary stores."""
+"""Real ONNX embeddings and transactional exact-vector stores."""
 
 import json
 from pathlib import Path
@@ -120,7 +120,7 @@ def test_rebuild_changes_index_and_keeps_previous(documents):
     previous = store.active_name
     store.rebuild()
     assert store.active_name != previous
-    assert store.client.get_collection(previous, embedding_function=None).count() == 1
+    assert store.revision_count(previous) == 1
     assert "Saturn" in store.search("Which planet has rings?")[0]["content"]
 
 
@@ -142,7 +142,7 @@ def test_restore_preserves_previous_store_and_restores_source(documents):
     previous = restore(settings, backup)
     with sqlite3.connect(previous / "documents.sqlite3") as db:
         assert db.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
-    # New process, as used by CLI startup, avoids Chroma's process-local path cache.
+    # New process matches CLI startup and proves the memory-mapped index reopens.
     script = 'from macbot.config import load; from macbot.retrieval import DocumentStore; s=DocumentStore(load()); print(s.stats()["documents"]); print(s.search("original preserved content")[0]["content"]); s.close()'
     result = subprocess.run(
         [sys.executable, "-c", script],
