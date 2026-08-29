@@ -29,7 +29,7 @@ dependencies = [
   "huggingface-hub>=1.0,<2",
   "parakeet-mlx==0.5.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "ddgs>=9.16,<10",
-  "cryptography>=46,<47",
+  "cryptography>=46,<51",
 ]
 
 [project.optional-dependencies]
