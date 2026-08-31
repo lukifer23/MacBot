@@ -1,6 +1,7 @@
 """Authenticated local document service. No import-time database or model loading."""
 
 import os
+from typing import Any, cast
 
 from flask import Flask, jsonify, request
 
@@ -38,6 +39,24 @@ def create_app(settings: Settings, store: DocumentStore | None = None) -> Flask:
         )
         return jsonify(id=doc_id, success=True), 201
 
+    @app.post("/api/documents/batch")
+    def add_batch():
+        data = json_object()
+        payload = data.get("documents")
+        if not isinstance(payload, list):
+            raise ValueError("documents must be a list")
+        ids = documents.add_many(cast(list[dict[str, Any]], payload))
+        return jsonify(ids=ids, success=True), 201
+
+    @app.post("/api/documents/batch-delete")
+    def delete_batch():
+        data = json_object()
+        payload = data.get("ids")
+        if not isinstance(payload, list):
+            raise ValueError("ids must be a list")
+        deleted = documents.delete_many(cast(list[str], payload))
+        return jsonify(deleted=deleted, success=True)
+
     @app.route("/api/documents/<doc_id>", methods=["GET", "DELETE"])
     def document(doc_id):
         if request.method == "DELETE":
@@ -52,7 +71,13 @@ def create_app(settings: Settings, store: DocumentStore | None = None) -> Flask:
     @app.post("/api/search")
     def search():
         data = json_object()
-        return jsonify(results=documents.search(data.get("query", ""), data.get("top_k", 5)))
+        return jsonify(
+            documents.search_response(
+                data.get("query", ""),
+                data.get("top_k", 5),
+                min_score=data.get("min_score", 0.30),
+            )
+        )
 
     @app.post("/api/embed")
     def embed():

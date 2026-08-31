@@ -252,7 +252,7 @@ class Synthesizer:
                 samples, rate = self.kokoro.create(
                     phrase,
                     voice=KOKORO_VOICES[self.voice_id],
-                    speed=self.settings.models.tts_speed,
+                    speed=1.0,
                     lang="en-us",
                 )
                 yield samples, rate
@@ -260,13 +260,11 @@ class Synthesizer:
         from piper import SynthesisConfig
 
         assert self.voice is not None
-        for chunk in self.voice.synthesize(
-            text, SynthesisConfig(length_scale=1 / self.settings.models.tts_speed)
-        ):
+        for chunk in self.voice.synthesize(text, SynthesisConfig(length_scale=1.0)):
             yield chunk.audio_float_array.copy(), chunk.sample_rate
 
     def chunks(self, text: str, cancel: threading.Event):
-        key = (str(self.path), self.voice_id, self.settings.models.tts_speed, text)
+        key = (str(self.path), self.voice_id, text)
         with self.lock:
             if cancel.is_set():
                 return
@@ -292,3 +290,7 @@ class Synthesizer:
                 while self.cache_bytes > 16 * 1024 * 1024 or len(self.cache) > 32:
                     _, old = self.cache.popitem(last=False)
                     self.cache_bytes -= sum(a.nbytes for a, _ in old)
+
+    @property
+    def supports_speed(self) -> bool:
+        return self.qwen is None

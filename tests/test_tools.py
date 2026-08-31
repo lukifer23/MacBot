@@ -27,40 +27,16 @@ def test_read_only_system_metrics_are_real_and_prompt(registry):
     assert time.monotonic() - start < 1
 
 
-def test_desktop_tools_require_exact_session_turn_and_single_use(registry):
-    args = {"app": "Calculator"}
-    action = registry.request("session-a", "turn-a", "open_app", args)
-    args["app"] = "Safari"
-    assert "Calculator" in action.arguments_json
+def test_side_effects_cannot_use_the_read_execution_path(registry):
     with pytest.raises(PermissionError):
         registry.read("open_app", {"app": "Calculator"})
-    with pytest.raises(PermissionError):
-        registry.decide(action.id, "session-b", "turn-a", True)
-    with pytest.raises(PermissionError):
-        registry.decide(action.id, "session-a", "turn-b", True)
-    assert registry.decide(action.id, "session-a", "turn-a", False)["status"] == "denied"
-    with pytest.raises(PermissionError):
-        registry.decide(action.id, "session-a", "turn-a", True)
 
 
-def test_cancellation_invalidates_actions_and_disabled_tools(registry):
-    action = registry.request("s", "t", "open_app", {"app": "Calculator"})
-    registry.invalidate("t")
-    with pytest.raises(PermissionError):
-        registry.decide(action.id, "s", "t", True)
+def test_disabled_tools_have_no_manifest_or_execution_path(registry):
     registry.settings.tools.enabled = []
     with pytest.raises(PermissionError):
-        registry.request("s", "t", "web_search", {"query": "anything"})
+        registry.validate("web_search", {"query": "anything"})
     assert registry.definitions() == []
-
-
-def test_approval_expiry_uses_elapsed_time(registry):
-    registry.settings.tools.approval_seconds = 10
-    action = registry.request("s", "t", "open_app", {"app": "Calculator"})
-    time.sleep(10.02)
-    with pytest.raises(PermissionError, match="expired"):
-        registry.decide(action.id, "s", "t", True)
-    assert action.id not in registry.pending
 
 
 @pytest.mark.parametrize(
@@ -75,7 +51,7 @@ def test_approval_expiry_uses_elapsed_time(registry):
 )
 def test_argument_validation(registry, name, args):
     with pytest.raises((ValueError, PermissionError)):
-        registry.request("s", "t", name, args)
+        registry.validate(name, args)
 
 
 def test_tool_parser_never_evaluates_python(tmp_path):

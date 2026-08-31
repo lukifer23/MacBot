@@ -4,15 +4,10 @@ MacBot runs for one local macOS user. Loopback is a transport restriction, not a
 
 - Every control/data request needs a valid browser session or the credential for its target service. Service credentials are rejected when an Origin header is present. Query-string credentials are never accepted.
 - Browser login exchanges a one-use, short-lived token for an HttpOnly, SameSite=Strict cookie and separate CSRF token. Cookie authentication alone cannot mutate state. HTTP on loopback is intentional; do not expose it through a tunnel or reverse proxy.
-- Host, Origin and cross-site browser requests are checked. Socket.IO connections require the session plus CSRF token and a valid origin; event delivery checks session validity again. Wildcard CORS is not enabled.
-- Tool availability is scoped to the current user text, never model output, history or retrieved documents. Direct app and URL requests bind the target as well as the tool; disabled tools remain unavailable. Repeated calls of the same tool are denied within the turn. Ambiguous phrasing should produce clarification, not inferred desktop authority.
-- Supported bounded actions run automatically only when independently bound to
-  an exact span in the current request. App/URL opening and screenshots require
-  an explicit imperative request. A screenshot is the only planner action that
-  creates a file: it uses a generated filename in the configured directory and
-  cannot overwrite an existing named file. No arbitrary file creation/deletion
-  or shell tool is exposed.
-- Read-only local clock, system metrics and document search run automatically when requested. Every supported, bounded action that is explicitly requested runs once without an approval card. Action results return as tool messages; successful execution is never inferred from the model's promise. Destructive, file-changing, account-changing, purchasing, messaging and unsupported system actions are not exposed in this release and therefore cannot be approved through the conversation.
+- Host, Origin and cross-site browser requests are checked. The developer diagnostics page is authenticated, read-only, and does not receive conversation events. Wildcard CORS is not enabled.
+- Conversation can select only deterministic read-only enrichment from the current user text. Model output, history, and retrieved documents cannot grant authority.
+- Task mode persists the proposed plan and exact capability manifest before authorization. Every step uses a single-use receipt bound to its task, normalized arguments, expiry, and safety class. Material scope changes require a new proposal and authorization.
+- App/URL opening and screenshots are not enabled for Task release until the research wedge passes recovery, provenance, cancellation, and device gates. No arbitrary file creation/deletion or shell tool is exposed.
 - Automatic execution trusts recognized speech as the user's request. It cannot distinguish the operator from another nearby speaker or a recording. Acoustic echo rejection still needs device acceptance; stop hands-free mode when untrusted audio can reach the microphone. Request routing is deliberately conservative and is not a general semantic authorization classifier.
 - The encrypted-history key is retained in macOS Keychain. The native app passes the 32-byte key through an inherited private pipe to the CLI, which re-pipes it to the supervisor; the supervisor creates a fresh pipe for each assistant start or restart. The service never reads the key from arguments, environment values, configuration, URLs, logs, or files. Keychain access blocked during macOS dark wake delays service startup until the Mac wakes.
 - Rendered model/document text uses textContent, not HTML. Uploads have request and file limits, PDF page limits and DOCX expansion limits. Audio conversion uses private temporary files, a protocol whitelist and a deadline.

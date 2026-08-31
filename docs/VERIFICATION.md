@@ -2,6 +2,12 @@
 
 **Release is blocked until all gates below pass.** On 2026-08-28 the owner explicitly requested an earlier in-progress push to `main` to preserve work. Such a checkpoint is a backup of unfinished implementation, not release or device acceptance. The gates below still apply before declaring the modernization complete.
 
+The gates are independent: source automation, native visual/accessibility,
+physical microphone/speaker and acoustic behavior, model/listening acceptance,
+read-only browser diagnostics, installed/offline packaging, hosted CI, and the
+operator soak each produce separate evidence. Passing one never satisfies or
+waives another.
+
 ## Automated checks
 
 - Clean uv installation and wheel execution outside the repository.
@@ -11,11 +17,23 @@
 - Swift release build and native tests for private token permissions/rotation,
   Keychain dark-wake handling, sequenced timeline ordering and friendly tool
   result rendering.
+- Native product-state and operator-flow checks: startup, blocked recovery,
+  reconnect, disabled controls, menu-bar parity, typed-reply speech preference,
+  explicit Conversation/Task composer routing, Task Center connect hydration,
+  authorization/deny/pause/resume/cancel state gating, ordering, destructive confirmations, distinct
+  Library loading/error/empty/search-empty states, and saved-versus-active
+  settings with controlled restart.
 - Real encrypted SQLite, exact-index, and ONNX tests; authenticated local service
   and actual model inference tests. Missing dependencies/models/hardware are
   failures or explicit unrun gates, never passing skips.
-- Authentication/Host/Origin/CSRF/Socket.IO, approval replay/expiry/session binding, disabled tools, malicious document content, invalid uploads and unregistered paths.
-- Browser text/PTT, streaming, approvals, interruption, reconnection, voice settings, document CRUD, migration/rollback and owned-process recovery.
+- Authentication/Host/Origin/CSRF, capability-receipt replay/expiry/session binding, disabled tools, hostile retrieved content, invalid inputs and unregistered paths.
+- Native text/voice turns, streaming, task presentation, interruption,
+  reconnection, voice settings, document CRUD, migration/rollback and
+  owned-process recovery.
+- Read-only browser diagnostics at desktop and narrow widths, including no
+  mutation controls, no conversation content, no horizontal overflow, visible
+  focus, sufficient contrast, unavailable-versus-zero states, and outage
+  backoff. Browser diagnostics never satisfy a native operator-flow gate.
 - Encrypted-history key handoff through inherited pipes, including a fresh pipe
   for every supervised assistant restart and absence from arguments,
   environment values, files, URLs and logs.
@@ -26,7 +44,6 @@
 uv run --frozen --all-extras python scripts/provision_benchmark_audio.py
 uv run --frozen --all-extras python scripts/benchmark_transcription.py parakeet --output /absolute/path/parakeet.jsonl
 uv run --frozen --all-extras python scripts/benchmark_transcription.py whisper --output /absolute/path/whisper.jsonl
-uv run --frozen --all-extras python scripts/benchmark_models.py qwen3-4b --output /absolute/path/qwen3.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py lfm-1.2b --output /absolute/path/lfm.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b --output /absolute/path/qwen35.jsonl
 uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b-official --case-set holdout --output /absolute/path/qwen35-official.jsonl
@@ -45,7 +62,11 @@ See [measured model screening](MODEL_SCREENING.md) for the latest configuration 
 
 Build and inspect with `uv build` and `uv run --frozen python scripts/inspect_package.py`. Export the pinned runtime graph with `uv export --frozen --all-extras --no-dev --no-emit-project --output-file /tmp/macbot-runtime-requirements.txt`. Create a separate Python 3.12 environment outside the repository and install that requirements file plus the wheel using `uv pip install --offline --python /absolute/environment/bin/python`. For the wheel installation, use `--no-deps`; the exported graph supplies dependencies. A missing cached dependency is a failed offline installation, not a skip.
 
-On macOS, run the verification script with that environment's Python and a working directory outside the checkout:
+The existing `scripts/verify_installed_runtime.py` still targets the removed
+browser mutation routes and must be migrated to the authenticated native IPC
+contract before this gate can run on the current architecture. Until that repair
+lands, the installed-wheel gate is explicitly **open**. After repair, run it with
+the installed environment's Python and a working directory outside the checkout:
 
 ```sh
 cd /tmp
@@ -55,7 +76,14 @@ sandbox-exec -p '(version 1)(allow default)(deny network*)(allow network-inbound
   --report /absolute/private/report-directory/new-wheel-report.json
 ```
 
-The script verifies that imports come from the installed environment and that the OS denies an external connection. It creates isolated temporary configuration/documents and distinct loopback ports, shares only provisioned model/binary files, starts all services, authenticates through the dashboard, streams actual model output, checks context metrics and imports/retrieves a real text document. It terminates its owned supervisor afterward. Reports refuse overwrite. It does not open the microphone/speakers, measure acoustics or satisfy listening acceptance.
+The repaired script must verify that imports come from the installed environment
+and that the OS denies an external connection. It must create isolated temporary
+configuration/documents and distinct loopback ports, share only provisioned
+model/binary files, start all services, authenticate through native IPC, stream
+actual model output, exercise Task authorization/recovery, check context metrics,
+and import/retrieve a real text document. It must terminate its owned supervisor
+afterward. Reports refuse overwrite. It does not open the microphone/speakers,
+measure acoustics, or satisfy listening acceptance.
 
 The verifier supplies a fresh random history key through the CLI's inherited
 standard-input pipe, never an argument or environment value. It also scans the

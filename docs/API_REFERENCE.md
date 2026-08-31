@@ -4,38 +4,79 @@ Default origins: dashboard `http://127.0.0.1:3000`, assistant `:8123`, RAG `:800
 
 ## Authentication
 
-Use `macbot open` for browser login. `POST /auth/exchange` accepts `{token}` only from the same origin, consumes the token, sets the session cookie and returns `{csrf}`. Browser mutations require `X-CSRF-Token`. `POST /auth/logout` revokes the session. Socket.IO connects with `{csrf}` authentication plus the same session cookie and origin.
+Use `macbot open` for diagnostics login. `POST /auth/exchange` accepts `{token}` only from the same origin, consumes the token, sets the session cookie and returns `{csrf}`. `POST /auth/logout` revokes the session. The diagnostics service has no conversation, audio, settings, document, approval, action, or lifecycle mutation route.
 
 `GET /auth/session` restores the CSRF token for an already valid HttpOnly session cookie, so a newly opened tab can reconnect without another login code. It does not create or extend sessions. The same Host/Origin/fetch-site checks and no-store responses apply. Missing, expired or revoked cookies return 401. Existing pre-upgrade tab tokens remain valid until their session expires or is revoked.
 
-Internal service requests use the target service's Bearer credential. These are stored privately, never included in documentation, URLs or query parameters. The dashboard forwards the authenticated session identity to the assistant; callers cannot select another browser's approval session.
+Internal service requests use the target service's Bearer credential. These are stored privately, never included in documentation, URLs or query parameters.
 
-## Dashboard adapters
+## Developer diagnostics
+
+MacBot.app is the sole operator client. The authenticated browser page is disabled by default and read-only.
 
 | Route | Method | Payload / result |
 | --- | --- | --- |
-| `/api/chat`, `/api/llm` | POST | `{message, speak: boolean}` → HTTP 202, `{turn_id, state: accepted}` |
-| `/api/voice` | POST | `{audio: base64-or-audio-DataURL}` → accepted turn; STT belongs to the shared service |
-| `/api/browser-recording` | POST | `{enabled: boolean}`; exclusive capture lease bound to browser session, with bounded expiry |
-| `/api/interrupt` | POST | Cancel active generation, pending approvals and playback |
-| `/api/listen` | POST | `{enabled: boolean}`; explicit native capture start/stop |
-| `/api/approve` | POST | `{action_id, turn_id, approve: boolean}`; exact session/turn binding, one use |
-| `/api/clear` | POST | Interrupt then clear conversation history |
-| `/api/preview-voice`, `/api/assistant-speak` | POST | `{text}` → real synthesis/playback turn |
-| `/api/events?after=N&epoch=E` | GET | Bounded ordered event replay, epoch, cursor, gap and reset indicators; epoch is optional on the first request |
-| `/api/audio-status` | GET | Live PCM peak/RMS, frame age/count, speech detection, capture state and capture/assistant epochs; authenticated, no audio content |
-| `/api/status` | GET | Actual assistant state and recent content-free timing records |
+| `/api/status` | GET | Redacted assistant readiness, active versions, and content-free timing records |
 | `/api/services`, `/api/metrics` | GET | Owned processes, readiness, restarts and RSS |
-| `/api/service/NAME/restart` | POST | Restart only a registered process owned by this supervisor |
-| `/api/settings` | GET/POST | Read settings and installed/registered voice lists; update `max_tokens`, `tts_speed`, `tts_voice`; restart required |
-| `/api/documents` | GET | Document metadata list |
-| `/api/documents/ID` | GET/DELETE | Read/delete source document and rebuild index |
-| `/api/search` | POST | `{query, top_k}` → result chunks with source offsets and distance |
-| `/api/upload-documents` | POST | Multipart `files`; TXT/PDF/DOCX; report successes and individual failures |
+| `/api/pipeline-check` | GET | Redacted supervisor dependency and recovery state |
+| `/api/diagnostics` | GET | Combined redacted assistant and supervisor evidence |
 
-The dashboard uses serial HTTP long polling of `/api/events` (up to 20 seconds per request), advancing its cursor only after processing the response. It does not merge live batches ahead of historical replay. Socket.IO still emits `turn_events` for other clients. Each event has session ID, turn ID, monotonic sequence, monotonic timestamp, state, kind and data. The containing batch includes the assistant epoch; a new epoch resets replay cursors and pending approvals. State values: accepted, running, completed, interrupted, denied, failed, approval_required. A 202 response is acceptance, not completion. Clients must handle terminal failure, cancellation and replay gaps. No WebSocket message can authorize a mutation.
+The native app serially reads the bounded event journal over its authenticated
+private control socket, advancing its cursor only after processing the response.
+It does not merge a live batch ahead of historical replay.
+Each event has session ID, turn ID, monotonic sequence, monotonic timestamp,
+state, kind and data. The containing batch includes the assistant epoch; a new
+epoch resets replay cursors and pending work. Conversation states include
+accepted, running, completed, interrupted, denied, and failed. Durable Task
+authorization uses the canonical Task states below. An
+accepted response is not completion. No event transport can authorize a
+mutation.
 
-Errors distinguish invalid input (400), missing authentication (401), denied origin/CSRF/authorization (403), missing record (404), upload failures (422), and unavailable downstream services (503). Request bodies must be JSON objects. Uploaded audio is bounded to 8 MiB decoded data and configured utterance duration. Conversion has a 15-second deadline.
+## Native task presentation extension
+
+The native client continues to accept existing `action`, `tool`, and
+`tool_result` journal events. It also accepts a typed `task` event so durable or
+multi-step work does not need to masquerade as a one-shot tool:
+
+```json
+{
+  "kind": "task",
+  "state": "running",
+  "turn_id": "turn-id",
+  "data": {
+    "task": {
+      "task_id": "task-id",
+      "title": "Research local documents",
+      "detail": "Searching three indexed sources",
+      "source": "explicit_request",
+      "commands": ["cancel"]
+    }
+  }
+}
+```
+
+The native composer sends immediate turns as
+`{"op":"chat","message":"...","speak":true|false}` and durable work as
+`{"op":"task_create","message":"..."}`. Task creation returns a persisted
+task record in `task`; it is not execution approval. On every service connection
+and event-epoch reset, the client sends `{"op":"task_list"}` and replaces its
+durable Task Center snapshot with the returned `tasks`.
+
+Canonical task states are `proposed`, `awaiting_authorization`, `queued`,
+`running`, `pause_requested`, `paused`, `cancel_requested`, `blocked`,
+`completed`, `partial`, `failed`, and `cancelled`. Existing one-shot action
+states are mapped into this presentation model. Live events supply their exact
+`commands`. Persisted list records are mapped from canonical state only:
+`awaiting_authorization` permits `authorize|deny`, `running` permits
+`pause|cancel`, `pause_requested`, `queued`, and `blocked` permit `cancel`, and
+`paused` permits `resume|cancel`. Terminal states permit no command. The native
+client sends
+`{"op":"task_command","task_id":"...","command":"authorize|deny|pause|resume|cancel"}`
+and immediately applies the returned task snapshot. The service remains the
+authority and rejects stale, cross-session, invalid-state, and repeated
+commands.
+
+Errors distinguish invalid input (400), missing authentication (401), denied origin/CSRF/authorization (403), missing record (404), and unavailable downstream services (503). Native commands are authenticated by the private socket token and bound to the single native session.
 
 ## RAG service
 
@@ -45,4 +86,4 @@ Authenticated `/api/documents` supports GET and POST `{content,title,type,metada
 
 Authenticated `/status`, `/services`, `/metrics`, `/ready`, POST `/service/NAME/restart`, and POST `/shutdown`. Status stays HTTP 200 during recovery, with per-service readiness/errors; `/ready` returns 503 until all services are ready. Unknown services are rejected. Occupied ports do not authorize terminating their owners. Shutdown stops only child process groups created by this instance. The CLI waits for observed owned processes to exit before reporting stopped.
 
-`/api/status` includes `auto_run_requested`. When true, supported actions matching the current explicit request emit `tool` with `authorization: explicit_request`, then `tool_result`, then the model response; no approval event is needed. The model sees real results, including failures. Current-request and exact app/URL target checks still apply. `transcription` and `user` events share a turn ID and render as one user message, not duplicates.
+Conversation never authorizes side effects. Task proposals are persisted before execution, approved once through the native Task Center, and each step consumes a single-use capability receipt. `transcription` and `user` events share a turn ID and render as one user message, not duplicates.

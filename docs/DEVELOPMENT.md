@@ -4,6 +4,8 @@ Use Python 3.12 and uv. `pyproject.toml` is the only dependency definition; comm
 
 ```sh
 uv sync --frozen --all-extras --group dev
+uv run --frozen python -c 'import macbot; print(macbot.__file__)'
+uv run --frozen macbot doctor
 uv run --frozen macbot setup
 uv run --frozen macbot build-inference --source "$PWD"
 uv run --frozen macbot build-audio
@@ -17,9 +19,12 @@ Model downloads are explicit. Each registry entry includes upstream revision, fi
 
 ```sh
 uv build
-uv run --frozen python -m zipfile -l dist/macbot-2.0.0-py3-none-any.whl
+uv run --frozen python scripts/inspect_package.py
 ```
 
 A wheel must contain templates, static assets, model catalog, default config and native source/build metadata. It must not contain user documents, model weights, recordings, databases, credentials or logs. Test installation into a clean environment and execute from a different directory, with offline mode after provisioning.
 
-All changes stay on main for this modernization. Commit cohesive verified changes, reconcile upstream without force or data loss, and push only after every [release gate](VERIFICATION.md) has passed. Hosted CI evidence and local/device evidence are distinct.
+All changes stay on main for this modernization. Commit cohesive verified
+checkpoints, reconcile upstream without force or data loss, and label them
+truthfully as checkpoints until every [release gate](VERIFICATION.md) has passed.
+Hosted CI evidence and local/device evidence are distinct.

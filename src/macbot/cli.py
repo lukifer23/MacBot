@@ -419,9 +419,9 @@ def main():
         auth = AuthStore(settings.data_dir)
         try:
             if args.command == "open":
-                if not settings.services.browser_fallback_enabled:
+                if not settings.services.diagnostics_enabled:
                     raise RuntimeError(
-                        "Browser diagnostics are disabled; enable services.browser_fallback_enabled first"
+                        "Developer diagnostics are disabled; enable services.diagnostics_enabled first"
                     )
                 token = auth.issue_login()
                 webbrowser.open(settings.services.dashboard.url + "/#token=" + token)

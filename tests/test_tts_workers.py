@@ -65,3 +65,8 @@ def test_speech_retains_partial_final_word_until_flush():
         ["A conversational fragment."],
         "",
     )
+
+
+def test_product_configuration_has_no_unimplemented_speech_speed():
+    settings = load()
+    assert "tts_speed" not in type(settings.models).model_fields

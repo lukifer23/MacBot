@@ -70,6 +70,7 @@ class NativeIPCServer:
         self.audio_connection: socket.socket | None = None
         self.audio_write_lock = threading.Lock()
         self.clients: set[threading.Thread] = set()
+        self.client_connections: set[socket.socket] = set()
         self.lock = threading.Lock()
         self.token: str | None = None
 
@@ -121,6 +122,7 @@ class NativeIPCServer:
             )
             with self.lock:
                 self.clients.add(thread)
+                self.client_connections.add(connection)
             thread.start()
 
     def _client(self, connection: socket.socket) -> None:
@@ -148,6 +150,7 @@ class NativeIPCServer:
             connection.close()
             with self.lock:
                 self.clients.discard(current)
+                self.client_connections.discard(connection)
 
     def _accept_audio(self) -> None:
         assert self.audio_socket is not None
@@ -260,7 +263,7 @@ class NativeIPCServer:
                 available_voices.append({"id": voice, "installed": installed})
             return {
                 "settings": {
-                    "browser_fallback_enabled": self.settings.services.browser_fallback_enabled,
+                    "diagnostics_enabled": self.settings.services.diagnostics_enabled,
                     "retention_days": self.settings.privacy.retention_days,
                     "endpoint_ms": self.settings.audio.endpoint_ms,
                     "context_length": self.settings.models.context_length,
@@ -271,18 +274,18 @@ class NativeIPCServer:
         if op == "update_settings":
             values = request.get("values")
             if not isinstance(values, dict) or set(values) - {
-                "browser_fallback_enabled",
+                "diagnostics_enabled",
                 "retention_days",
                 "endpoint_ms",
                 "context_length",
                 "tts_voice",
             }:
                 raise ValueError("Unsupported settings update")
-            if "browser_fallback_enabled" in values:
-                value = values["browser_fallback_enabled"]
+            if "diagnostics_enabled" in values:
+                value = values["diagnostics_enabled"]
                 if not isinstance(value, bool):
-                    raise ValueError("Browser fallback setting must be boolean")
-                self.settings.services.browser_fallback_enabled = value
+                    raise ValueError("Diagnostics setting must be boolean")
+                self.settings.services.diagnostics_enabled = value
             for key, target in {
                 "retention_days": self.settings.privacy,
                 "endpoint_ms": self.settings.audio,
@@ -310,7 +313,7 @@ class NativeIPCServer:
                 or (epoch is not None and not isinstance(epoch, str))
             ):
                 raise ValueError("Invalid event cursor")
-            return self.runtime.events.read(after, timeout=20, epoch=epoch)
+            return self.runtime.events.read(after, timeout=20, epoch=epoch, session_id="native")
         if op == "chat":
             turn = self.runtime.submit(
                 request.get("message"),
@@ -318,6 +321,37 @@ class NativeIPCServer:
                 session_id="native",
             )
             return {"state": "accepted", "turn_id": turn.id}
+        if op == "task_create":
+            if not self.runtime.task_engine:
+                raise RuntimeError("Durable Task mode requires encrypted history")
+            message = request.get("message")
+            if not isinstance(message, str):
+                raise ValueError("Task message must be text")
+            return {"task": self.runtime.task_engine.create(message, "native")}
+        if op == "task_list":
+            if not self.runtime.task_engine:
+                return {"tasks": []}
+            return {"tasks": self.runtime.task_engine.list("native")}
+        if op == "task_command":
+            if not self.runtime.task_engine:
+                raise RuntimeError("Durable Task mode requires encrypted history")
+            task_id = request.get("task_id")
+            command = request.get("command")
+            if not isinstance(task_id, str) or not isinstance(command, str):
+                raise ValueError("Task command requires task_id and command")
+            if command == "authorize":
+                task = self.runtime.task_engine.authorize(task_id, "native", True)
+            elif command == "deny":
+                task = self.runtime.task_engine.authorize(task_id, "native", False)
+            elif command == "pause":
+                task = self.runtime.task_engine.pause(task_id, "native")
+            elif command == "resume":
+                task = self.runtime.task_engine.resume(task_id, "native")
+            elif command == "cancel":
+                task = self.runtime.task_engine.cancel(task_id, "native")
+            else:
+                raise ValueError("Unsupported Task command")
+            return {"task": task}
         if op == "preview_voice":
             turn = self.runtime.submit(
                 "Hey, I’m MacBot. I’m ready when you are.",
@@ -399,6 +433,14 @@ class NativeIPCServer:
             self.socket.close()
         if self.audio_socket:
             self.audio_socket.close()
+        with self.lock:
+            control_connections = list(self.client_connections)
+        for connection in control_connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
         with self.audio_write_lock:
             if self.audio_connection:
                 self.audio_connection.close()
@@ -410,5 +452,9 @@ class NativeIPCServer:
             self.thread.join(timeout=2)
         if self.audio_thread:
             self.audio_thread.join(timeout=2)
+        with self.lock:
+            client_threads = list(self.clients)
+        for thread in client_threads:
+            thread.join(timeout=2)
         self.path.unlink(missing_ok=True)
         self.audio_path.unlink(missing_ok=True)

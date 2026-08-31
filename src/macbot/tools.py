@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import re
 import secrets
 import subprocess
-import threading
-import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -40,27 +36,12 @@ SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
     ),
 }
 READ_ONLY = {"system_info", "rag_search", "local_time", "web_search", "weather"}
-# Only these implemented actions may opt into request-based execution. New tools
-# do not inherit permission to change the desktop or create files.
-AUTO_REQUESTED = {"open_app", "browse_website", "web_search", "weather", "screenshot"}
 REQUESTED_SIDE_EFFECTS = {"open_app", "browse_website", "screenshot"}
-
-
-@dataclass(frozen=True)
-class PendingAction:
-    id: str
-    session_id: str
-    turn_id: str
-    name: str
-    arguments_json: str
-    expires: float
 
 
 class Tools:
     def __init__(self, settings: Settings, auth: AuthStore):
         self.settings, self.auth = settings, auth
-        self.pending: dict[str, PendingAction] = {}
-        self.lock = threading.RLock()
         self.client = httpx.Client(timeout=8, trust_env=False)
 
     def requested(self, text: str) -> dict[str, dict[str, str]]:
@@ -71,8 +52,6 @@ class Tools:
         unrestricted language classifier: ambiguous phrasing gets clarification.
         """
         text = text.strip().replace("’", "'")
-        if re.search(r"\b(?:don't|do not|never|without|instead of|not now)\b", text, re.I):
-            return {}
         command = re.sub(
             r"^(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+))+", "", text, flags=re.I
         )
@@ -110,7 +89,10 @@ class Tools:
             and re.search(r"\b(?:in|for|today|tomorrow|tonight|now)\b", command, re.I)
         ):
             selected.pop("web_search", None)
-            selected["weather"] = {}
+            location = re.search(r"\b(?:in|for)\s+([^.!?]+)", command, re.I)
+            selected["weather"] = {
+                "location": location.group(1).strip() if location else "current location"
+            }
         if re.search(r"\b(?:documents|knowledge base|library)\b", command, re.I) and (
             searching or re.match(r"^(?:what|which|where|show|summarize)\b", command, re.I)
         ):
@@ -121,6 +103,23 @@ class Tools:
             and re.search(r"\b(?:usage|using|used|free|available|full|status)\b", command, re.I)
         ):
             selected["system_info"] = {}
+        negative_targets = {
+            "local_time": r"(?:time|date|clock)",
+            "system_info": r"(?:cpu|memory|disk|system)",
+            "rag_search": r"(?:documents|library|knowledge base)",
+            "web_search": r"(?:web|internet|online|web search)",
+            "weather": r"(?:weather|forecast)",
+            "open_app": r"(?:open|launch|start|bring up)",
+            "browse_website": r"(?:open|visit|browse)",
+            "screenshot": r"(?:screenshot|capture(?: the)? screen)",
+        }
+        for name, target in negative_targets.items():
+            if re.search(
+                rf"\b(?:don't|do not|never|without|instead of)\b[^.!?]{{0,80}}{target}",
+                command,
+                re.I,
+            ):
+                selected.pop(name, None)
         return {
             name: args for name, args in selected.items() if name in self.settings.tools.enabled
         }
@@ -195,14 +194,6 @@ class Tools:
         ]
         for definition in definitions:
             function = definition["function"]
-            if self.settings.tools.auto_run_requested and function["name"] in AUTO_REQUESTED:
-                function["description"] = (
-                    function["description"]
-                    .replace(", after user confirmation", "")
-                    .replace("Requires user confirmation.", "")
-                    .replace("after user confirmation", "when explicitly requested")
-                    + " Runs automatically for the current explicit request; do not ask again."
-                )
             if function["name"] == "open_app":
                 function["parameters"]["properties"]["app"]["enum"] = list(
                     self.settings.tools.allowed_apps
@@ -233,46 +224,6 @@ class Tools:
             if u.scheme not in {"http", "https"} or not u.hostname or u.username or u.password:
                 raise ValueError("A complete HTTP(S) URL without credentials is required")
         return dict(arguments)
-
-    def request(self, session_id: str, turn_id: str, name: str, arguments: dict) -> PendingAction:
-        args = self.validate(name, arguments)
-        if name in READ_ONLY:
-            raise ValueError("Read-only tools do not require approvals")
-        action = PendingAction(
-            secrets.token_urlsafe(24),
-            session_id,
-            turn_id,
-            name,
-            json.dumps(args, sort_keys=True),
-            time.monotonic() + self.settings.tools.approval_seconds,
-        )
-        with self.lock:
-            self.pending = {k: v for k, v in self.pending.items() if v.expires > time.monotonic()}
-            if len(self.pending) >= 8:
-                raise RuntimeError("Too many pending actions")
-            self.pending[action.id] = action
-        return action
-
-    def invalidate(self, turn_id: str) -> None:
-        with self.lock:
-            self.pending = {k: v for k, v in self.pending.items() if v.turn_id != turn_id}
-
-    def decide(self, action_id: str, session_id: str, turn_id: str, approve: bool) -> dict:
-        action = self.consume(action_id, session_id, turn_id)
-        if not approve:
-            return {"status": "denied", "tool": action.name}
-        return self._execute(action.name, json.loads(action.arguments_json))
-
-    def consume(self, action_id: str, session_id: str, turn_id: str) -> PendingAction:
-        """Claim once under the policy lock; execute outside latency-sensitive locks."""
-        with self.lock:
-            action = self.pending.get(action_id)
-            if not action or action.session_id != session_id or action.turn_id != turn_id:
-                raise PermissionError("Approval does not belong to this session and turn")
-            del self.pending[action_id]
-            if action.expires <= time.monotonic():
-                raise PermissionError("Approval expired")
-            return action
 
     def read(self, name: str, arguments: dict) -> dict:
         if name not in READ_ONLY:
@@ -335,49 +286,35 @@ class Tools:
 
     def _web_search(self, query: str) -> dict[str, Any]:
         key = self._keychain_secret("local.macbot.brave-search")
-        if key:
-            response = self.client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                params={"q": query, "count": 5, "safesearch": "moderate"},
-                headers={"Accept": "application/json", "X-Subscription-Token": key},
-            )
-            response.raise_for_status()
-            if len(response.content) > 2_000_000:
-                raise RuntimeError("Search response exceeded the configured limit")
-            rows = response.json().get("web", {}).get("results", [])
-            results = [
-                {
-                    "title": row.get("title", ""),
-                    "url": row.get("url", ""),
-                    "snippet": row.get("description", ""),
-                }
-                for row in rows[:5]
-                if isinstance(row, dict) and row.get("url")
-            ]
-            if not results:
-                return {"status": "empty", "provider": "brave", "query": query, "results": []}
-            return {"status": "completed", "provider": "brave", "query": query, "results": results}
-        try:
-            from ddgs import DDGS
-
-            rows = list(DDGS(timeout=8).text(query, max_results=5))
-        except Exception as exc:
-            raise RuntimeError(
-                "Web search is unavailable: configure Brave Search or retry the no-key provider"
-            ) from exc
+        if not key:
+            return {
+                "status": "not_configured",
+                "provider": "brave",
+                "query": query,
+                "results": [],
+                "message": "Configure a Brave Search credential in MacBot settings.",
+            }
+        response = self.client.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": 5, "safesearch": "moderate"},
+            headers={"Accept": "application/json", "X-Subscription-Token": key},
+        )
+        response.raise_for_status()
+        if len(response.content) > 2_000_000:
+            raise RuntimeError("Search response exceeded the configured limit")
+        rows = response.json().get("web", {}).get("results", [])
         results = [
             {
                 "title": row.get("title", ""),
-                "url": row.get("href", ""),
-                "snippet": row.get("body", ""),
+                "url": row.get("url", ""),
+                "snippet": row.get("description", ""),
             }
-            for row in rows
-            if isinstance(row, dict) and row.get("href")
+            for row in rows[:5]
+            if isinstance(row, dict) and row.get("url")
         ]
         return {
             "status": "completed" if results else "empty",
-            "provider": "ddgs",
-            "degraded": True,
+            "provider": "brave",
             "query": query,
             "results": results,
         }

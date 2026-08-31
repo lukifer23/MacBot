@@ -28,7 +28,7 @@ class Endpoint(StrictModel):
 
 
 class Services(StrictModel):
-    browser_fallback_enabled: bool = False
+    diagnostics_enabled: bool = False
     dashboard: Endpoint = Endpoint(port=3000)
     assistant: Endpoint = Endpoint(port=8123)
     rag: Endpoint = Endpoint(port=8001)
@@ -51,8 +51,7 @@ class Models(StrictModel):
     temperature: float = Field(default=0.1, ge=0, le=2)
     threads: int = Field(default=4, ge=1, le=32)
     stt: Literal["parakeet", "whisper"] = "parakeet"
-    tts_voice: str = "amy"
-    tts_speed: float = Field(default=1.0, ge=0.5, le=2)
+    tts_voice: str = "qwen-aiden-1.7b"
     embedding: Literal["minilm"] = "minilm"
 
     @field_validator("llm_url")
@@ -100,8 +99,6 @@ class ToolPolicy(StrictModel):
         default_factory=lambda: ["Safari", "Finder", "Calculator", "Notes"]
     )
     screenshot_dir: str = "~/Desktop"
-    approval_seconds: int = Field(default=60, ge=10, le=300)
-    auto_run_requested: bool = True
 
 
 class Privacy(StrictModel):
@@ -182,6 +179,25 @@ def load(config_path: str | Path | None = None, environ: dict[str, str] | None =
         raise ValueError("Configuration must be a mapping")
     if raw and raw.get("version") != 2:
         raise ValueError("Legacy configuration: run macbot migrate-config --source PATH")
+    services = raw.get("services")
+    if isinstance(services, dict) and "browser_fallback_enabled" in services:
+        if "diagnostics_enabled" in services:
+            raise ValueError("Configuration contains conflicting diagnostics settings")
+        services["diagnostics_enabled"] = services.pop("browser_fallback_enabled")
+    tools = raw.get("tools")
+    if isinstance(tools, dict):
+        # These fields belonged to the removed in-memory approval path. The
+        # durable CapabilityBroker is now the sole execution authority.
+        tools.pop("approval_seconds", None)
+        tools.pop("auto_run_requested", None)
+    models = raw.get("models")
+    if isinstance(models, dict):
+        # Speech speed was never honored by the accepted Qwen release voice.
+        # Consume the old fixed-value field during migration, but reject any
+        # value that could imply an active product capability.
+        legacy_speed = models.pop("tts_speed", 1.0)
+        if legacy_speed != 1.0:
+            raise ValueError("Speech speed is not supported by the release voice")
     if "data_dir" in raw:
         candidate = Path(raw["data_dir"]).expanduser()
         root = (

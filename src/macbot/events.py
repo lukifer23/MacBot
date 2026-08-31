@@ -8,6 +8,8 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Literal
 
+EPHEMERAL_KINDS = {"delta", "partial_transcription"}
+
 State = Literal[
     "accepted", "running", "completed", "interrupted", "denied", "failed", "approval_required"
 ]
@@ -43,20 +45,30 @@ class EventJournal:
             event = TurnEvent(session_id, turn_id, self.seq, state, kind, time.monotonic_ns(), data)
             self.items.append(event)
             self.condition.notify_all()
-        if self.sink:
+        # Streaming fragments are delivered live but never force an encrypted
+        # SQLite transaction. Final messages and state transitions are persisted
+        # by their authoritative owners.
+        if self.sink and kind not in EPHEMERAL_KINDS:
             self.sink(self.epoch, asdict(event))
         return event
 
-    def read(self, after: int, timeout: float = 0, epoch: str | None = None) -> dict[str, Any]:
+    def read(
+        self,
+        after: int,
+        timeout: float = 0,
+        epoch: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         with self.condition:
             reset = (epoch is not None and epoch != self.epoch) or after > self.seq
             if reset:
                 after = 0
             if self.seq <= after and not self.closed and not reset:
                 self.condition.wait_for(lambda: self.seq > after or self.closed, timeout=timeout)
-            gap = bool(self.items and after and after < self.items[0].seq - 1)
+            visible = [e for e in self.items if session_id is None or e.session_id == session_id]
+            gap = bool(visible and after and after < visible[0].seq - 1)
             return {
-                "events": [asdict(e) for e in self.items if e.seq > after],
+                "events": [asdict(e) for e in visible if e.seq > after],
                 "cursor": self.seq,
                 "gap": gap,
                 "epoch": self.epoch,

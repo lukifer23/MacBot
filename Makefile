@@ -11,7 +11,7 @@ build:
 	$(UV) run --frozen macbot build-inference --source "$(CURDIR)"
 	$(UV) run --frozen macbot build-audio
 models:
-	$(UV) run --frozen macbot models download qwen3-4b parakeet amy minilm silero
+	$(UV) run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
 start:
 	$(UV) run --frozen macbot start --background
 stop:

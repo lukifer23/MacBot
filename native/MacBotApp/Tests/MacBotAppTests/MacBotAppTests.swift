@@ -50,3 +50,34 @@ func toolResultsArePresentedWithoutRawDictionaryText() {
     )
     #expect(AppState.summarize(["status": "denied", "reason": "Not requested"]) == "Not requested")
 }
+
+@Test
+func productStateControlsOperationalAvailability() {
+    #expect(ProductState.ready.isOperational)
+    #expect(ProductState.listening.isOperational)
+    #expect(ProductState.working.isOperational)
+    #expect(!ProductState.starting.isOperational)
+    #expect(!ProductState.reconnecting.isOperational)
+    #expect(!ProductState.blocked.isOperational)
+}
+
+@Test
+func taskStatesAndCommandsAreExplicit() {
+    #expect(TaskState(serviceValue: "approval_required") == .awaitingAuthorization)
+    #expect(TaskState(serviceValue: "unexpected") == .failed)
+    let task = TaskItem(
+        id: "task-1", title: "Search documents", state: "running", detail: "Searching",
+        sequence: 4, source: "explicit_request", turnID: "turn-1", availableCommands: [.cancel]
+    )
+    #expect(task.state == .running)
+    #expect(task.availableCommands == [.cancel])
+    #expect(task.turnID == "turn-1")
+    #expect(TaskCommand.allCases == [.authorize, .deny, .pause, .resume, .cancel])
+}
+
+@Test
+func composerModesExplainTheirDifferentCommitments() {
+    #expect(ComposerMode.conversation.actionLabel == "Send message")
+    #expect(ComposerMode.task.actionLabel == "Create task")
+    #expect(ComposerMode.task.guidance.contains("authorize"))
+}

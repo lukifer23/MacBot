@@ -1,6 +1,6 @@
 version: 2
 services:
-  browser_fallback_enabled: false
+  diagnostics_enabled: false
   dashboard:
     host: 127.0.0.1
     port: 3000
@@ -22,8 +22,7 @@ models:
   temperature: 0.1
   threads: 4
   stt: parakeet
-  tts_voice: amy
-  tts_speed: 1.0
+  tts_voice: qwen-aiden-1.7b
   embedding: minilm
 audio:
   endpoint_ms: 350
@@ -33,7 +32,6 @@ audio:
   speech_start_ms: 96
   idle_timeout_sec: 300
 tools:
-  auto_run_requested: true
   enabled:
   - local_time
   - system_info
@@ -49,7 +47,6 @@ tools:
   - Calculator
   - Notes
   screenshot_dir: ~/Desktop
-  approval_seconds: 60
 privacy:
   history_enabled: true
   retention_days: 30

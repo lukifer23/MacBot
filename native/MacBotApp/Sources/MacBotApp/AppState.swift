@@ -4,11 +4,13 @@ import SwiftUI
 @MainActor
 final class AppState: ObservableObject {
     @Published var selectedPage: SidebarPage? = .conversation
+    @Published var productState: ProductState = .starting
     @Published var phase: AssistantPhase = .starting
     @Published var connected = false
     @Published var connectionDetail = "Starting local services"
     @Published var listening = false
     @Published var muted = false
+    @Published var composerMode: ComposerMode = .conversation
     @Published var draft = ""
     @Published var heard = ""
     @Published var messages: [ChatItem] = []
@@ -21,16 +23,27 @@ final class AppState: ObservableObject {
     @Published var availableVoices: [VoiceOption] = []
     @Published var historyAvailable = false
     @Published var documents: [DocumentItem] = []
-    @Published var documentResults: [String] = []
+    @Published var documentResults: [DocumentSearchResult] = []
+    @Published var libraryState: LibraryLoadState = .idle
+    @Published var searchState: SearchLoadState = .idle
     @Published var importingDocuments = false
     @Published var documentQuery = ""
-    @Published var browserFallbackEnabled = false
     @Published var retentionDays = 30
     @Published var endpointMilliseconds = 350
     @Published var contextLength = 16_384
     @Published var searchCredentialConfigured = false
     @Published var searchCredential = ""
     @Published var restartRequired = false
+    @Published var speakTypedReplies = true
+    @Published var isRestarting = false
+    @Published var confirmClearConversation = false
+    @Published var pendingDocumentDeletion: DocumentItem?
+    @Published var confirmCredentialRemoval = false
+
+    private var savedRetentionDays = 30
+    private var savedEndpointMilliseconds = 350
+    private var savedContextLength = 16_384
+    private var savedVoice = ""
 
     private let services = ServiceManager()
     private var client: NativeClient?
@@ -48,8 +61,28 @@ final class AppState: ObservableObject {
         }
     }
 
+    var canConverse: Bool { connected && productState.isOperational && !isRestarting }
+    var canListen: Bool { canConverse }
+    var canManageLibrary: Bool { connected && productState.isOperational && !isRestarting }
+    var canChangeSettings: Bool { connected && productState.isOperational && !isRestarting }
+    var canInterrupt: Bool { [.planning, .thinking, .acting, .speaking].contains(phase) }
+    var hasExecutingTask: Bool {
+        tasks.contains { [.queued, .running, .pauseRequested, .cancelRequested].contains($0.state) }
+    }
+    var settingsHaveChanges: Bool {
+        retentionDays != savedRetentionDays
+            || endpointMilliseconds != savedEndpointMilliseconds
+            || contextLength != savedContextLength
+            || selectedVoice != savedVoice
+    }
+
+    var activeTasks: [TaskItem] { tasks.filter { $0.state.isActive } }
+    var completedTasks: [TaskItem] { Array(tasks.filter { !$0.state.isActive }.reversed()) }
+
     func start() {
         guard eventTask == nil else { return }
+        productState = .starting
+        connectionDetail = "Starting local services"
         eventTask = Task {
             do {
                 let historyKey = try await waitForHistoryKey()
@@ -58,11 +91,14 @@ final class AppState: ObservableObject {
                 try await establishServices()
                 await refreshStatus()
                 await refreshSettings()
+                await refreshTasks()
                 await eventLoop()
             } catch {
                 connected = false
+                isRestarting = false
                 connectionDetail = "Startup failed"
                 phase = .error
+                productState = .blocked
                 errorMessage = error.localizedDescription
                 eventTask = nil
             }
@@ -98,6 +134,9 @@ final class AppState: ObservableObject {
         connected = true
         connectionDetail = "Local and private"
         phase = .idle
+        productState = .ready
+        restartRequired = false
+        isRestarting = false
         errorMessage = nil
     }
 
@@ -109,6 +148,7 @@ final class AppState: ObservableObject {
             } catch where KeychainStore.isTemporarilyUnavailable(error) {
                 connected = false
                 phase = .starting
+                productState = .starting
                 connectionDetail = "Waiting for this Mac to wake"
                 try await Task.sleep(for: .seconds(2))
             }
@@ -118,17 +158,55 @@ final class AppState: ObservableObject {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let client else { return }
+        let mode = composerMode
+        guard !text.isEmpty, let client else {
+            explainUnavailable("send a message")
+            return
+        }
         draft = ""
         Task {
             do {
-                _ = try await client.request(JSONPayload(["op": "chat", "message": text, "speak": true]))
-            } catch { show(error) }
+                switch mode {
+                case .conversation:
+                    _ = try await client.request(JSONPayload([
+                        "op": "chat", "message": text, "speak": speakTypedReplies,
+                    ]))
+                case .task:
+                    let response = try await client.request(JSONPayload([
+                        "op": "task_create", "message": text,
+                    ])).value
+                    if let payload = response["task"] as? [String: Any] {
+                        upsertTask(payload, sequence: cursor + 1)
+                    }
+                    selectedPage = .tasks
+                }
+            } catch {
+                draft = text
+                show(error)
+            }
+        }
+    }
+
+    private func refreshTasks() async {
+        guard let client else { return }
+        do {
+            let response = try await client.request(JSONPayload(["op": "task_list"])).value
+            let snapshots = response["tasks"] as? [[String: Any]] ?? []
+            let durableIDs = Set(snapshots.compactMap { $0["task_id"] as? String })
+            tasks.removeAll { $0.source == "MacBot Task Engine" && !durableIDs.contains($0.id) }
+            for (index, snapshot) in snapshots.reversed().enumerated() {
+                upsertTask(snapshot, sequence: -(snapshots.count - index))
+            }
+        } catch {
+            show(error)
         }
     }
 
     func toggleListening() {
-        guard let client else { return }
+        guard let client else {
+            explainUnavailable("start hands-free conversation")
+            return
+        }
         let desired = !listening
         Task {
             do {
@@ -141,37 +219,65 @@ final class AppState: ObservableObject {
                 _ = try await client.request(JSONPayload(["op": "listen", "enabled": desired]))
                 listening = desired
                 phase = desired ? .listening : .idle
+                productState = desired ? .listening : .ready
             } catch { show(error) }
         }
     }
 
     func toggleMuted() {
+        guard listening else {
+            errorMessage = "Start hands-free conversation before muting the microphone."
+            return
+        }
         muted.toggle()
         audio?.setMuted(muted)
         phase = muted ? .muted : (listening ? .listening : .idle)
     }
 
     func interrupt() {
-        guard let client else { return }
+        guard let client else {
+            explainUnavailable("stop the current response")
+            return
+        }
         Task {
             do {
                 _ = try await client.request(JSONPayload(["op": "interrupt"]))
                 phase = listening ? .listening : .interrupted
+                productState = listening ? .listening : .ready
             } catch { show(error) }
         }
     }
 
     func clearConversation() {
-        guard let client else { return }
+        guard let client else {
+            explainUnavailable("clear the conversation")
+            return
+        }
         Task {
             do {
                 _ = try await client.request(JSONPayload(["op": "clear"]))
                 messages.removeAll()
-                tasks.removeAll()
                 responseIndex.removeAll()
                 heard = ""
             } catch { show(error) }
         }
+    }
+
+    func restartServices() {
+        guard !isRestarting else { return }
+        isRestarting = true
+        connected = false
+        listening = false
+        muted = false
+        productState = .starting
+        phase = .starting
+        connectionDetail = "Restarting local services"
+        eventTask?.cancel()
+        eventTask = nil
+        audio?.close()
+        audio = nil
+        client = nil
+        start()
     }
 
     func shutdown() {
@@ -184,7 +290,11 @@ final class AppState: ObservableObject {
     }
 
     func refreshDocuments() {
-        guard let client else { return }
+        guard let client else {
+            libraryState = .failed("MacBot must be ready before the library can load.")
+            return
+        }
+        libraryState = .loading
         Task {
             do {
                 let response = try await client.request(JSONPayload(["op": "documents"])).value
@@ -192,12 +302,19 @@ final class AppState: ObservableObject {
                     guard let id = item["id"] as? String, let title = item["title"] as? String else { return nil }
                     return DocumentItem(id: id, title: title, type: item["type"] as? String ?? "text", length: item["length"] as? Int ?? 0)
                 }
-            } catch { show(error) }
+                libraryState = .loaded
+            } catch {
+                libraryState = .failed(error.localizedDescription)
+            }
         }
     }
 
     func importDocument(_ url: URL) {
-        guard let client else { return }
+        guard let client else {
+            libraryState = .failed("MacBot must be ready before a document can be imported.")
+            return
+        }
+        libraryState = .loading
         Task {
             do {
                 let accessed = url.startAccessingSecurityScopedResource()
@@ -211,27 +328,53 @@ final class AppState: ObservableObject {
                     "suffix": "." + url.pathExtension.lowercased(), "content": content.base64EncodedString(),
                 ]))
                 refreshDocuments()
-            } catch { show(error) }
+            } catch {
+                libraryState = .failed(error.localizedDescription)
+            }
         }
     }
 
     func deleteDocument(_ id: String) {
-        guard let client else { return }
+        guard let client else {
+            libraryState = .failed("MacBot must be ready before a document can be deleted.")
+            return
+        }
+        libraryState = .loading
         Task {
             do {
                 _ = try await client.request(JSONPayload(["op": "document_delete", "id": id]))
                 refreshDocuments()
-            } catch { show(error) }
+            } catch {
+                libraryState = .failed(error.localizedDescription)
+            }
         }
     }
 
     func searchDocuments(_ query: String) {
-        guard let client else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let client else {
+            searchState = .failed("MacBot must be ready before documents can be searched.")
+            return
+        }
+        searchState = .searching
+        documentResults.removeAll()
         Task {
             do {
-                let response = try await client.request(JSONPayload(["op": "document_search", "query": query])).value
-                documentResults = (response["results"] as? [[String: Any]] ?? []).compactMap { $0["content"] as? String }
-            } catch { show(error) }
+                let response = try await client.request(JSONPayload(["op": "document_search", "query": trimmed])).value
+                documentResults = (response["results"] as? [[String: Any]] ?? []).enumerated().compactMap { index, item in
+                    guard let content = item["content"] as? String else { return nil }
+                    let metadata = item["metadata"] as? [String: Any] ?? [:]
+                    let title = metadata["title"] as? String ?? "Local document"
+                    let chunk = (metadata["chunk"] as? Int).map { "Passage \($0 + 1)" } ?? "Local source"
+                    return DocumentSearchResult(
+                        id: "\(index)-\(title)", title: title, content: content, sourceDetail: chunk
+                    )
+                }
+                searchState = .complete
+            } catch {
+                searchState = .failed(error.localizedDescription)
+            }
         }
     }
 
@@ -283,7 +426,6 @@ final class AppState: ObservableObject {
         do {
             let response = try await client.request(JSONPayload(["op": "settings"])).value
             guard let settings = response["settings"] as? [String: Any] else { return }
-            browserFallbackEnabled = settings["browser_fallback_enabled"] as? Bool ?? false
             retentionDays = settings["retention_days"] as? Int ?? 30
             endpointMilliseconds = settings["endpoint_ms"] as? Int ?? 350
             contextLength = settings["context_length"] as? Int ?? 16_384
@@ -292,31 +434,48 @@ final class AppState: ObservableObject {
                 guard let id = item["id"] as? String else { return nil }
                 return VoiceOption(id: id, installed: item["installed"] as? Bool == true)
             }
+            savedRetentionDays = retentionDays
+            savedEndpointMilliseconds = endpointMilliseconds
+            savedContextLength = contextLength
+            savedVoice = selectedVoice
             searchCredentialConfigured = KeychainStore.hasSearchCredential()
         } catch { show(error) }
     }
 
     func saveRuntimeSettings() {
-        guard let client else { return }
+        guard let client else {
+            explainUnavailable("save settings")
+            return
+        }
+        guard availableVoices.contains(where: { $0.id == selectedVoice && $0.installed }) else {
+            errorMessage = "Select an installed voice before saving settings."
+            return
+        }
         Task {
             do {
                 _ = try await client.request(JSONPayload([
                     "op": "update_settings",
                     "values": [
-                        "browser_fallback_enabled": browserFallbackEnabled,
                         "retention_days": retentionDays,
                         "endpoint_ms": endpointMilliseconds,
                         "context_length": contextLength,
                         "tts_voice": selectedVoice,
                     ],
                 ]))
+                savedRetentionDays = retentionDays
+                savedEndpointMilliseconds = endpointMilliseconds
+                savedContextLength = contextLength
+                savedVoice = selectedVoice
                 restartRequired = true
             } catch { show(error) }
         }
     }
 
     func previewVoice() {
-        guard let client else { return }
+        guard let client else {
+            explainUnavailable("preview the active voice")
+            return
+        }
         Task {
             do {
                 _ = try await client.request(JSONPayload(["op": "preview_voice"]))
@@ -365,6 +524,7 @@ final class AppState: ObservableObject {
                 epoch = response["epoch"] as? String
                 if response["reset"] as? Bool == true {
                     messages.removeAll(); tasks.removeAll(); responseIndex.removeAll()
+                    await refreshTasks()
                 }
                 for event in response["events"] as? [[String: Any]] ?? [] {
                     consume(event)
@@ -373,18 +533,22 @@ final class AppState: ObservableObject {
                 connectionDetail = "Local and private"
                 consecutiveFailures = 0
                 if phase == .error { phase = listening ? .listening : .idle }
+                productState = listening ? .listening : (canInterrupt || hasExecutingTask ? .working : .ready)
                 await refreshStatus()
             } catch {
                 if !Task.isCancelled {
                     consecutiveFailures += 1
                     connected = false
+                    productState = .reconnecting
                     connectionDetail = "Reconnecting to local services"
                     if consecutiveFailures >= 3 {
                         do {
                             try await establishServices()
+                            await refreshTasks()
                             consecutiveFailures = 0
                         } catch {
                             phase = .error
+                            productState = .blocked
                             errorMessage = error.localizedDescription
                             try? await Task.sleep(for: .seconds(2))
                         }
@@ -430,17 +594,32 @@ final class AppState: ObservableObject {
                 messages.append(.init(id: "assistant-\(turnID)", role: .assistant, text: text, sequence: sequence))
                 responseIndex[turnID] = messages.count - 1
             }
-        case "planning": phase = .planning
-        case "generating": phase = .thinking
+        case "planning":
+            phase = .planning
+            productState = .working
+        case "generating":
+            phase = .thinking
+            productState = .working
         case "action", "tool":
             phase = .acting
+            productState = .working
             if let action = data["action"] as? [String: Any] {
-                upsertAction(action, eventState: "running", sequence: sequence)
+                upsertAction(action, eventState: state.isEmpty ? "running" : state, sequence: sequence, turnID: turnID)
             }
-        case "speaking": phase = .speaking
+        case "task":
+            let payload = data["task"] as? [String: Any] ?? data
+            var snapshot = payload
+            if snapshot["state"] == nil { snapshot["state"] = state.isEmpty ? "running" : state }
+            if snapshot["turn_id"] == nil { snapshot["turn_id"] = turnID }
+            upsertTask(snapshot, sequence: sequence)
+            productState = hasExecutingTask ? .working : (listening ? .listening : .ready)
+        case "speaking":
+            phase = .speaking
+            productState = .working
         case "listening":
             listening = data["enabled"] as? Bool ?? listening
             phase = listening ? .listening : .idle
+            productState = listening ? .listening : .ready
         case "tool_result":
             let tool = data["tool"] as? String ?? "Action"
             let actionID = data["action_id"] as? String ?? "\(turnID)-\(sequence)"
@@ -453,33 +632,109 @@ final class AppState: ObservableObject {
                 title: tool,
                 state: terminal,
                 detail: Self.summarize(result),
-                sequence: tasks.first(where: { $0.id == actionID })?.sequence ?? sequence
+                sequence: tasks.first(where: { $0.id == actionID })?.sequence ?? sequence,
+                source: (result["source"] as? String) ?? (data["authorization"] as? String) ?? "Requested by you",
+                turnID: turnID,
+                availableCommands: commands(from: data)
             )
             if let index = tasks.firstIndex(where: { $0.id == actionID }) { tasks[index] = item }
             else { tasks.append(item) }
         default: break
         }
-        if state == "completed" { phase = listening ? .listening : .idle }
-        if state == "interrupted" { phase = .interrupted }
+        if state == "completed" {
+            phase = listening ? .listening : .idle
+            productState = listening ? .listening : .ready
+        }
+        if state == "interrupted" {
+            phase = .interrupted
+            productState = listening ? .listening : .ready
+        }
         if state == "failed" {
             phase = .error
+            productState = connected ? (listening ? .listening : .ready) : .blocked
             errorMessage = data["message"] as? String ?? "The turn failed"
         }
     }
 
-    private func upsertAction(_ action: [String: Any], eventState: String, sequence: Int) {
-        guard let id = action["action_id"] as? String,
-              let name = action["name"] as? String else { return }
-        let detail = action["source_span"] as? String ?? "Requested by you"
+    private func upsertAction(
+        _ action: [String: Any], eventState: String, sequence: Int, turnID: String
+    ) {
+        guard let id = (action["task_id"] as? String) ?? (action["action_id"] as? String),
+              let name = (action["title"] as? String) ?? (action["name"] as? String) else { return }
+        let detail = (action["detail"] as? String) ?? (action["source_span"] as? String) ?? "Requested action"
         let item = TaskItem(
             id: id,
             title: name,
             state: eventState,
             detail: detail,
-            sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence
+            sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence,
+            source: (action["source"] as? String) ?? (action["authorization"] as? String) ?? "Requested by you",
+            turnID: turnID,
+            availableCommands: commands(from: action)
         )
         if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = item }
         else { tasks.append(item) }
+    }
+
+    private func upsertTask(_ snapshot: [String: Any], sequence: Int) {
+        guard let id = snapshot["task_id"] as? String else { return }
+        let stateValue = snapshot["state"] as? String ?? "proposed"
+        let taskState = TaskState(serviceValue: stateValue)
+        let result = snapshot["result"] as? [String: Any] ?? [:]
+        let detail = (snapshot["detail"] as? String)
+            ?? (result["summary"] as? String)
+            ?? (snapshot["error"] as? String)
+            ?? taskState.title
+        var availableCommands = commands(from: snapshot)
+        if snapshot["commands"] == nil {
+            availableCommands = canonicalCommands(for: taskState)
+        }
+        let item = TaskItem(
+            id: id,
+            title: (snapshot["title"] as? String) ?? (snapshot["original_text"] as? String) ?? "MacBot Task",
+            state: stateValue,
+            detail: detail,
+            sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence,
+            source: (snapshot["source"] as? String) ?? "MacBot Task Engine",
+            turnID: snapshot["turn_id"] as? String,
+            availableCommands: availableCommands
+        )
+        if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = item }
+        else { tasks.append(item) }
+    }
+
+    private func canonicalCommands(for state: TaskState) -> Set<TaskCommand> {
+        switch state {
+        case .awaitingAuthorization: [.authorize, .deny]
+        case .running: [.pause, .cancel]
+        case .pauseRequested, .queued, .blocked: [.cancel]
+        case .paused: [.resume, .cancel]
+        default: []
+        }
+    }
+
+    private func commands(from payload: [String: Any]) -> Set<TaskCommand> {
+        Set((payload["commands"] as? [String] ?? []).compactMap(TaskCommand.init(rawValue:)))
+    }
+
+    func perform(_ command: TaskCommand, on task: TaskItem) {
+        guard task.availableCommands.contains(command) else { return }
+        guard let client else {
+            explainUnavailable("\(command.label.lowercased()) this task")
+            return
+        }
+        Task {
+            do {
+                var request: [String: Any] = [
+                    "op": "task_command", "task_id": task.id, "command": command.rawValue,
+                ]
+                if let turnID = task.turnID { request["turn_id"] = turnID }
+                let response = try await client.request(JSONPayload(request)).value
+                if let snapshot = response["task"] as? [String: Any] {
+                    upsertTask(snapshot, sequence: task.sequence)
+                }
+            } catch { show(error) }
+        }
     }
 
     static func summarize(_ result: [String: Any]) -> String {
@@ -504,5 +759,10 @@ final class AppState: ObservableObject {
     private func show(_ error: Error) {
         errorMessage = error.localizedDescription
         phase = .error
+        productState = connected ? (listening ? .listening : .ready) : .blocked
+    }
+
+    private func explainUnavailable(_ action: String) {
+        errorMessage = "MacBot cannot \(action) while local services are unavailable. Retry the services or open Diagnostics for details."
     }
 }

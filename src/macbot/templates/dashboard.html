@@ -1,67 +1,30 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark"><title>MacBot · Your local assistant</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>MacBot Developer Diagnostics</title>
   <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
-<a class="skip-link" href="#message">Skip to conversation</a>
 <main>
-  <header class="app-header">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">m</span><div><h1>MacBot</h1><p>Private. Local. On your Mac.</p></div></div>
-    <div class="header-meta"><span class="local-label">LOCAL INFERENCE</span><span id="connection" class="status-pill" role="status" data-tone="neutral">Not connected</span><button id="logout" class="quiet" hidden>Disconnect</button></div>
+  <header>
+    <div><p class="eyebrow">DEVELOPER TOOL</p><h1>MacBot Diagnostics</h1></div>
+    <span id="connection" role="status">Not connected</span>
   </header>
-  <section id="login" class="login-card panel">
-    <span class="eyebrow">PRIVATE BY DEFAULT</span><h2>Connect to your Mac</h2><p>Everything runs locally. Connect this browser with a single-use code from <code>macbot open</code>.</p>
-    <form id="login-form"><label for="login-code">Login code</label><div class="input-row"><input id="login-code" type="password" autocomplete="off" required placeholder="Paste your code"><button>Connect</button></div></form>
-    <p class="caption">Codes expire after 60 seconds. Credentials stay out of the address bar.</p>
+  <section id="login" class="panel">
+    <h2>Connect to local diagnostics</h2>
+    <p>This page is read-only. Conversations, documents, settings, audio, approvals, actions, and service controls are available only in MacBot.app.</p>
+    <form id="login-form"><label for="login-code">Single-use code</label><div class="row"><input id="login-code" type="password" autocomplete="off" required><button>Connect</button></div></form>
   </section>
-  <div id="application" hidden>
-    <section class="voice-bar panel" aria-label="Voice controls">
-      <div class="voice-status"><span id="voice-indicator" class="voice-indicator" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1M12 18v3M9 21h6"/></svg></span><div><h2 id="audio-state">Microphone is off</h2><p id="audio-detail">Start when you're ready. Text chat is always available.</p></div></div>
-      <div class="input-feedback" aria-label="Microphone signal"><div class="input-meter"><meter id="input-level" min="0" max="100" value="0" aria-label="Microphone input level"></meter></div><span id="input-label">Input off</span></div><div class="voice-actions"><button id="listen">Start hands-free</button><button id="mute" class="secondary" disabled>Mute</button><button id="ptt" class="secondary">Record browser voice</button></div>
-    </section>
-    <p class="release-note">Preview · Voice quality and hands-free behavior are being verified on this Mac. <span id="action-policy"></span></p>
-    <p id="last-heard" class="last-heard" role="status" hidden></p>
-    <div class="workspace">
-      <section class="conversation panel" aria-label="Conversation">
-        <div class="panel-heading"><div><h2>Let’s talk</h2><p id="model-label">Loading local model…</p></div><span id="turn-state" class="status-pill" role="status">Ready</span></div>
-        <div id="history" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions">
-          <div id="empty-state" class="empty-state"><div class="empty-mark" aria-hidden="true">m</div><h3>What can I help with?</h3><p>Ask a question, find something in your documents,<br>or ask me to help on your Mac.</p><div class="suggestions"><button type="button" class="suggestion" data-prompt="What can you help me do on this Mac?">What can you do?</button><button type="button" class="suggestion" data-prompt="Show current CPU, memory and disk usage.">Check my Mac</button><button type="button" class="suggestion" data-prompt="Search my local documents for an installation guide.">Find a document</button></div><small>Ask for the action and target explicitly.</small></div>
-        </div>
-        <form id="chat-form" class="composer"><label class="sr-only" for="message">Message</label><textarea id="message" rows="2" maxlength="10000" required placeholder="Ask MacBot anything…"></textarea><div class="composer-actions"><label class="checkbox-label"><input id="speak" type="checkbox" checked> Speak replies</label><div><button id="clear" type="button" class="quiet">Clear</button><button id="interrupt" type="button" class="secondary" disabled>Stop response</button><button id="send">Send <span aria-hidden="true">↑</span></button></div></div><span class="composer-hint">Enter to send · Shift + Enter for a new line</span></form>
-      </section>
-      <aside class="side-panel panel" aria-label="Assistant details">
-        <div class="tabs" role="tablist" aria-label="Assistant panels"><button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview">Overview</button><button id="tab-knowledge" role="tab" aria-selected="false" aria-controls="panel-knowledge" tabindex="-1">Documents</button><button id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button></div>
-        <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
-          <h2 class="telemetry-heading">Performance</h2>
-    <section class="metric-grid" aria-label="Live performance">
-      <article class="metric"><span>First response text</span><strong id="metric-ttft">—</strong><small id="metric-ttft-note">No completed turns yet</small></article>
-      <article class="metric"><span>Speech → playback queued</span><strong id="metric-audio">—</strong><small>Scheduling time · not acoustic latency</small></article>
-      <article class="metric"><span>Process memory</span><strong id="metric-memory">—</strong><small id="metric-memory-note">Owned services and their children</small></article>
-      <article class="metric"><span>Queue / dropped frames</span><strong id="metric-queue">—</strong><small id="metric-queue-note">Waiting for live telemetry</small></article>
-    </section>
-          <div class="section-heading"><h2>Local services</h2><span id="updated" class="caption">Waiting</span></div><div id="services" aria-label="Service readiness"></div>
-          <div class="section-heading divided"><h2>Audio pipeline</h2></div><dl id="pipeline" class="detail-list"></dl>
-          <div class="section-heading divided"><h2>Model context</h2></div><dl id="context-metrics" class="detail-list"></dl><p class="caption">Oldest complete turns are removed when the token budget is full. This is pruning, not semantic summarization.</p>
-          <div class="section-heading divided"><h2>Last completed turn</h2><span id="sample-count" class="caption">0 turns</span></div><dl id="metrics" class="detail-list"></dl>
-          <p class="caption">Timings come from the running assistant. No estimate is shown as a measured result.</p>
-        </section>
-        <section id="panel-knowledge" class="tab-panel" role="tabpanel" aria-labelledby="tab-knowledge" hidden>
-          <div class="section-heading"><h2>Your documents</h2><span id="document-count" class="count">0</span></div><p class="caption">Search your local library. Documents are reference material, never instructions to execute.</p>
-          <form id="upload" class="upload-box"><label for="files">Add to your library</label><input type="file" id="files" multiple accept=".txt,.pdf,.docx"><small>TXT, PDF or DOCX · Up to 8 MiB each</small><button id="import-button" class="secondary">Import documents</button></form><p id="document-status" class="caption" role="status"></p><div id="documents"></div>
-          <form id="search" class="search-form"><label for="query">Search your documents</label><div class="input-row"><input id="query" required maxlength="2000" placeholder="A topic, phrase or question"><button class="secondary">Search</button></div></form><div id="results" aria-live="polite"></div>
-        </section>
-        <section id="panel-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
-          <h2>Your voice assistant</h2><p class="caption">Choose the voice you want to hear. Changes apply after restarting the assistant.</p><form id="settings"><label for="voice">Voice</label><select id="voice"></select><div class="settings-grid"><div><label for="speed">Speech speed</label><input id="speed" type="number" min="0.5" max="2" step="0.1"></div><div><label for="tokens">Response tokens</label><input id="tokens" type="number" min="1" max="4096"></div></div><button id="save-settings">Save settings</button><button id="preview" type="button" class="secondary">Preview active voice</button></form><p id="settings-note" role="status" class="caption"></p><button id="apply-settings" class="secondary" hidden>Restart assistant to apply</button>
-          <div class="divided"><h3>Always in your control</h3><p class="caption">The microphone starts only when you ask. Only actions requested in the current turn are available. Your active action policy appears beside the voice controls.</p><p class="caption">Conversation text and recordings are not logged by default.</p></div>
-        </section>
-      </aside>
-    </div>
-  </div>
-  <div id="error-banner" class="error-banner" hidden><p id="error" role="alert"></p><button id="dismiss-error" class="quiet" aria-label="Dismiss error">Dismiss</button></div>
-  <footer><span>Local by design. Your request controls the action.</span><span>MacBot 2.0 · Verification in progress</span></footer>
+  <section id="diagnostics" class="panel" hidden>
+    <div class="heading"><div><h2>Runtime evidence</h2><p>Redacted health and performance state from owned services.</p></div><div><button id="refresh">Refresh</button><button id="download" class="secondary">Export JSON</button><button id="logout" class="secondary">Disconnect</button></div></div>
+    <p id="updated" role="status"></p>
+    <div class="grid"><article><h3>Assistant</h3><pre id="assistant"></pre></article><article><h3>Supervisor</h3><pre id="supervisor"></pre></article></div>
+  </section>
+  <p id="error" role="alert"></p>
 </main>
-<script src="/static/event-feed.js"></script><script src="/static/dashboard.js"></script>
-</body></html>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

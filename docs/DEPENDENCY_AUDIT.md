@@ -1,4 +1,4 @@
-# Dependency audit — 2026-08-29
+# Dependency audit — 2026-08-30
 
 The locked Apple Silicon runtime graph was installed locally and checked with
 `pip-audit --local`. Four advisories were initially reported for
@@ -23,3 +23,8 @@ before a release claim; do not suppress a future advisory with a blanket ignore.
 The audit was repeated after adding pinned `mlx-audio 0.5.0` and its resolved
 speech stack. It again reported no known third-party vulnerabilities; MacBot
 itself remains listed only as an unauditable unpublished local package.
+
+The audit was repeated after removing DDGS, Flask-SocketIO, simple-websocket,
+and their transitive packages from the locked runtime. It reports no known
+third-party vulnerabilities; the unpublished local package remains the only
+unauditable entry.

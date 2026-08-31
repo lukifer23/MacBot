@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+import macbot.provision as provision
 from macbot.config import Settings, load, prepare, save
 from macbot.provision import catalog, model_dir, voice_model, voices
 from macbot.validation import decode_audio, validate_chat_message
@@ -39,6 +40,7 @@ def test_missing_explicit_and_legacy_configs_fail(tmp_path):
         {"models": {"llm_url": "http://127.0.0.1:8001"}},
         {"services": {"assistant": {"port": 3000}}},
         {"models": {"max_tokens": 0}},
+        {"models": {"tts_speed": 1.2}},
         {"models": {"stt": "silent-fallback"}},
     ],
 )
@@ -54,6 +56,30 @@ def test_inaccessible_or_unregistered_models_never_download(tmp_path):
     with pytest.raises(FileNotFoundError):
         model_dir(settings, "minilm")
     assert not (tmp_path / "models").exists()
+
+
+def test_model_directory_attests_registered_hash_before_use(tmp_path, monkeypatch):
+    payload = b"real model bytes"
+    import hashlib
+
+    entry = {
+        "files": [
+            {
+                "name": "model.bin",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ]
+    }
+    monkeypatch.setattr(provision, "catalog", lambda: {"test-model": entry})
+    settings = Settings(data_dir=tmp_path)
+    target = settings.data_dir / "models/test-model/model.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload)
+    assert provision.model_dir(settings, "test-model") == target.parent
+    target.write_bytes(b"fake model bytes")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        provision.model_dir(settings, "test-model")
 
 
 def test_qwen_voice_registry_has_pinned_reproducible_sources_and_outputs():

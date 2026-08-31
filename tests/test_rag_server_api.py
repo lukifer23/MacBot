@@ -110,6 +110,75 @@ def test_authenticated_embedding_endpoint_returns_real_normalized_vectors(docume
         auth.close()
 
 
+def test_batch_mutation_rebuilds_once_and_search_has_provenance(documents, monkeypatch):
+    settings, store = documents
+    rebuilds = 0
+    original = store._rebuild
+
+    def counted_rebuild():
+        nonlocal rebuilds
+        rebuilds += 1
+        original()
+
+    monkeypatch.setattr(store, "_rebuild", counted_rebuild)
+    app = create_app(settings, store)
+    auth = app.extensions["macbot_auth"]
+    try:
+        response = app.test_client().post(
+            settings.services.rag.url + "/api/documents/batch",
+            json={
+                "documents": [
+                    {"id": "alpha", "title": "Alpha", "content": "Cobalt lantern access code."},
+                    {"id": "beta", "title": "Beta", "content": "Saturn has visible rings."},
+                ]
+            },
+            headers=auth.headers("rag"),
+        )
+        assert response.status_code == 201
+        assert response.get_json()["ids"] == ["alpha", "beta"]
+        assert rebuilds == 1
+        result = (
+            app.test_client()
+            .post(
+                settings.services.rag.url + "/api/search",
+                json={"query": "What is the access code?"},
+                headers=auth.headers("rag"),
+            )
+            .get_json()
+        )
+        assert result["status"] == "completed"
+        assert result["results"][0]["provenance"]["document_id"] == "alpha"
+        assert result["results"][0]["provenance"]["revision"] == store.active_name
+        deleted = app.test_client().post(
+            settings.services.rag.url + "/api/documents/batch-delete",
+            json={"ids": ["alpha", "beta"]},
+            headers=auth.headers("rag"),
+        )
+        assert deleted.get_json()["deleted"] == ["alpha", "beta"]
+        assert rebuilds == 2
+    finally:
+        auth.close()
+
+
+def test_search_response_reports_no_answer_below_threshold(documents):
+    _, store = documents
+    store.add("Cobalt lantern is the access code.", "Access")
+    response = store.search_response("banana bread recipe")
+    assert response["status"] == "no_answer"
+    assert response["results"] == []
+    assert response["minimum_score"] == 0.30
+
+
+def test_revisions_are_bounded(documents):
+    _, store = documents
+    for index in range(5):
+        store.add(f"Unique document content {index} about cobalt.", f"Document {index}")
+    rows = store.db.execute("SELECT name FROM revisions").fetchall()
+    assert len(rows) == 3
+    assert store.active_name in {row[0] for row in rows}
+    assert len([path for path in store.indexes.iterdir() if not path.name.startswith(".")]) == 3
+
+
 def test_migration_preserves_ids_duplicates_and_backup(documents, tmp_path):
     _, store = documents
     source = tmp_path / "legacy"

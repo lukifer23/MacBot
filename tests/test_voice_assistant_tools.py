@@ -25,7 +25,13 @@ def engine(tmp_path_factory):
     root = load().data_dir
     settings = Settings(data_dir=tmp_path_factory.mktemp("real-runtime"))
     prepare(settings)
-    for name in ["qwen3.5-2b-official", "parakeet", "amy", "silero", "minilm"]:
+    for name in [
+        "qwen3.5-2b-official",
+        "parakeet",
+        "qwen3-tts-1.7b",
+        "silero",
+        "minilm",
+    ]:
         assert (root / "models" / name).is_dir(), f"Provision required real model {name}"
         (settings.data_dir / "models" / name).symlink_to(
             root / "models" / name, target_is_directory=True

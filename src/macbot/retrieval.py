@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import fcntl
 import hashlib
 import json
@@ -18,6 +19,9 @@ import numpy as np
 
 from .config import Settings
 from .provision import catalog, model_dir
+
+DEFAULT_MIN_SCORE = 0.30
+MAX_REVISIONS = 3
 
 
 class Embedder:
@@ -246,15 +250,89 @@ class DocumentStore:
             self.db.execute("INSERT OR REPLACE INTO state VALUES ('active',?)", (name,))
             self._load(name)
             if entries:
-                result = self.search(entries[0]["content"], 1)
+                result = self.search(entries[0]["content"], 1, min_score=0.99)
                 if not result or result[0]["score"] < 0.99:
                     raise RuntimeError("Index retrieval verification failed")
+            self._prune_revisions()
         except BaseException:
             if stage.exists():
                 shutil.rmtree(stage)
             if final.exists() and self.active_name != name:
                 shutil.rmtree(final)
             raise
+
+    def _prune_revisions(self, keep: int = MAX_REVISIONS) -> None:
+        if keep < 2:
+            raise ValueError("At least two retrieval revisions must be retained")
+        rows = self.db.execute(
+            "SELECT name FROM revisions ORDER BY created DESC, name DESC"
+        ).fetchall()
+        active = self._required_active()
+        retained = {active}
+        retained.update(row[0] for row in rows if row[0] != active and len(retained) < keep)
+        for (name,) in rows:
+            if name in retained:
+                continue
+            root = self.indexes / name
+            if root.exists():
+                shutil.rmtree(root)
+            self.db.execute("DELETE FROM revisions WHERE name=?", (name,))
+
+    @staticmethod
+    def _validate_document(item: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:
+        if not isinstance(item, dict) or set(item) - {
+            "content",
+            "title",
+            "type",
+            "metadata",
+            "id",
+        }:
+            raise ValueError("Document must be a bounded object")
+        content, title = item.get("content"), item.get("title")
+        kind, metadata = item.get("type", "text"), item.get("metadata")
+        if not isinstance(content, str) or not content.strip() or len(content) > 1_000_000:
+            raise ValueError("Document must contain 1–1000000 characters")
+        if not isinstance(title, str) or not 0 < len(title) <= 255:
+            raise ValueError("Title must contain 1–255 characters")
+        if not isinstance(kind, str) or not 0 < len(kind) <= 64:
+            raise ValueError("Document type must contain 1–64 characters")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("Metadata must be a JSON object")
+        metadata = metadata or {}
+        if len(json.dumps(metadata)) > 65_536:
+            raise ValueError("Document metadata exceeds 64 KiB")
+        doc_id = item.get("id")
+        if doc_id is not None and (not isinstance(doc_id, str) or not doc_id or len(doc_id) > 128):
+            raise ValueError("Document ID must contain 1–128 characters")
+        return content, title, kind, metadata
+
+    def add_many(self, documents: list[dict[str, Any]]) -> list[str]:
+        if not isinstance(documents, list) or not 1 <= len(documents) <= 100:
+            raise ValueError("Batch must contain 1–100 documents")
+        validated = [(item, self._validate_document(item)) for item in documents]
+        ids: list[str] = []
+        changed = False
+        with self.lock, self.db:
+            for item, (content, title, kind, metadata) in validated:
+                fingerprint = self.fingerprint(content, title, kind)
+                row = self.db.execute(
+                    "SELECT id FROM documents WHERE fingerprint=?", (fingerprint,)
+                ).fetchone()
+                if row:
+                    ids.append(row[0])
+                    continue
+                doc_id = item.get("id") or uuid.uuid4().hex
+                if self.db.execute("SELECT 1 FROM documents WHERE id=?", (doc_id,)).fetchone():
+                    raise ValueError(f"Document ID already exists: {doc_id}")
+                self.db.execute(
+                    "INSERT INTO documents VALUES (?,?,?,?,?,?)",
+                    (doc_id, content, title, kind, json.dumps(metadata), fingerprint),
+                )
+                ids.append(doc_id)
+                changed = True
+            if changed:
+                self._rebuild()
+        return ids
 
     def add(
         self,
@@ -264,38 +342,30 @@ class DocumentStore:
         metadata: dict[str, Any] | None = None,
         doc_id: str | None = None,
     ) -> str:
-        if not isinstance(content, str) or not content.strip() or len(content) > 1_000_000:
-            raise ValueError("Document must contain 1–1000000 characters")
-        if not isinstance(title, str) or not 0 < len(title) <= 255:
-            raise ValueError("Title must contain 1–255 characters")
-        if not isinstance(kind, str) or not 0 < len(kind) <= 64:
-            raise ValueError("Document type must contain 1–64 characters")
-        if metadata is not None and not isinstance(metadata, dict):
-            raise ValueError("Metadata must be a JSON object")
-        if len(json.dumps(metadata or {})) > 65_536:
-            raise ValueError("Document metadata exceeds 64 KiB")
-        fingerprint = self.fingerprint(content, title, kind)
-        with self.lock, self.db:
-            row = self.db.execute(
-                "SELECT id FROM documents WHERE fingerprint=?", (fingerprint,)
-            ).fetchone()
-            if row:
-                return row[0]
-            doc_id = doc_id or uuid.uuid4().hex
-            self.db.execute(
-                "INSERT INTO documents VALUES (?,?,?,?,?,?)",
-                (doc_id, content, title, kind, json.dumps(metadata or {}), fingerprint),
-            )
-            self._rebuild()
-        return doc_id
+        return self.add_many(
+            [
+                {
+                    "content": content,
+                    "title": title,
+                    "type": kind,
+                    "metadata": metadata,
+                    "id": doc_id,
+                }
+            ]
+        )[0]
 
-    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, top_k: int = 5, *, min_score: float = DEFAULT_MIN_SCORE
+    ) -> list[dict[str, Any]]:
         if (
             not isinstance(query, str)
             or not query.strip()
             or len(query) > 2000
             or type(top_k) is not int
             or not 1 <= top_k <= 20
+            or not isinstance(min_score, (int, float))
+            or isinstance(min_score, bool)
+            or not -1 <= min_score <= 1
         ):
             raise ValueError("Invalid search query or result count")
         with self.lock:
@@ -306,16 +376,45 @@ class DocumentStore:
             count = min(top_k, len(scores))
             indices = np.argpartition(scores, -count)[-count:]
             indices = indices[np.argsort(scores[indices])[::-1]]
-            return [
-                {
-                    "id": self.chunks[int(index)]["id"],
-                    "content": self.chunks[int(index)]["content"],
-                    "metadata": self.chunks[int(index)]["metadata"],
-                    "distance": float(1 - scores[int(index)]),
-                    "score": float(scores[int(index)]),
-                }
-                for index in indices
-            ]
+            results = []
+            for index in indices:
+                score = float(scores[int(index)])
+                if score < min_score:
+                    continue
+                chunk = self.chunks[int(index)]
+                metadata = chunk["metadata"]
+                results.append(
+                    {
+                        "id": chunk["id"],
+                        "content": chunk["content"],
+                        "metadata": metadata,
+                        "distance": float(1 - score),
+                        "score": score,
+                        "provenance": {
+                            "document_id": metadata["document_id"],
+                            "title": metadata["title"],
+                            "chunk": metadata["chunk"],
+                            "start": metadata["start"],
+                            "end": metadata["end"],
+                            "revision": self.active_name,
+                            "embedding": self.embedder.signature,
+                        },
+                    }
+                )
+            return results
+
+    def search_response(
+        self, query: str, top_k: int = 5, *, min_score: float = DEFAULT_MIN_SCORE
+    ) -> dict[str, Any]:
+        results = self.search(query, top_k, min_score=min_score)
+        return {
+            "status": "completed" if results else "no_answer",
+            "query": query,
+            "minimum_score": min_score,
+            "index_revision": self.active_name,
+            "embedding": self.embedder.signature,
+            "results": results,
+        }
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if (
@@ -351,12 +450,25 @@ class DocumentStore:
             return result
 
     def delete(self, doc_id: str) -> bool:
+        return bool(self.delete_many([doc_id]))
+
+    def delete_many(self, doc_ids: builtins.list[str]) -> builtins.list[str]:
+        if (
+            not isinstance(doc_ids, list)
+            or not 1 <= len(doc_ids) <= 100
+            or any(not isinstance(doc_id, str) or not doc_id for doc_id in doc_ids)
+            or len(set(doc_ids)) != len(doc_ids)
+        ):
+            raise ValueError("Delete batch must contain 1–100 unique document IDs")
+        deleted = []
         with self.lock, self.db:
-            cursor = self.db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
-            if not cursor.rowcount:
-                return False
-            self._rebuild()
-        return True
+            for doc_id in doc_ids:
+                cursor = self.db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
+                if cursor.rowcount:
+                    deleted.append(doc_id)
+            if deleted:
+                self._rebuild()
+        return deleted
 
     def rebuild(self) -> None:
         with self.lock, self.db:
@@ -451,6 +563,10 @@ class DocumentStore:
                 "index": self.active_name,
                 "index_type": "exact_cosine_mmap",
                 "embedding": self.embedder.signature,
+                "minimum_score": DEFAULT_MIN_SCORE,
+                "retained_revisions": self.db.execute("SELECT COUNT(*) FROM revisions").fetchone()[
+                    0
+                ],
                 "recovery_backup": str(self.recovery_backup) if self.recovery_backup else None,
             }
 

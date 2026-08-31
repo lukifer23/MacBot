@@ -3,22 +3,30 @@
 - **No login / 401:** run `macbot open` again. Login links expire in 60 seconds and can be used once. Do not put tokens in query strings or weaken authentication.
 - **403 / CSRF / Origin:** use the configured loopback origin directly. Do not serve the dashboard through an external proxy. Reopen the dashboard to establish a session and CSRF token.
 - **Model missing:** run `macbot doctor`, then explicitly provision the registered model and `macbot models verify NAME`. There is no fallback model or implicit runtime download.
+- **`uv run` cannot import `macbot` despite a valid editable install:** inspect
+  `.venv`, `site-packages`, and `_editable_impl_macbot.pth` with `ls -ldO`. If
+  macOS marked the environment `hidden`, stop all project processes, run
+  `chflags -R nohidden .venv`, then
+  `uv sync --frozen --all-extras --reinstall-package macbot`. Confirm with direct
+  import, `macbot --help`, and `macbot doctor`; do not use `PYTHONPATH` to mask it.
 - **Service startup failure:** inspect the corresponding private log in `~/Library/Application Support/MacBot/logs`. An occupied port is reported; MacBot does not kill unrelated processes. Failed startup cleans up owned children. Restart attempts are bounded.
 - **Waiting for this Mac to wake:** macOS blocks Keychain access during dark wake. MacBot intentionally starts no service tree until the Mac is awake and the encrypted-history key is available. Wake and unlock the Mac; the app retries automatically.
 - **Native microphone unavailable:** check macOS microphone permissions for the local helper/launching app. Use Start hands-free explicitly. An AEC capability flag is not proof that the physical microphone and speaker path passed acceptance.
 - **Start hands-free fails with Core Audio `-10875`:** an older audio helper could leave playback at 44.1 kHz while capture used 48 kHz. VoiceProcessingIO rejects this mismatch during initialization. Rebuild the helper with `macbot build-audio` from the updated installation, then restart MacBot. The helper now explicitly matches the output client rate to capture and reports both rates in its `ready` event; capture PCM remains 16 kHz; protocol 2 playback is 48 kHz. Do not change system audio rates or disable echo cancellation to conceal this failure. Verify actual capture/playback with the operator-authorized device test in `tests/test_barge_in.py`; HTTP readiness alone does not exercise this path.
 - **Mute indicator:** input is muted inside voice processing, but the device can remain open to support playback; macOS's microphone indicator may remain visible. Stop the service to close the engine.
 - **No audio:** check the built-in output device, volume, configured voice and private audio log. Test actual playback; readiness and generated samples are not audible proof.
-- **Browser recording:** grant microphone access to the browser and use push-to-talk. Native capture is disabled before browser capture starts. Recordings are limited to configured duration and request size.
 - **An action does not execute:** state the action and target explicitly (for example, “Open Calculator”). Supported requested actions run once and return their real result without confirmation. Disabled tools, unlisted applications, arbitrary file operations and ambiguous requests remain unavailable or require clarification. Destructive, file-changing, account-changing, purchasing and messaging actions are outside this release.
 - **Empty search:** empty is valid only after a successful search. A unavailable service/index error must be shown as failure. Stop MacBot and use `rebuild-index` when embedding configuration changes. Back up before migration.
 - **Performance:** use the reproducible benchmark scripts and retain raw results. Do not infer speed from GPU use, model size, a single turn, or random noise. See VERIFICATION.md for required gates.
 
 - **Listening, but no transcription:** the earlier multichannel-to-mono conversion could produce all-zero PCM even when native microphone buffers contained a signal. The helper now explicitly selects the processed microphone channel. Rebuild it with `macbot build-audio` and restart. The live input meter measures received PCM; “Hearing you” additionally requires voice detection. “No frames yet” is different from quiet input. Device tests now reject an all-zero stream rather than only checking buffer length.
-- **Chrome says `ERR_BLOCKED_BY_CLIENT`:** this is a browser-side block, not an empty dashboard response. Check `macbot status` and the listener first. Inspect browser blockers or policy with the owner's permission; do not disable security globally or start duplicate servers to work around it.
+- **Browser diagnostics are blocked:** this does not affect the native operator
+  interface. Check `macbot status` and the listener first. Inspect browser
+  blockers or policy with the owner's permission; do not disable security
+  globally or start duplicate servers to work around it.
 - **Robotic or chopped speech:** select an installed Kokoro voice for comparison with Piper, starting at speed 1.0. Speech is now segmented at sentence/word boundaries instead of every 100 characters. Kokoro adds synthesis cost; voice preference and full conversational latency still require measurement and user acceptance.
 
 - **Login disappears after closing all tabs:** the dashboard now restores its tab-scoped CSRF token from an existing valid HttpOnly session cookie through `/auth/session`. Reload after installing the fix. This does not bypass expired login or Chrome client-side page blocking. Browser access and application session recovery are separate checks.
 
-- **Speech is heard but its text is missing:** the latest recognized phrase appears in the persistent “Heard” line and in the conversation. Transcript delivery uses one authenticated HTTP long poll with replay after reconnect; it does not require WebSockets. Reload once after upgrading the dashboard assets.
+- **Speech is heard but its text is missing:** the latest recognized phrase appears in the persistent “Heard” line and in the conversation. Transcript delivery uses the authenticated native control socket with sequenced replay after reconnect. Restart the owned service from native Diagnostics if the socket cannot reconcile.
 - **Greetings trigger actions or the time triggers search:** update both assistant and dashboard, then restart the assistant. Current-turn routing excludes unrelated tools, and local time uses the Mac clock. Prior action history cannot authorize a new action.

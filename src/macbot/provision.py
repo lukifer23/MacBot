@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from importlib.resources import files
 from pathlib import Path
@@ -25,6 +26,9 @@ QWEN_TTS_VOICES = {
     "qwen-aiden-1.7b": ("qwen3-tts-1.7b", "Aiden"),
     "qwen-ryan-1.7b": ("qwen3-tts-1.7b", "Ryan"),
 }
+
+_ATTESTATION_LOCK = threading.Lock()
+_ATTESTED_FILES: dict[tuple[str, int, int, int, str], bool] = {}
 
 
 def voice_model(name: str) -> str:
@@ -65,6 +69,15 @@ def model_dir(settings: Settings, name: str) -> Path:
             raise FileNotFoundError(
                 f"Model {name} not provisioned; run macbot models download {name}"
             )
+        stat = target.stat()
+        key = (str(target), stat.st_ino, stat.st_size, stat.st_mtime_ns, entry["sha256"])
+        with _ATTESTATION_LOCK:
+            attested = key in _ATTESTED_FILES
+        if not attested:
+            if sha256(target) != entry["sha256"]:
+                raise ValueError(f"Model checksum mismatch: {name}: {entry['name']}")
+            with _ATTESTATION_LOCK:
+                _ATTESTED_FILES[key] = True
     return path
 
 
@@ -263,10 +276,7 @@ def download(settings: Settings, name: str) -> dict[str, Any]:
 
 def verify(settings: Settings, name: str) -> dict[str, Any]:
     item = catalog()[name]
-    root = model_dir(settings, name)
-    bad = _verify_files(root, item["files"])
-    if bad:
-        raise ValueError(f"Model checksum mismatch: {name}: {bad}")
+    model_dir(settings, name)
     return {"model": name, "revision": item["revision"], "verified": True}
 
 

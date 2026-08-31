@@ -8,7 +8,6 @@ required = {
     "macbot/templates/dashboard.html",
     "macbot/static/dashboard.js",
     "macbot/static/event-feed.js",
-    "macbot/static/socket.io.min.js",
     "macbot/defaults/config.yaml",
     "macbot/defaults/models.json",
     "macbot/native/AudioBridge.swift",

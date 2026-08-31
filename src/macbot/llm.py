@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import threading
+from collections import OrderedDict
 from typing import Iterator
 
 import httpx
@@ -22,6 +23,8 @@ class LocalLLM:
         self.client = httpx.Client(timeout=httpx.Timeout(30, connect=3), trust_env=False)
         self.response: httpx.Response | None = None
         self.lock = threading.Lock()
+        self.cache_lock = threading.Lock()
+        self.prompt_token_cache: OrderedDict[str, int] = OrderedDict()
         self.context_stats: dict = {}
         self.model = self.tokenizer = None
         if settings.models.llm_backend == "mlx":
@@ -60,19 +63,7 @@ class LocalLLM:
         body["messages"] = messages
         pruned = 0
         while not cancel.is_set():
-            formatted = self.client.post(
-                self.settings.models.llm_url + "/apply-template",
-                json=body,
-                headers=self.auth.headers("llm"),
-            )
-            formatted.raise_for_status()
-            tokens = self.client.post(
-                self.settings.models.llm_url + "/tokenize",
-                json={"content": formatted.json()["prompt"], "parse_special": True},
-                headers=self.auth.headers("llm"),
-            )
-            tokens.raise_for_status()
-            token_count = len(tokens.json()["tokens"])
+            token_count = self._llama_prompt_tokens(body)
             if token_count + self.settings.models.max_tokens <= self.settings.models.context_length:
                 break
             self._drop_oldest_turn(body["messages"])
@@ -124,13 +115,29 @@ class LocalLLM:
                 enable_thinking=False,
             )
             return len(self.tokenizer.encode(prompt, add_special_tokens=False))
-        formatted = self.client.post(
-            self.settings.models.llm_url + "/apply-template",
-            json={
+        return self._llama_prompt_tokens(
+            {
                 "model": "local",
                 "messages": clean,
                 "chat_template_kwargs": {"enable_thinking": False},
-            },
+            }
+        )
+
+    def _llama_prompt_tokens(self, body: dict) -> int:
+        template_body = {
+            key: body[key]
+            for key in ("model", "messages", "tools", "tool_choice", "chat_template_kwargs")
+            if key in body
+        }
+        key = json.dumps(template_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        with self.cache_lock:
+            cached = self.prompt_token_cache.get(key)
+            if cached is not None:
+                self.prompt_token_cache.move_to_end(key)
+                return cached
+        formatted = self.client.post(
+            self.settings.models.llm_url + "/apply-template",
+            json=template_body,
             headers=self.auth.headers("llm"),
         )
         formatted.raise_for_status()
@@ -140,7 +147,13 @@ class LocalLLM:
             headers=self.auth.headers("llm"),
         )
         tokens.raise_for_status()
-        return len(tokens.json()["tokens"])
+        count = len(tokens.json()["tokens"])
+        with self.cache_lock:
+            self.prompt_token_cache[key] = count
+            self.prompt_token_cache.move_to_end(key)
+            while len(self.prompt_token_cache) > 32:
+                self.prompt_token_cache.popitem(last=False)
+        return count
 
     def _mlx(self, messages: list[dict], definitions: list[dict], cancel: threading.Event):
         from mlx_lm import stream_generate

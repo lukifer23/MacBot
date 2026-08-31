@@ -6,13 +6,12 @@ This script provides various quantization and optimization options for Piper TTS
 1. ONNX Runtime Dynamic Quantization (INT8)
 2. ONNX Runtime Static Quantization (INT8)
 3. CoreML Conversion for Apple Silicon
-4. Model size and performance analysis
+4. Model size analysis
 """
 
 import argparse
 import os
 import sys
-import time
 
 
 def check_dependencies():
@@ -170,37 +169,6 @@ def coreml_conversion(input_model_path, output_model_path):
         return False
 
 
-def benchmark_model(model_path, model_type="ONNX"):
-    """Benchmark model performance"""
-    try:
-        import onnxruntime as ort
-
-        print(f"🏃 Benchmarking {model_type} model...")
-
-        # Load model
-        session = ort.InferenceSession(model_path)
-
-        # Get model info
-        input_info = session.get_inputs()[0]
-        print(f"   Input shape: {input_info.shape}")
-        print(f"   Input type: {input_info.type}")
-
-        # Simple benchmark (would need actual input data for real test)
-        start_time = time.time()
-
-        # Note: This is a simplified benchmark
-        # In practice, you'd run actual inference with test data
-
-        load_time = time.time() - start_time
-        print(f"   Load time: {load_time:.3f}s")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Benchmarking failed: {e}")
-        return False
-
-
 def main():
     parser = argparse.ArgumentParser(description="TTS Model Quantization and Optimization")
     parser.add_argument("--model", required=True, help="Path to input ONNX model")
@@ -208,7 +176,6 @@ def main():
     parser.add_argument("--dynamic", action="store_true", help="Perform dynamic quantization")
     parser.add_argument("--static", action="store_true", help="Perform static quantization")
     parser.add_argument("--coreml", action="store_true", help="Convert to CoreML")
-    parser.add_argument("--benchmark", action="store_true", help="Benchmark models")
     parser.add_argument("--all", action="store_true", help="Run all optimizations")
 
     args = parser.parse_args()
@@ -245,15 +212,6 @@ def main():
         print("\n🔄 COREML CONVERSION")
         output_path = os.path.join(args.output_dir, "piper_model.mlpackage")
         coreml_conversion(args.model, output_path)
-
-    if args.all or args.benchmark:
-        print("\n🏃 BENCHMARKING")
-        benchmark_model(args.model, "Original ONNX")
-
-        # Benchmark quantized models if they exist
-        quantized_path = os.path.join(args.output_dir, "piper_dynamic_quantized.onnx")
-        if os.path.exists(quantized_path):
-            benchmark_model(quantized_path, "Dynamic Quantized ONNX")
 
     print("\n✅ Optimization complete!")
     print(f"📁 Check output directory: {args.output_dir}")

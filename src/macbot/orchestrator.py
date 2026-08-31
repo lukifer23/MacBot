@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, TextIO
@@ -33,6 +34,7 @@ class ServiceDefinition:
     port: int | None = None
     env: dict = field(default_factory=dict)
     cwd: str | None = None
+    dependencies: tuple[str, ...] = ()
 
 
 class MacBotOrchestrator:
@@ -54,14 +56,30 @@ class MacBotOrchestrator:
         self.failures: dict[str, str] = {}
         self.readiness: dict[str, bool] = {}
         self.health_failures: dict[str, int] = {}
+        self.healthy_since: dict[str, float] = {}
         self._instance_file: TextIO | None = None
 
     def definitions(self):
         s = self.settings
         package_root = str(Path(__file__).resolve().parents[1])
         python_path = os.environ.get("PYTHONPATH")
+        inherited = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            in {
+                "PATH",
+                "TMPDIR",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "REQUESTS_CA_BUNDLE",
+            }
+        }
         common = {
-            **os.environ,
+            **inherited,
             "MACBOT_DATA_DIR": str(s.data_dir),
             "MACBOT_CONFIG": str(s.config_path),
             "HF_HUB_OFFLINE": "1",
@@ -105,10 +123,13 @@ class MacBotOrchestrator:
             self.service_definitions["llm"] = ServiceDefinition(
                 "llm", command, s.models.llm_url + "/v1/models", url.port, common
             )
-        modules = [("rag", "rag_server"), ("assistant", "voice_assistant")]
-        if s.services.browser_fallback_enabled:
-            modules.append(("dashboard", "web_dashboard"))
-        for name, module in modules:
+        modules = [
+            ("rag", "rag_server", ()),
+            ("assistant", "voice_assistant", ("llm", "rag")),
+        ]
+        if s.services.diagnostics_enabled:
+            modules.append(("dashboard", "web_dashboard", ("assistant",)))
+        for name, module, dependencies in modules:
             endpoint = s.endpoint(name)
             self.service_definitions[name] = ServiceDefinition(
                 name,
@@ -116,6 +137,7 @@ class MacBotOrchestrator:
                 endpoint.url + "/ready",
                 endpoint.port,
                 common,
+                dependencies=dependencies,
             )
 
     def acquire(self):
@@ -273,6 +295,14 @@ class MacBotOrchestrator:
                     "port": definition.port,
                     "error": self.failures.get(name),
                     "restarts": self.restarts.get(name, 0),
+                    "dependencies": list(definition.dependencies),
+                    "state": (
+                        "ready"
+                        if alive and self.readiness.get(name, False)
+                        else "recovering"
+                        if alive
+                        else "failed"
+                    ),
                 }
             return {
                 "pid": os.getpid(),
@@ -293,9 +323,19 @@ class MacBotOrchestrator:
                     self.lifecycle_lock.release()
 
     def _check_service(self, name: str):
+        definition = self.service_definitions[name]
+        unavailable = [
+            dependency
+            for dependency in definition.dependencies
+            if not self.readiness.get(dependency)
+        ]
+        if unavailable:
+            self.readiness[name] = False
+            self.failures[name] = "Blocked by unavailable dependencies: " + ", ".join(unavailable)
+            self.healthy_since.pop(name, None)
+            return
         process = self.processes.get(name)
         healthy = bool(process and process.poll() is None)
-        definition = self.service_definitions[name]
         if healthy and process is not None and definition.health_endpoint:
             try:
                 response = self.client.get(
@@ -309,7 +349,12 @@ class MacBotOrchestrator:
         self.readiness[name] = healthy
         if healthy:
             self.health_failures[name] = 0
+            self.failures.pop(name, None)
+            since = self.healthy_since.setdefault(name, time.monotonic())
+            if time.monotonic() - since >= 60:
+                self.restarts[name] = 0
             return
+        self.healthy_since.pop(name, None)
         self.health_failures[name] = self.health_failures.get(name, 0) + 1
         if process and process.poll() is None and self.health_failures[name] < 3:
             return

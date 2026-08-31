@@ -1,8 +1,10 @@
 # MacBot
 
-MacBot is a private, local macOS voice assistant. The current rebuild makes a
-native SwiftUI application the primary interface and keeps the authenticated
-loopback dashboard as a diagnostics fallback.
+MacBot is a private, local macOS voice assistant. The native SwiftUI application
+is the sole operator interface. Its conversation, hands-free controls, Task
+Center, local document library, settings, recovery, and diagnostics all reflect
+one assistant-owned runtime. The loopback web surface is read-only diagnostics;
+it is not an alternate chat, microphone, settings, or action path.
 
 **Modernization is in progress. This checkpoint is not yet a verified
 hands-free release.** The native bundle builds and its software gates pass, but
@@ -46,25 +48,27 @@ voice.
 ## Current architecture
 
 The SwiftUI application owns microphone permission, capture, echo-referenced
-playback, mute, interruption, the conversation window, and the persistent menu
-bar control. It connects to one owned Python service tree through separate
+playback, mute, interruption, conversation and task presentation, settings,
+recovery, and the persistent menu-bar control. It connects to one owned Python service tree through separate
 owner-only Unix sockets for control/events and framed PCM. Each launch uses a
 single-use 256-bit token. Quitting the app stops only the MacBot-owned service
 tree.
 
-The assistant service owns the event journal, conversation context, semantic
-planning, bounded tool execution, synthesis scheduling, and cancellation. A
-typed plan can respond, clarify, or execute at most four actions. Supported
-explicit requests include local time, weather, web search, document retrieval,
-opening named applications or URLs, and screenshots. Greetings and ordinary
-questions cannot authorize actions. Tool results are executed first, returned
-to a response-only model call as untrusted data, displayed in the timeline,
-and spoken.
+The assistant service owns the event journal, conversation context, durable Task
+engine, capability broker, synthesis scheduling, and cancellation. Conversation
+uses one response inference and may add only deterministic read-only enrichment.
+An explicit Task persists a bounded plan and authority manifest before native
+authorization, then executes each step through a single-use receipt. Retrieved
+text and tool results remain untrusted and cannot extend authority.
 
-Brave Search uses a credential stored in Keychain. DDGS is an explicitly
-degraded no-key fallback. Weather uses structured Open-Meteo results and does
-not open a browser. Destructive, file-changing, account-changing, purchasing,
-and messaging actions are outside this release.
+Brave Search uses a credential stored in Keychain. Without a configured
+supported provider, web search is unavailable rather than silently substituted.
+Weather uses structured Open-Meteo results and does not open a browser.
+The first release Task wedge is bounded research over local documents and
+configured Brave Search. Desktop side effects remain blocked from release until
+the research wedge passes recovery, cancellation, provenance, and device gates.
+Destructive, arbitrary-write, account-changing, purchasing, and messaging
+actions are outside this program.
 
 Conversation messages, tasks, summaries, and event payloads use AES-256-GCM in
 SQLite with a Keychain key and 30-day default retention. Raw microphone audio
@@ -72,8 +76,27 @@ is not stored. Documents remain authoritative in SQLite; a versioned,
 memory-mapped exact vector index uses the same local MiniLM ONNX embeddings for
 ingestion and queries. Previous index revisions remain available for rollback.
 
-The browser dashboard is retained for diagnostics and compatibility. It must
-never own a second assistant, microphone, playback worker, or history pipeline.
+The browser diagnostics view may report service health and content-free
+telemetry when explicitly enabled for development. It must remain read-only and
+must never own an assistant, microphone, playback worker, history pipeline,
+settings mutation, document mutation, or tool approval path.
+
+## Native product states
+
+MacBot presents one authoritative state across the window and menu bar:
+Starting, Ready, Listening, Working, Reconnecting, or Needs attention. Controls
+that cannot succeed are disabled. Recovery offers an explicit service retry and
+Diagnostics rather than silently ignoring an action. Turn phase remains visible
+inside the operational Ready/Listening/Working states.
+
+Requested actions appear in the Task Center and conversation timeline with
+their real queued/running/terminal state, result summary, and authorization
+source. The composer explicitly separates immediate Conversation turns from
+durable Tasks. A new Task is planned first and enters Needs authorization; it
+does not execute until the user chooses Authorize in Task Center. Deny, Pause,
+Resume, and Stop are shown only in states where the durable task protocol permits
+them. Clearing a conversation, deleting a document, and removing a search
+credential require confirmation.
 
 ## Verification
 
@@ -105,9 +128,7 @@ required command and acceptance thresholds.
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Current checkpoint](docs/PAUSED_STATE.md)
 
-Docker files are retained as unsupported legacy material. Containers do not
-provide this release's native microphone, speaker reference, Metal, Keychain,
-or desktop integration.
+Containers do not form part of the product or verification path.
 
 ## Licenses
 

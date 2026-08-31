@@ -16,9 +16,9 @@ Version 2 settings include:
 | Section | Settings |
 | --- | --- |
 | `services` | Dashboard 3000, assistant 8123, RAG 8001, supervisor 8090. Loopback only, distinct ports. |
-| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), registered voice, TTS speed. |
+| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), and registered voice. |
 | `audio` | Endpoint silence 350 ms, pre-roll 256 ms, speech start 96 ms, maximum utterance 30 seconds, idle capture timeout 300 seconds, VAD threshold 0.5. |
-| `tools` | Enabled tool names, allowed applications, screenshot directory, and legacy approval lifetime. Supported planner actions are automatically executed only after exact current-request authorization. |
+| `tools` | Enabled capability names, allowed applications, and screenshot directory. Conversation cannot execute side effects; explicit Task plans require bounded native authorization. |
 | `privacy` | Encrypted history enablement and retention in days (default 30). The encryption key is held in Keychain. |
 
 `qwen3.5-2b-official` is the selected registered LLM. Its catalog entry contains
@@ -43,7 +43,7 @@ task/action results are stored separately and are introduced only as untrusted
 results during the current turn. When the budget is exceeded, the oldest complete
 user turn is removed as a unit. The current turn is never partially truncated; a
 current turn that cannot fit fails explicitly. Clearing a conversation deletes
-that session and its context metrics. Cancellation prevents late history writes
+its messages and summaries while retaining its durable Task ledger. Cancellation prevents late history writes
 from restoring cleared turns.
 
 Durable encrypted history and source-linked semantic compaction are implemented.
@@ -51,21 +51,30 @@ Compaction begins at 70%, binds summaries structurally to the exact source turn
 IDs, retains recent complete turns, and retrieves relevant older summaries with
 MiniLM. No summary, history record, or retrieved text can grant action authority.
 
-Dashboard changes support output length, voice and speech speed. They save validated user settings and require an assistant restart. Other settings require editing the user configuration and restarting MacBot. `start` persists the effective configuration so child services agree.
+The native Settings view supports retention, endpoint timing, context target,
+installed voice selection, and the Brave credential. It distinguishes edited,
+saved, and active values and offers a controlled local-service restart after a
+validated save. The browser diagnostic view is read-only. Other settings require
+editing the user configuration and restarting MacBot. `start` persists the
+effective configuration so child services agree.
 
-Mute uses AVAudioEngine's voice-processing input mute. The audio device may remain open while playback continues, so macOS may still show its microphone indicator. Browser push-to-talk stops native capture before opening the browser microphone and closes browser tracks after recording. Full device closure occurs on service stop.
+Mute uses AVAudioEngine's voice-processing input mute. The audio device may remain open while playback continues, so macOS may still show its microphone indicator. Full device closure occurs on service stop.
 
 ## Voice choices
 
-Qwen audition voices are `qwen-aiden-0.6b`, `qwen-ryan-0.6b`,
-`qwen-aiden-1.7b`, and `qwen-ryan-1.7b`. Provision their registered model before
-selection. Qwen streaming currently uses the model's native speaking rate;
-`tts_speed` applies only to Kokoro and Piper. Piper `amy`/`lessac` and Kokoro
-Heart/Michael remain explicit fast fallbacks. No voice-quality claim replaces
-listening acceptance. Missing models fail explicitly and are disabled in the UI.
+The accepted product voice is `qwen-aiden-1.7b`, using its native speaking rate.
+Speech-speed control is not exposed because this implementation does not honor
+it. Other registered voices belong to explicit audition and acceptance tooling;
+none is an implicit substitute. Missing models fail explicitly. No automated
+voice check replaces listening acceptance.
 
 After updating from the earlier audio helper, run `macbot build-audio` and restart MacBot. Native IPC protocol 2 uses 16 kHz capture and 48 kHz playback so the voice is no longer downsampled to the STT input rate. The Python bridge rejects an outdated helper with a rebuild instruction. Roll back code, wheel and helper together; voice rollback is selecting a provisioned Piper voice and restarting the assistant.
 
 ## Request routing
 
-Direct requests such as “Open Calculator”, “Search the web for sourdough recipes”, “Take a screenshot”, and “What time is it?” select only their relevant tool. Tool output and prior turns cannot select tools for the current turn. Ambiguous follow-ups such as “do that again” require an explicit restatement; compound or unrecognized requests may need to be split. Unsupported file operations remain unavailable. Add `local_time` to `tools.enabled` in an older configuration to enable local clock answers; no network is needed.
+Conversation can deterministically select read-only local time, system status,
+document retrieval, configured search, and weather enrichment from the current
+message. It cannot execute side effects. App opening, exact-URL opening, and
+screenshots require explicit Task mode and remain outside the first research
+Task release gate. Tool output and prior turns cannot select capabilities or
+extend authority. Ambiguous follow-ups require an explicit restatement.

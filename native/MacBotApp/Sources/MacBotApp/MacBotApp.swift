@@ -48,7 +48,8 @@ struct MacBotApplication: App {
         MenuBarExtra {
             MenuBarControls().environmentObject(state)
         } label: {
-            Image(systemName: state.phase.symbol)
+            Image(systemName: state.productState.symbol)
+                .accessibilityLabel(state.productState.title)
         }
         .menuBarExtraStyle(.menu)
     }
@@ -60,22 +61,35 @@ private struct MenuBarControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(state.phase.title, systemImage: state.phase.symbol)
+            Label(state.productState.title, systemImage: state.productState.symbol)
+            Text(state.connectionDetail).font(.caption).foregroundStyle(.secondary)
             Divider()
             Button(state.listening ? "Stop hands-free" : "Start hands-free") {
                 state.toggleListening()
             }
-            Button("Stop response") { state.interrupt() }
+            .disabled(!state.canListen)
+            Button("Stop response") { state.interrupt() }.disabled(!state.canInterrupt)
+            if !state.connected {
+                Button("Retry local services") { state.restartServices() }.disabled(state.isRestarting)
+            }
+            Button("Open Task Center") {
+                state.selectedPage = .tasks
+                showMainWindow()
+            }
             Button("Open MacBot") {
-                openWindow(id: "main")
-                NSApp.activate()
-                DispatchQueue.main.async {
-                    NSApp.windows.first(where: { $0.canBecomeKey })?.makeKeyAndOrderFront(nil)
-                }
+                showMainWindow()
             }
             Divider()
             Button("Quit MacBot") { NSApp.terminate(nil) }
         }
         .padding(4)
+    }
+
+    private func showMainWindow() {
+        openWindow(id: "main")
+        NSApp.activate()
+        DispatchQueue.main.async {
+            NSApp.windows.first(where: { $0.canBecomeKey })?.makeKeyAndOrderFront(nil)
+        }
     }
 }
