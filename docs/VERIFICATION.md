@@ -49,9 +49,10 @@ uv run --frozen pytest -m native_integration --durations=20
 swift test --package-path native/MacBotApp -c release
 ```
 
-The Python gate starts the real production diagnostics service and exercises
-macOS port-reuse and supervisor ownership. Generic restart serialization uses
-real owned child processes without repeatedly cold-starting the full service.
+The Python gate uses a minimal real owned TCP child to exercise macOS
+`TIME_WAIT`, port reuse, and supervisor ownership without coupling the kernel
+test to Flask startup. Production service-tree startup belongs to the installed
+runtime verifier; this scoped gate is not a production-stack claim.
 
 ### Selected model
 
