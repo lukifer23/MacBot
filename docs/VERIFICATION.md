@@ -18,7 +18,7 @@ artifact evidence are not interchangeable.
 | 2026-09-01 | XCUITest/accessibility | **Open** | Screenshot matrix, keyboard, VoiceOver, large text, narrow window, contrast, and motion not yet recorded |
 | 2026-09-01 | Device audio/listener | **Open** | Physical speech, route changes, acoustic interruption/latency, and blinded voice preference not yet recorded |
 | 2026-09-01 | Soak/recovery | **Open** | Eight-hour interactive and 24-hour idle/wake runs not yet recorded |
-| 2026-09-01 | Hosted/final release | **Open:** hosted run `33579687552` passed source `a5dda9b`; remote `main` now contains later lifecycle and documentation commits | Hosted checks for the eventual final remote revision are not yet recorded |
+| 2026-09-01 | Hosted software | **Pass on current remote `main`:** lint, format, mypy, 124-test software gate, native process integration, wheel/sdist build, and distribution inspection | Commit status is the exact-SHA authority; no selected-model, installed-runtime, XCUITest, device, listener, soak, or final release claim |
 
 ## Gate commands
 

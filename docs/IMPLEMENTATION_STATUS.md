@@ -64,7 +64,8 @@ terminal results retain the actual observations and evidence.
 - DNS-rebinding-safe `web_fetch` connection pinning.
 - Pruning installed generations down to the authoritative current and rollback
   pair.
-- Hosted CI for the exact final revision.
+- Hosted selected-model, installed-runtime, native-product, device, listener,
+  and soak evidence beyond the passing software workflow.
 - Physical audio, acoustic interruption/latency, listener preference, eight-hour
   interactive soak, and 24-hour idle/wake recovery.
 
