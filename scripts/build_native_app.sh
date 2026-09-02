@@ -155,6 +155,13 @@ PY
     activation_exit=$?
     trap - ERR
     set +e
+    if $app_was_running && pgrep -x MacBotApp >/dev/null 2>&1; then
+      osascript -e 'tell application id "local.macbot.app" to quit' >/dev/null 2>&1
+      for _ in {1..100}; do
+        pgrep -x MacBotApp >/dev/null 2>&1 || break
+        sleep 0.1
+      done
+    fi
     if $activated; then
       "$stable_cli" stop >/dev/null 2>&1
       "$runtime_stage/bin/python3" -m macbot.release_activation restore \
@@ -204,8 +211,12 @@ PY
   "$stable_cli" --help >/dev/null
   if $app_was_running; then
     open "$destination"
-  fi
-  if $was_running || $app_was_running; then
+    for _ in {1..600}; do
+      runtime_ready && break
+      sleep 0.25
+    done
+    runtime_ready
+  elif $was_running; then
     for _ in {1..20}; do
       runtime_ready && break
       sleep 0.25
