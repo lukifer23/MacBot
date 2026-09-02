@@ -192,13 +192,13 @@ def test_readiness_reports_real_startup_phase_and_timing(tmp_path):
     supervisor = MacBotOrchestrator(Settings(data_dir=tmp_path))
     service = ServiceDefinition(
         "assistant",
-        [sys.executable, "-u", "-c", _http_service_script(port, ready_delay=0.2)],
+        [sys.executable, "-u", "-c", _http_service_script(port, ready_delay=1.2)],
         health_endpoint=f"http://127.0.0.1:{port}/ready",
         port=port,
     )
     result = []
     starter = threading.Thread(
-        target=lambda: result.append(supervisor.start_service(service, retries=20, backoff=0.05))
+        target=lambda: result.append(supervisor.start_service(service, retries=100, backoff=0.05))
     )
     try:
         supervisor.service_definitions[service.name] = service
@@ -214,12 +214,12 @@ def test_readiness_reports_real_startup_phase_and_timing(tmp_path):
         assert loading["phase"] == "loading_speech_models"
         assert loading["running"]
         assert not loading["ready"]
-        starter.join(timeout=2)
+        starter.join(timeout=6)
         assert not starter.is_alive()
         assert result[0]["success"]
         ready = supervisor.status()["services"][service.name]
         assert ready["phase"] == "ready"
-        assert ready["startup_ms"] >= 150
+        assert ready["startup_ms"] >= 1100
         assert ready["readiness_attempts"] >= 2
         assert ready["last_probe_ms"] is not None
     finally:
@@ -243,7 +243,7 @@ def test_status_does_not_block_while_real_child_stops(tmp_path):
     stopper = threading.Thread(target=lambda: supervisor.stop_service(service.name))
     try:
         supervisor.service_definitions[service.name] = service
-        assert supervisor.start_service(service, retries=20, backoff=0.05)["success"]
+        assert supervisor.start_service(service, retries=100, backoff=0.05)["success"]
         supervisor.stopping.set()
         shutdown_requested = supervisor.status()
         assert shutdown_requested["phase"] == "stopping"
@@ -271,7 +271,8 @@ def test_status_does_not_block_while_real_child_stops(tmp_path):
         assert stopped["exit_code"] == 0
     finally:
         supervisor.stop_all()
-        stopper.join(timeout=2)
+        if stopper.ident is not None:
+            stopper.join(timeout=2)
         supervisor.client.close()
         supervisor.auth.close()
 
