@@ -22,6 +22,17 @@ func nativeSessionTokenIsOwnerOnlyAndRotates() throws {
 }
 
 @Test
+func installedServiceManagerAlwaysUsesStablePairedRuntime() {
+    let root = URL(fileURLWithPath: "/private/tmp/macbot-installed-contract")
+    let installed = ServiceManager(dataDirectory: root, sourcePath: "")
+    #expect(installed.cliPath == root.appending(path: "runtime/bin/macbot").path)
+
+    let development = ServiceManager(
+        dataDirectory: root, cliPath: "/checkout/.venv/bin/macbot", sourcePath: "/checkout/src")
+    #expect(development.cliPath == "/checkout/.venv/bin/macbot")
+}
+
+@Test
 func darkWakeIsARecoverableKeychainState() {
     let darkWake = NSError(domain: NSOSStatusErrorDomain, code: Int(errSecInDarkWake))
     let missing = NSError(domain: NSOSStatusErrorDomain, code: Int(errSecItemNotFound))

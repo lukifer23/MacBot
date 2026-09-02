@@ -9,6 +9,7 @@ package_root="$repo_root/native/MacBotApp"
 output_root="$HOME/Library/Caches/MacBot/native-build"
 app="$output_root/MacBot.app"
 cli="$repo_root/.venv/bin/macbot"
+plist_cli="$cli"
 source_root="$repo_root/src"
 install=false
 release_root=""
@@ -30,6 +31,7 @@ if [[ "${1:-}" == "--install" ]]; then
   app="$output_root/MacBot.app"
   runtime_stage="$($repo_root/scripts/install_runtime.sh --stage "$release_root/runtime")"
   cli="$runtime_stage/bin/macbot"
+  plist_cli="$HOME/Library/Application Support/MacBot/runtime/bin/macbot"
   source_root=""
 fi
 
@@ -63,7 +65,7 @@ payload = json.loads(contract.read_text())
 if payload.get("protocol_version") != 3:
     raise SystemExit("The assembled app does not contain native protocol version 3")
 PY
-python3 - "$package_root/Info.plist.in" "$app/Contents/Info.plist" "$cli" "$source_root" "$version" <<'PY'
+python3 - "$package_root/Info.plist.in" "$app/Contents/Info.plist" "$plist_cli" "$source_root" "$version" <<'PY'
 import pathlib, sys
 template, output, cli = map(pathlib.Path, sys.argv[1:4])
 source, version = sys.argv[4:6]

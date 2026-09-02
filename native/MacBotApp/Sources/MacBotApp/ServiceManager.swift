@@ -7,10 +7,20 @@ struct ServiceManager {
     let sourcePath: String
 
     init(dataDirectory: URL? = nil, cliPath: String? = nil, sourcePath: String? = nil) {
-        self.dataDirectory = dataDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+        let resolvedDataDirectory = dataDirectory ?? FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/MacBot", directoryHint: .isDirectory)
-        self.cliPath = cliPath ?? Bundle.main.object(forInfoDictionaryKey: "MacBotCLIPath") as? String ?? "macbot"
-        self.sourcePath = sourcePath ?? Bundle.main.object(forInfoDictionaryKey: "MacBotSourcePath") as? String ?? ""
+        let resolvedSource = sourcePath
+            ?? Bundle.main.object(forInfoDictionaryKey: "MacBotSourcePath") as? String ?? ""
+        self.dataDirectory = resolvedDataDirectory
+        self.sourcePath = resolvedSource
+        if let cliPath {
+            self.cliPath = cliPath
+        } else if resolvedSource.isEmpty {
+            self.cliPath = resolvedDataDirectory.appending(path: "runtime/bin/macbot").path
+        } else {
+            self.cliPath = Bundle.main.object(forInfoDictionaryKey: "MacBotCLIPath") as? String
+                ?? "macbot"
+        }
     }
 
     func prepareToken() throws -> String {
