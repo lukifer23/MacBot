@@ -43,7 +43,10 @@ final class AudioController: @unchecked Sendable {
             Darwin.close(fd); throw NativeClientError.socket("MacBot audio service is not reachable")
         }
         descriptor = fd
-        try sendJSON(["op": "authenticate", "token": token])
+        try sendJSON([
+            "op": "authenticate", "token": token,
+            "protocol_version": TaskProtocolV3.version,
+        ])
         let reply = try readJSON()
         guard reply["ok"] as? Bool == true else {
             close(); throw NativeClientError.protocolError("Native audio authentication failed")

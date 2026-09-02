@@ -4,9 +4,10 @@ import Foundation
 enum NativeClientError: LocalizedError {
     case socket(String)
     case protocolError(String)
+    case timeout(String)
     var errorDescription: String? {
         switch self {
-        case .socket(let value), .protocolError(let value): value
+        case .socket(let value), .protocolError(let value), .timeout(let value): value
         }
     }
 }
@@ -20,11 +21,13 @@ actor NativeClient {
         self.token = token
     }
 
-    func request(_ payload: JSONPayload) throws -> JSONPayload {
-        let body = payload.value
+    func request(_ payload: JSONPayload, timeout: TimeInterval = 30) throws -> JSONPayload {
+        var body = payload.value
+        body["protocol_version"] = TaskProtocolV3.version
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw NativeClientError.socket("Could not create the local socket") }
         defer { Darwin.close(descriptor) }
+        try configureTimeout(timeout, on: descriptor)
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(socketPath.utf8CString)
@@ -41,8 +44,11 @@ actor NativeClient {
                 Darwin.connect(descriptor, $0, length)
             }
         }
-        guard connected == 0 else { throw NativeClientError.socket("MacBot services are not reachable") }
-        try write(["op": "authenticate", "token": token], to: descriptor)
+        guard connected == 0 else { throw socketFailure("MacBot services are not reachable") }
+        try write([
+            "op": "authenticate", "token": token,
+            "protocol_version": TaskProtocolV3.version,
+        ], to: descriptor)
         let hello = try read(from: descriptor)
         guard hello["ok"] as? Bool == true else { throw NativeClientError.protocolError("Native authentication failed") }
         try write(body, to: descriptor)
@@ -51,6 +57,26 @@ actor NativeClient {
             throw NativeClientError.protocolError(response["message"] as? String ?? "Native request failed")
         }
         return JSONPayload(response)
+    }
+
+    private func configureTimeout(_ seconds: TimeInterval, on descriptor: Int32) throws {
+        let bounded = max(1, seconds)
+        var value = timeval(
+            tv_sec: Int(bounded),
+            tv_usec: Int32((bounded - floor(bounded)) * 1_000_000)
+        )
+        let size = socklen_t(MemoryLayout<timeval>.size)
+        guard setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &value, size) == 0,
+              setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &value, size) == 0 else {
+            throw NativeClientError.socket("Could not configure the local request deadline")
+        }
+    }
+
+    private func socketFailure(_ message: String) -> NativeClientError {
+        if errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT {
+            return .timeout("\(message) before its deadline")
+        }
+        return .socket(message)
     }
 
     private func write(_ value: [String: Any], to descriptor: Int32) throws {
@@ -63,7 +89,7 @@ actor NativeClient {
             var sent = 0
             while sent < raw.count {
                 let count = Darwin.send(descriptor, raw.baseAddress!.advanced(by: sent), raw.count - sent, 0)
-                guard count > 0 else { throw NativeClientError.socket("Local socket write failed") }
+                guard count > 0 else { throw socketFailure("Local socket write failed") }
                 sent += count
             }
         }
@@ -86,7 +112,7 @@ actor NativeClient {
         try data.withUnsafeMutableBytes { raw in
             while offset < count {
                 let received = Darwin.recv(descriptor, raw.baseAddress!.advanced(by: offset), count - offset, 0)
-                guard received > 0 else { throw NativeClientError.socket("Local socket closed") }
+                guard received > 0 else { throw socketFailure("Local socket closed") }
                 offset += received
             }
         }

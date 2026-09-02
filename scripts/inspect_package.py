@@ -1,6 +1,7 @@
 """Fail distribution inspection when private state or required assets are misplaced."""
 
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -10,10 +11,13 @@ required = {
     "macbot/static/event-feed.js",
     "macbot/defaults/config.yaml",
     "macbot/defaults/models.json",
-    "macbot/native/AudioBridge.swift",
+    "macbot/defaults/task_protocol_v3.json",
     "macbot/native/Info.plist",
 }
-artifacts = list(Path("dist").glob("*.whl")) + list(Path("dist").glob("*.tar.gz"))
+version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+artifacts = list(Path("dist").glob(f"macbot-{version}-*.whl")) + list(
+    Path("dist").glob(f"macbot-{version}.tar.gz")
+)
 assert artifacts, "No distribution artifacts to inspect"
 for path in artifacts:
     if path.suffix == ".whl":

@@ -6,7 +6,11 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.executable(name: "MacBotApp", targets: ["MacBotApp"])],
     targets: [
-        .executableTarget(name: "MacBotApp", path: "Sources/MacBotApp"),
+        .executableTarget(
+            name: "MacBotApp",
+            path: "Sources/MacBotApp",
+            resources: [.process("Resources")]
+        ),
         .testTarget(
             name: "MacBotAppTests",
             dependencies: ["MacBotApp"],

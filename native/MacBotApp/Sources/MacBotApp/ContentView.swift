@@ -8,6 +8,7 @@ struct ContentView: View {
         NavigationSplitView {
             List(SidebarPage.allCases, selection: $state.selectedPage) { page in
                 Label(page.rawValue, systemImage: page.symbol).tag(page)
+                    .accessibilityIdentifier("sidebar.\(page.id.lowercased().replacingOccurrences(of: " ", with: "-"))")
             }
             .navigationTitle("MacBot")
             .safeAreaInset(edge: .bottom) { productStatus.padding() }
@@ -44,6 +45,7 @@ struct ContentView: View {
             Spacer()
         }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("product-status")
     }
 }
 
@@ -80,6 +82,11 @@ private struct ConversationView: View {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
+                .onChange(of: state.messages.last?.text) {
+                    if let id = state.timeline.last?.id {
+                        proxy.scrollTo(id, anchor: .bottom)
+                    }
+                }
             }
             Divider()
             composer
@@ -88,11 +95,13 @@ private struct ConversationView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button("Clear conversation", systemImage: "trash") { state.confirmClearConversation = true }
-                    .disabled(state.messages.isEmpty || !state.canConverse)
+                    .disabled(state.messages.isEmpty || !state.canConverse || state.isClearingConversation)
                     .help("Delete this local conversation")
+                    .accessibilityIdentifier("conversation.clear")
                 Button("Stop response", systemImage: "stop.fill", action: state.interrupt)
-                    .disabled(!state.canInterrupt)
+                    .disabled(!state.canInterrupt || state.isInterrupting)
                     .help("Stop the current response and playback")
+                    .accessibilityIdentifier("conversation.stop")
             }
         }
         .confirmationDialog(
@@ -121,12 +130,14 @@ private struct ConversationView: View {
                 Label(state.muted ? "Unmute" : "Mute", systemImage: state.muted ? "mic.slash.fill" : "mic.fill")
             }
             .buttonStyle(.bordered)
-            .disabled(!state.listening)
+            .disabled(!state.listening || state.isChangingListening)
+            .accessibilityIdentifier("conversation.mute")
             Button(action: state.toggleListening) {
                 Label(state.listening ? "Stop hands-free" : "Start hands-free", systemImage: state.listening ? "stop.circle.fill" : "waveform.circle.fill")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!state.canListen)
+            .disabled(!state.canListen || state.isChangingListening)
+            .accessibilityIdentifier("conversation.hands-free")
         }.padding(20).background(.bar)
     }
 
@@ -137,19 +148,27 @@ private struct ConversationView: View {
             }
             .pickerStyle(.segmented)
             .accessibilityHint("Choose an immediate conversation or a durable task that requires authorization")
+            .accessibilityIdentifier("composer.mode")
             Text(state.composerMode.guidance).font(.caption).foregroundStyle(.secondary)
+            if state.isSending {
+                ProgressView(state.composerMode == .task ? "Planning the Task…" : "Sending…")
+                    .controlSize(.small)
+                    .accessibilityIdentifier("composer.progress")
+            }
             HStack(alignment: .bottom, spacing: 12) {
                 TextField(state.composerMode.placeholder, text: $state.draft, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...5).focused($composerFocused)
                     .disabled(!state.canConverse)
                     .onSubmit { if !NSEvent.modifierFlags.contains(.shift) { state.send() } }
+                    .accessibilityIdentifier("composer.input")
                 Button(action: state.send) {
                     Label(state.composerMode.actionLabel, systemImage: state.composerMode == .task ? "checklist" : "arrow.up")
                         .labelStyle(.iconOnly).fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
-                .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.canConverse)
+                .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.canConverse || state.isSending)
                 .keyboardShortcut(.return, modifiers: .command)
+                .accessibilityIdentifier("composer.send")
             }
             if state.composerMode == .conversation {
                 Toggle("Speak typed replies", isOn: $state.speakTypedReplies)
@@ -171,6 +190,10 @@ private struct MessageBubble: View {
                 .foregroundStyle(.primary)
             if item.role != .user { Spacer(minLength: 100) }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.role == .user ? "You" : item.role == .assistant ? "MacBot" : "System")
+        .accessibilityValue(item.text)
+        .accessibilityIdentifier("message.\(item.id)")
     }
 }
 
@@ -185,15 +208,21 @@ private struct TaskResultCard: View {
                 Text(item.detail).textSelection(.enabled)
                 Label(item.source.replacingOccurrences(of: "_", with: " ").capitalized, systemImage: "person.crop.circle.badge.checkmark")
                     .font(.caption).foregroundStyle(.secondary)
+                if !item.authority.isEmpty { authority }
+                if !item.steps.isEmpty { steps }
                 if !item.availableCommands.isEmpty {
                     HStack {
                         ForEach(TaskCommand.allCases.filter(item.availableCommands.contains), id: \.self) { command in
                             if command == .cancel || command == .deny {
                                 Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
                                     .buttonStyle(.bordered)
+                                    .disabled(state.taskCommandsInFlight.contains(item.id))
+                                    .accessibilityIdentifier("task.\(item.id).\(command.rawValue)")
                             } else {
                                 Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
                                     .buttonStyle(.borderedProminent)
+                                    .disabled(state.taskCommandsInFlight.contains(item.id))
+                                    .accessibilityIdentifier("task.\(item.id).\(command.rawValue)")
                             }
                         }
                     }
@@ -212,6 +241,86 @@ private struct TaskResultCard: View {
         }
         .padding(14).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("task.\(item.id)")
+    }
+
+    private var authority: some View {
+        GroupBox("Authorization scope") {
+            VStack(alignment: .leading, spacing: 7) {
+                if !item.authority.tools.isEmpty {
+                    LabeledContent("Capabilities", value: item.authority.tools.map(display).joined(separator: ", "))
+                }
+                if !item.authority.dataScopes.isEmpty {
+                    LabeledContent("Data", value: item.authority.dataScopes.map(display).joined(separator: ", "))
+                }
+                if let maximum = item.authority.maximumSteps {
+                    LabeledContent("Maximum steps", value: maximum.formatted())
+                }
+                if let seconds = item.authority.deadlineSeconds {
+                    LabeledContent("Deadline", value: "\(seconds) seconds")
+                }
+                if !item.authority.targets.isEmpty {
+                    Text("Exact targets").font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(item.authority.targets.enumerated()), id: \.offset) { _, target in
+                        Text(target).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityIdentifier("task.\(item.id).authority")
+    }
+
+    private var steps: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Plan and progress").font(.headline)
+            ForEach(item.steps) { step in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: step.state.symbol).foregroundStyle(stepTint(step.state))
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("\(step.ordinal + 1). \(step.title)").fontWeight(.medium)
+                            Spacer()
+                            Text(step.state.title).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(step.arguments).font(.caption.monospaced()).textSelection(.enabled)
+                        Text("Authority: \(display(step.safetyClass))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !step.dependsOn.isEmpty {
+                            Text("Depends on: \(step.dependsOn.joined(separator: ", "))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if step.attempts > 0 {
+                            Text("Attempts: \(step.attempts) of \(step.maxAttempts)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let result = step.result { Text(result).textSelection(.enabled) }
+                        if let provenance = step.provenance {
+                            Label(provenance, systemImage: "link").font(.caption).textSelection(.enabled)
+                        }
+                        if let error = step.error {
+                            Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                        }
+                    }
+                }
+                .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("task.\(item.id).step.\(step.id)")
+            }
+        }
+    }
+
+    private func display(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func stepTint(_ state: StepState) -> Color {
+        switch state {
+        case .succeeded: .green
+        case .failed, .unknownEffect: .red
+        case .blocked: .orange
+        case .running, .authorized: .blue
+        case .planned, .skipped: .secondary
+        }
     }
 
     private var tint: Color {
@@ -247,6 +356,7 @@ private struct TaskCenterView: View {
             }
         }
         .navigationTitle("Task Center")
+        .accessibilityIdentifier("task-center")
     }
 }
 
@@ -392,7 +502,8 @@ private struct SettingsView: View {
                 }.disabled(!state.canChangeSettings)
                 LabeledContent("Active voice", value: VoiceOption.label(for: state.voiceName))
                 Button("Preview active voice", systemImage: "speaker.wave.2", action: state.previewVoice)
-                    .disabled(!state.canChangeSettings)
+                    .disabled(!state.canChangeSettings || state.isPreviewingVoice)
+                    .accessibilityIdentifier("settings.preview-voice")
                 Text("Only installed voices can be selected. A saved voice becomes active after local services restart.")
                     .foregroundStyle(.secondary)
             }
@@ -423,7 +534,8 @@ private struct SettingsView: View {
                     Text("8K").tag(8192); Text("16K").tag(16_384); Text("32K").tag(32_768)
                 }.disabled(!state.canChangeSettings)
                 Button("Save runtime settings", action: state.saveRuntimeSettings)
-                    .disabled(!state.settingsHaveChanges || !state.canChangeSettings)
+                    .disabled(!state.settingsHaveChanges || !state.canChangeSettings || state.isSavingSettings)
+                    .accessibilityIdentifier("settings.save")
                 if state.restartRequired {
                     HStack {
                         Label("Saved settings are not active yet.", systemImage: "arrow.clockwise").foregroundStyle(.orange)

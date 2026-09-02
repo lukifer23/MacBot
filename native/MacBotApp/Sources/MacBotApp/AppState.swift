@@ -39,6 +39,13 @@ final class AppState: ObservableObject {
     @Published var confirmClearConversation = false
     @Published var pendingDocumentDeletion: DocumentItem?
     @Published var confirmCredentialRemoval = false
+    @Published var isSending = false
+    @Published var isChangingListening = false
+    @Published var isInterrupting = false
+    @Published var isClearingConversation = false
+    @Published var isPreviewingVoice = false
+    @Published var isSavingSettings = false
+    @Published var taskCommandsInFlight: Set<String> = []
 
     private var savedRetentionDays = 30
     private var savedEndpointMilliseconds = 350
@@ -46,13 +53,16 @@ final class AppState: ObservableObject {
     private var savedVoice = ""
 
     private let services = ServiceManager()
-    private var client: NativeClient?
+    private var commandClient: NativeClient?
+    private var eventClient: NativeClient?
     private var audio: AudioController?
     private var eventTask: Task<Void, Never>?
     private var cursor = 0
     private var epoch: String?
     private var responseIndex: [String: Int] = [:]
     private var historyKey: Data?
+    private var lastStatusRefresh = Date.distantPast
+    private var nextPresentationSequence = 0
 
     var timeline: [TimelineItem] {
         (messages.map(TimelineItem.message) + tasks.map(TimelineItem.task)).sorted {
@@ -91,7 +101,7 @@ final class AppState: ObservableObject {
                 try await establishServices()
                 await refreshStatus()
                 await refreshSettings()
-                await refreshTasks()
+                try await reconcileState()
                 await eventLoop()
             } catch {
                 connected = false
@@ -111,7 +121,8 @@ final class AppState: ObservableObject {
         }
         audio?.close()
         audio = nil
-        client = nil
+        commandClient = nil
+        eventClient = nil
         listening = false
         let token = try await services.restart(historyKey: historyKey)
         let run = services.dataDirectory.appending(path: "run")
@@ -126,10 +137,12 @@ final class AppState: ObservableObject {
               FileManager.default.fileExists(atPath: audioSocket) else {
             throw NSError(domain: "MacBot", code: 8, userInfo: [NSLocalizedDescriptionKey: "Local services did not create their private sockets"])
         }
-        let native = NativeClient(socketPath: controlSocket, token: token)
+        let commands = NativeClient(socketPath: controlSocket, token: token)
+        let events = NativeClient(socketPath: controlSocket, token: token)
         let audioController = AudioController()
         try audioController.connect(path: audioSocket, token: token)
-        client = native
+        commandClient = commands
+        eventClient = events
         audio = audioController
         connected = true
         connectionDetail = "Local and private"
@@ -159,22 +172,27 @@ final class AppState: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let mode = composerMode
-        guard !text.isEmpty, let client else {
+        guard !text.isEmpty, !isSending else { return }
+        guard let client = commandClient else {
             explainUnavailable("send a message")
             return
         }
         draft = ""
+        isSending = true
         Task {
+            defer { isSending = false }
             do {
                 switch mode {
                 case .conversation:
                     _ = try await client.request(JSONPayload([
                         "op": "chat", "message": text, "speak": speakTypedReplies,
-                    ]))
+                    ]), timeout: 30)
                 case .task:
                     let response = try await client.request(JSONPayload([
-                        "op": "task_create", "message": text,
-                    ])).value
+                        "op": "task_create", "protocol_version": TaskProtocolV3.version,
+                        "message": text,
+                    ]), timeout: 120).value
+                    try requireTaskProtocol(response)
                     if let payload = response["task"] as? [String: Any] {
                         upsertTask(payload, sequence: cursor + 1)
                     }
@@ -187,28 +205,89 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func refreshTasks() async {
-        guard let client else { return }
-        do {
-            let response = try await client.request(JSONPayload(["op": "task_list"])).value
-            let snapshots = response["tasks"] as? [[String: Any]] ?? []
-            let durableIDs = Set(snapshots.compactMap { $0["task_id"] as? String })
-            tasks.removeAll { $0.source == "MacBot Task Engine" && !durableIDs.contains($0.id) }
-            for (index, snapshot) in snapshots.reversed().enumerated() {
-                upsertTask(snapshot, sequence: -(snapshots.count - index))
-            }
-        } catch {
-            show(error)
+    private func reconcileState() async throws {
+        guard let client = commandClient else {
+            throw NativeClientError.socket("The local synchronization connection is unavailable")
         }
+        let response = try await client.request(JSONPayload([
+            "op": "sync", "protocol_version": TaskProtocolV3.version,
+        ]), timeout: 30).value
+        try requireTaskProtocol(response)
+        guard let nextEpoch = response["epoch"] as? String,
+              let nextCursor = response["cursor"] as? Int,
+              nextCursor >= 0,
+              let messageSnapshots = response["messages"] as? [[String: Any]],
+              let taskSnapshots = response["tasks"] as? [[String: Any]] else {
+            throw NativeClientError.protocolError("The local synchronization snapshot is incomplete")
+        }
+
+        let messageOrder = messageSnapshots.enumerated().map { index, snapshot in
+            ("message-\(snapshot["id"] as? String ?? index.description)",
+             snapshot["created_at"] as? Int ?? index)
+        }
+        let taskOrder = taskSnapshots.enumerated().map { index, snapshot in
+            ("task-\(snapshot["task_id"] as? String ?? index.description)",
+             snapshot["created_ns"] as? Int ?? index)
+        }
+        let order = (messageOrder + taskOrder).sorted {
+            $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 < $1.1
+        }
+        let ranks = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element.0, $0.offset) })
+
+        var restoredMessages: [ChatItem] = []
+        for (index, snapshot) in messageSnapshots.enumerated() {
+            guard let id = snapshot["id"] as? String,
+                  let roleValue = snapshot["role"] as? String,
+                  let role = ChatItem.Role(rawValue: roleValue),
+                  let content = snapshot["content"] as? String else {
+                throw NativeClientError.protocolError("The local message snapshot is invalid")
+            }
+            restoredMessages.append(.init(
+                id: id, role: role, text: content,
+                sequence: ranks["message-\(id)"] ?? index))
+        }
+
+        var restoredTasks: [TaskItem] = []
+        for (index, snapshot) in taskSnapshots.enumerated() {
+            let id = snapshot["task_id"] as? String ?? index.description
+            restoredTasks.append(try taskItem(
+                from: snapshot, sequence: ranks["task-\(id)"] ?? restoredMessages.count + index))
+        }
+
+        if let active = response["active_turn"] as? [String: Any],
+           let turnID = active["id"] as? String {
+            if let userText = active["user_text"] as? String,
+               !userText.isEmpty,
+               !restoredMessages.contains(where: { $0.id == "user-\(turnID)" }) {
+                restoredMessages.append(.init(
+                    id: "user-\(turnID)", role: .user, text: userText,
+                    sequence: restoredMessages.count + restoredTasks.count))
+            }
+            if let phaseValue = active["phase"] as? String {
+                phase = assistantPhase(phaseValue)
+            }
+        } else {
+            phase = listening ? .listening : .idle
+        }
+
+        messages = restoredMessages
+        tasks = restoredTasks
+        responseIndex.removeAll()
+        nextPresentationSequence = restoredMessages.count + restoredTasks.count
+        cursor = nextCursor
+        epoch = nextEpoch
     }
 
     func toggleListening() {
-        guard let client else {
+        guard !isChangingListening else { return }
+        guard let client = commandClient else {
             explainUnavailable("start hands-free conversation")
             return
         }
         let desired = !listening
+        isChangingListening = true
         Task {
+            defer { isChangingListening = false }
             do {
                 if desired {
                     try await audio?.start()
@@ -216,11 +295,15 @@ final class AppState: ObservableObject {
                 } else {
                     audio?.stopCapture()
                 }
-                _ = try await client.request(JSONPayload(["op": "listen", "enabled": desired]))
+                _ = try await client.request(
+                    JSONPayload(["op": "listen", "enabled": desired]), timeout: 15)
                 listening = desired
                 phase = desired ? .listening : .idle
                 productState = desired ? .listening : .ready
-            } catch { show(error) }
+            } catch {
+                if desired { audio?.stopCapture() }
+                show(error)
+            }
         }
     }
 
@@ -235,13 +318,16 @@ final class AppState: ObservableObject {
     }
 
     func interrupt() {
-        guard let client else {
+        guard !isInterrupting else { return }
+        guard let client = commandClient else {
             explainUnavailable("stop the current response")
             return
         }
+        isInterrupting = true
         Task {
+            defer { isInterrupting = false }
             do {
-                _ = try await client.request(JSONPayload(["op": "interrupt"]))
+                _ = try await client.request(JSONPayload(["op": "interrupt"]), timeout: 10)
                 phase = listening ? .listening : .interrupted
                 productState = listening ? .listening : .ready
             } catch { show(error) }
@@ -249,13 +335,16 @@ final class AppState: ObservableObject {
     }
 
     func clearConversation() {
-        guard let client else {
+        guard !isClearingConversation else { return }
+        guard let client = commandClient else {
             explainUnavailable("clear the conversation")
             return
         }
+        isClearingConversation = true
         Task {
+            defer { isClearingConversation = false }
             do {
-                _ = try await client.request(JSONPayload(["op": "clear"]))
+                _ = try await client.request(JSONPayload(["op": "clear"]), timeout: 15)
                 messages.removeAll()
                 responseIndex.removeAll()
                 heard = ""
@@ -276,7 +365,8 @@ final class AppState: ObservableObject {
         eventTask = nil
         audio?.close()
         audio = nil
-        client = nil
+        commandClient = nil
+        eventClient = nil
         start()
     }
 
@@ -290,7 +380,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshDocuments() {
-        guard let client else {
+        guard let client = commandClient else {
             libraryState = .failed("MacBot must be ready before the library can load.")
             return
         }
@@ -310,7 +400,7 @@ final class AppState: ObservableObject {
     }
 
     func importDocument(_ url: URL) {
-        guard let client else {
+        guard let client = commandClient else {
             libraryState = .failed("MacBot must be ready before a document can be imported.")
             return
         }
@@ -335,7 +425,7 @@ final class AppState: ObservableObject {
     }
 
     func deleteDocument(_ id: String) {
-        guard let client else {
+        guard let client = commandClient else {
             libraryState = .failed("MacBot must be ready before a document can be deleted.")
             return
         }
@@ -353,7 +443,7 @@ final class AppState: ObservableObject {
     func searchDocuments(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let client else {
+        guard let client = commandClient else {
             searchState = .failed("MacBot must be ready before documents can be searched.")
             return
         }
@@ -379,7 +469,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshStatus() async {
-        guard let client else { return }
+        guard let client = commandClient else { return }
         do {
             let response = try await client.request(JSONPayload(["op": "status"])).value
             guard let status = response["status"] as? [String: Any] else { return }
@@ -422,7 +512,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshSettings() async {
-        guard let client else { return }
+        guard let client = commandClient else { return }
         do {
             let response = try await client.request(JSONPayload(["op": "settings"])).value
             guard let settings = response["settings"] as? [String: Any] else { return }
@@ -443,7 +533,8 @@ final class AppState: ObservableObject {
     }
 
     func saveRuntimeSettings() {
-        guard let client else {
+        guard !isSavingSettings else { return }
+        guard let client = commandClient else {
             explainUnavailable("save settings")
             return
         }
@@ -451,7 +542,9 @@ final class AppState: ObservableObject {
             errorMessage = "Select an installed voice before saving settings."
             return
         }
+        isSavingSettings = true
         Task {
+            defer { isSavingSettings = false }
             do {
                 _ = try await client.request(JSONPayload([
                     "op": "update_settings",
@@ -472,13 +565,16 @@ final class AppState: ObservableObject {
     }
 
     func previewVoice() {
-        guard let client else {
+        guard !isPreviewingVoice else { return }
+        guard let client = commandClient else {
             explainUnavailable("preview the active voice")
             return
         }
+        isPreviewingVoice = true
         Task {
+            defer { isPreviewingVoice = false }
             do {
-                _ = try await client.request(JSONPayload(["op": "preview_voice"]))
+                _ = try await client.request(JSONPayload(["op": "preview_voice"]), timeout: 30)
             } catch { show(error) }
         }
     }
@@ -514,17 +610,17 @@ final class AppState: ObservableObject {
         var consecutiveFailures = 0
         while !Task.isCancelled {
             do {
-                guard let native = client else {
+                guard let native = eventClient else {
                     throw NSError(domain: "MacBot", code: 9, userInfo: [NSLocalizedDescriptionKey: "The local event connection is unavailable"])
                 }
                 var request: [String: Any] = ["op": "events", "after": cursor]
                 if let epoch { request["epoch"] = epoch }
-                let response = try await native.request(JSONPayload(request)).value
+                let response = try await native.request(JSONPayload(request), timeout: 25).value
                 cursor = response["cursor"] as? Int ?? cursor
                 epoch = response["epoch"] as? String
-                if response["reset"] as? Bool == true {
-                    messages.removeAll(); tasks.removeAll(); responseIndex.removeAll()
-                    await refreshTasks()
+                if response["reset"] as? Bool == true || response["gap"] as? Bool == true {
+                    try await reconcileState()
+                    continue
                 }
                 for event in response["events"] as? [[String: Any]] ?? [] {
                     consume(event)
@@ -534,7 +630,10 @@ final class AppState: ObservableObject {
                 consecutiveFailures = 0
                 if phase == .error { phase = listening ? .listening : .idle }
                 productState = listening ? .listening : (canInterrupt || hasExecutingTask ? .working : .ready)
-                await refreshStatus()
+                if Date().timeIntervalSince(lastStatusRefresh) >= 2 {
+                    await refreshStatus()
+                    lastStatusRefresh = Date()
+                }
             } catch {
                 if !Task.isCancelled {
                     consecutiveFailures += 1
@@ -544,7 +643,7 @@ final class AppState: ObservableObject {
                     if consecutiveFailures >= 3 {
                         do {
                             try await establishServices()
-                            await refreshTasks()
+                            try await reconcileState()
                             consecutiveFailures = 0
                         } catch {
                             phase = .error
@@ -563,7 +662,8 @@ final class AppState: ObservableObject {
     private func consume(_ event: [String: Any]) {
         let kind = event["kind"] as? String ?? ""
         let state = event["state"] as? String ?? ""
-        let sequence = event["seq"] as? Int ?? cursor
+        let sequence = nextPresentationSequence
+        nextPresentationSequence += 1
         let turnID = event["turn_id"] as? String ?? UUID().uuidString
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
@@ -630,12 +730,12 @@ final class AppState: ObservableObject {
             let item = TaskItem(
                 id: actionID,
                 title: tool,
-                state: terminal,
+                state: oneShotState(terminal),
                 detail: Self.summarize(result),
                 sequence: tasks.first(where: { $0.id == actionID })?.sequence ?? sequence,
                 source: (result["source"] as? String) ?? (data["authorization"] as? String) ?? "Requested by you",
                 turnID: turnID,
-                availableCommands: commands(from: data)
+                availableCommands: commands(from: data, state: oneShotState(terminal))
             )
             if let index = tasks.firstIndex(where: { $0.id == actionID }) { tasks[index] = item }
             else { tasks.append(item) }
@@ -661,75 +761,159 @@ final class AppState: ObservableObject {
     ) {
         guard let id = (action["task_id"] as? String) ?? (action["action_id"] as? String),
               let name = (action["title"] as? String) ?? (action["name"] as? String) else { return }
+        let taskState = oneShotState(eventState)
         let detail = (action["detail"] as? String) ?? (action["source_span"] as? String) ?? "Requested action"
         let item = TaskItem(
             id: id,
             title: name,
-            state: eventState,
+            state: taskState,
             detail: detail,
             sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence,
             source: (action["source"] as? String) ?? (action["authorization"] as? String) ?? "Requested by you",
             turnID: turnID,
-            availableCommands: commands(from: action)
+            availableCommands: commands(from: action, state: taskState)
         )
         if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = item }
         else { tasks.append(item) }
     }
 
     private func upsertTask(_ snapshot: [String: Any], sequence: Int) {
-        guard let id = snapshot["task_id"] as? String else { return }
-        let stateValue = snapshot["state"] as? String ?? "proposed"
-        let taskState = TaskState(serviceValue: stateValue)
+        do {
+            let id = snapshot["task_id"] as? String ?? ""
+            let existingSequence = tasks.first(where: { $0.id == id })?.sequence ?? sequence
+            let item = try taskItem(from: snapshot, sequence: existingSequence)
+            if let index = tasks.firstIndex(where: { $0.id == item.id }) {
+                let previous = tasks[index].state
+                tasks[index] = item
+                if previous != item.state { announce("\(item.title): \(item.state.title)") }
+            } else {
+                tasks.append(item)
+            }
+        } catch {
+            show(error)
+        }
+    }
+
+    func taskItem(from snapshot: [String: Any], sequence: Int) throws -> TaskItem {
+        guard let id = snapshot["task_id"] as? String, !id.isEmpty,
+              let stateValue = snapshot["state"] as? String,
+              let taskState = TaskState(rawValue: stateValue) else {
+            let received = snapshot["state"] as? String ?? "missing"
+            throw NativeClientError.protocolError(
+                "The service returned unsupported Task state ‘\(received)’ for protocol version 3")
+        }
         let result = snapshot["result"] as? [String: Any] ?? [:]
         let detail = (snapshot["detail"] as? String)
             ?? (result["summary"] as? String)
             ?? (snapshot["error"] as? String)
             ?? taskState.title
-        var availableCommands = commands(from: snapshot)
-        if snapshot["commands"] == nil {
-            availableCommands = canonicalCommands(for: taskState)
-        }
-        let item = TaskItem(
+        let steps = try (snapshot["steps"] as? [[String: Any]] ?? []).map(taskStep)
+            .sorted { $0.ordinal < $1.ordinal }
+        return TaskItem(
             id: id,
-            title: (snapshot["title"] as? String) ?? (snapshot["original_text"] as? String) ?? "MacBot Task",
-            state: stateValue,
+            title: (snapshot["title"] as? String)
+                ?? (snapshot["original_text"] as? String)
+                ?? "MacBot Task",
+            state: taskState,
             detail: detail,
-            sequence: tasks.first(where: { $0.id == id })?.sequence ?? sequence,
+            sequence: sequence,
             source: (snapshot["source"] as? String) ?? "MacBot Task Engine",
             turnID: snapshot["turn_id"] as? String,
-            availableCommands: availableCommands
+            availableCommands: commands(from: snapshot, state: taskState),
+            steps: steps,
+            authority: taskAuthority(
+                snapshot["capability_manifest"] as? [String: Any]
+                    ?? snapshot["authority"] as? [String: Any]
+                    ?? [:])
         )
-        if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = item }
-        else { tasks.append(item) }
     }
 
-    private func canonicalCommands(for state: TaskState) -> Set<TaskCommand> {
-        switch state {
-        case .awaitingAuthorization: [.authorize, .deny]
-        case .running: [.pause, .cancel]
-        case .pauseRequested, .queued, .blocked: [.cancel]
-        case .paused: [.resume, .cancel]
-        default: []
+    func taskStep(_ snapshot: [String: Any]) throws -> TaskStepItem {
+        guard let id = snapshot["step_id"] as? String,
+              let ordinal = snapshot["ordinal"] as? Int,
+              let capability = snapshot["capability"] as? String,
+              let safetyClass = snapshot["safety_class"] as? String,
+              let stateValue = snapshot["state"] as? String,
+              let state = StepState(rawValue: stateValue) else {
+            throw NativeClientError.protocolError("A Task step snapshot is invalid")
+        }
+        let result = snapshot["result"] as? [String: Any]
+        return TaskStepItem(
+            id: id,
+            ordinal: ordinal,
+            capability: capability,
+            arguments: Self.describe(snapshot["arguments"]),
+            safetyClass: safetyClass,
+            state: state,
+            dependsOn: snapshot["depends_on"] as? [String] ?? [],
+            attempts: snapshot["attempts"] as? Int ?? 0,
+            maxAttempts: snapshot["max_attempts"] as? Int ?? 1,
+            result: result.map(Self.summarize),
+            error: snapshot["error"] as? String,
+            provenance: result.flatMap(Self.provenance)
+        )
+    }
+
+    func taskAuthority(_ snapshot: [String: Any]) -> TaskAuthority {
+        TaskAuthority(
+            tools: snapshot["tools"] as? [String] ?? [],
+            targets: (snapshot["targets"] as? [Any] ?? []).map(Self.describe),
+            dataScopes: snapshot["data_scopes"] as? [String] ?? [],
+            maximumSteps: snapshot["maximum_steps"] as? Int,
+            deadlineSeconds: snapshot["deadline_seconds"] as? Int
+        )
+    }
+
+    private func assistantPhase(_ value: String) -> AssistantPhase {
+        switch value {
+        case "generating": .thinking
+        case "action", "tool": .acting
+        default: AssistantPhase(rawValue: value) ?? .thinking
         }
     }
 
-    private func commands(from payload: [String: Any]) -> Set<TaskCommand> {
-        Set((payload["commands"] as? [String] ?? []).compactMap(TaskCommand.init(rawValue:)))
+    private func commands(from payload: [String: Any], state: TaskState) -> Set<TaskCommand> {
+        guard case .success(let contract) = TaskProtocolV3.current else { return [] }
+        return contract.authorizedCommands(payload["commands"] as? [String], for: state)
+    }
+
+    private func requireTaskProtocol(_ response: [String: Any]) throws {
+        guard response["protocol_version"] as? Int == TaskProtocolV3.version else {
+            throw TaskProtocolError.unsupportedVersion(
+                response["protocol_version"] as? Int ?? -1)
+        }
+    }
+
+    private func oneShotState(_ value: String) -> TaskState {
+        switch value {
+        case "accepted": .queued
+        case "running": .running
+        case "completed": .completed
+        case "partial": .partial
+        case "failed": .failed
+        case "denied", "interrupted": .cancelled
+        default: .failed
+        }
     }
 
     func perform(_ command: TaskCommand, on task: TaskItem) {
         guard task.availableCommands.contains(command) else { return }
-        guard let client else {
+        guard !taskCommandsInFlight.contains(task.id) else { return }
+        guard let client = commandClient else {
             explainUnavailable("\(command.label.lowercased()) this task")
             return
         }
+        taskCommandsInFlight.insert(task.id)
         Task {
+            defer { taskCommandsInFlight.remove(task.id) }
             do {
                 var request: [String: Any] = [
-                    "op": "task_command", "task_id": task.id, "command": command.rawValue,
+                    "op": "task_command", "protocol_version": TaskProtocolV3.version,
+                    "task_id": task.id, "command": command.rawValue,
                 ]
                 if let turnID = task.turnID { request["turn_id"] = turnID }
                 let response = try await client.request(JSONPayload(request)).value
+                try requireTaskProtocol(response)
                 if let snapshot = response["task"] as? [String: Any] {
                     upsertTask(snapshot, sequence: task.sequence)
                 }
@@ -756,13 +940,45 @@ final class AppState: ObservableObject {
         }
     }
 
+    static func describe(_ value: Any?) -> String {
+        guard let value else { return "None" }
+        if let text = value as? String { return text }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return String(describing: value)
+    }
+
+    static func provenance(_ result: [String: Any]) -> String? {
+        let fields = ["provider", "source", "url", "path"].compactMap { key -> String? in
+            guard let value = result[key] as? String, !value.isEmpty else { return nil }
+            return "\(key.capitalized): \(value)"
+        }
+        if !fields.isEmpty { return fields.joined(separator: " · ") }
+        if let results = result["results"] as? [[String: Any]] {
+            let sources = results.prefix(3).compactMap {
+                ($0["url"] as? String) ?? ($0["source"] as? String)
+            }
+            if !sources.isEmpty { return sources.joined(separator: " · ") }
+        }
+        return nil
+    }
+
     private func show(_ error: Error) {
         errorMessage = error.localizedDescription
         phase = .error
         productState = connected ? (listening ? .listening : .ready) : .blocked
+        announce(error.localizedDescription)
     }
 
     private func explainUnavailable(_ action: String) {
         errorMessage = "MacBot cannot \(action) while local services are unavailable. Retry the services or open Diagnostics for details."
+        if let errorMessage { announce(errorMessage) }
+    }
+
+    private func announce(_ message: String) {
+        AccessibilityNotification.Announcement(message).post()
     }
 }

@@ -64,7 +64,7 @@ enum AssistantPhase: String, CaseIterable {
 }
 
 struct ChatItem: Identifiable, Equatable {
-    enum Role { case user, assistant, system }
+    enum Role: String { case user, assistant, system }
     let id: String
     let role: Role
     var text: String
@@ -100,7 +100,7 @@ enum ComposerMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum TaskState: String, Equatable, CaseIterable {
+enum TaskState: String, Equatable, CaseIterable, Decodable {
     case proposed
     case awaitingAuthorization = "awaiting_authorization"
     case queued, running
@@ -108,15 +108,6 @@ enum TaskState: String, Equatable, CaseIterable {
     case paused
     case cancelRequested = "cancel_requested"
     case blocked, completed, partial, failed, cancelled
-
-    init(serviceValue: String) {
-        switch serviceValue {
-        case "accepted": self = .queued
-        case "approval_required", "waiting": self = .awaitingAuthorization
-        case "denied", "interrupted": self = .cancelled
-        default: self = Self(rawValue: serviceValue) ?? .failed
-        }
-    }
 
     var title: String {
         switch self {
@@ -155,7 +146,48 @@ enum TaskState: String, Equatable, CaseIterable {
     }
 }
 
-enum TaskCommand: String, Hashable, CaseIterable {
+enum StepState: String, Equatable, CaseIterable, Decodable {
+    case planned, authorized, running, succeeded, failed, blocked, skipped
+    case unknownEffect = "unknown_effect"
+
+    var title: String {
+        switch self {
+        case .planned: "Planned"
+        case .authorized: "Authorized"
+        case .running: "Running"
+        case .succeeded: "Succeeded"
+        case .failed: "Failed"
+        case .blocked: "Blocked"
+        case .skipped: "Skipped"
+        case .unknownEffect: "Effect unknown"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .planned: "circle.dotted"
+        case .authorized: "checkmark.shield"
+        case .running: "clock.arrow.circlepath"
+        case .succeeded: "checkmark.circle.fill"
+        case .failed: "xmark.circle.fill"
+        case .blocked: "exclamationmark.octagon.fill"
+        case .skipped: "forward.end.circle"
+        case .unknownEffect: "questionmark.diamond.fill"
+        }
+    }
+}
+
+enum FailureClass: String, Equatable, CaseIterable, Decodable {
+    case notConfigured = "not_configured"
+    case invalidRequest = "invalid_request"
+    case denied
+    case transientRead = "transient_read"
+    case permanent, cancelled, timeout
+    case unknownEffect = "unknown_effect"
+    case integrityFailure = "integrity_failure"
+}
+
+enum TaskCommand: String, Hashable, CaseIterable, Decodable {
     case authorize, deny, pause, resume, cancel
 
     var label: String {
@@ -179,6 +211,133 @@ enum TaskCommand: String, Hashable, CaseIterable {
     }
 }
 
+struct TaskProtocolContract: Decodable, Equatable {
+    let protocolVersion: Int
+    let channels: [String]
+    let operations: [String]
+    let reconciliationFields: [String]
+    let errorFields: [String]
+    let taskStates: [TaskState]
+    let stepStates: [StepState]
+    let failureClasses: [FailureClass]
+    let commands: [TaskCommand]
+    let legalCommands: [String: [TaskCommand]]
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol_version"
+        case channels, operations
+        case reconciliationFields = "reconciliation_fields"
+        case errorFields = "error_fields"
+        case taskStates = "task_states"
+        case stepStates = "step_states"
+        case failureClasses = "failure_classes"
+        case commands
+        case legalCommands = "legal_commands"
+    }
+
+    func validate() throws {
+        guard protocolVersion == TaskProtocolV3.version else {
+            throw TaskProtocolError.unsupportedVersion(protocolVersion)
+        }
+        guard Set(channels) == ["command", "event", "audio"],
+              Set(reconciliationFields) == [
+                  "protocol_version", "epoch", "cursor", "messages", "tasks", "active_turn",
+              ],
+              Set(errorFields) == ["code", "message", "retryable", "failure_class"],
+              Set(operations).count == operations.count
+        else {
+            throw TaskProtocolError.invalidCoverage("protocol_v3")
+        }
+        try requireExactCoverage(taskStates, expected: TaskState.allCases, field: "task_states")
+        try requireExactCoverage(stepStates, expected: StepState.allCases, field: "step_states")
+        try requireExactCoverage(
+            failureClasses, expected: FailureClass.allCases, field: "failure_classes")
+        try requireExactCoverage(commands, expected: TaskCommand.allCases, field: "commands")
+        guard Set(legalCommands.keys) == Set(TaskState.allCases.map(\.rawValue)) else {
+            throw TaskProtocolError.invalidCoverage("legal_commands")
+        }
+        let declared = Set(commands)
+        guard legalCommands.values.allSatisfy({ Set($0).count == $0.count && Set($0).isSubset(of: declared) }) else {
+            throw TaskProtocolError.invalidCoverage("legal_commands values")
+        }
+    }
+
+    func authorizedCommands(_ serviceCommands: [String]?, for state: TaskState) -> Set<TaskCommand> {
+        guard let serviceCommands else { return [] }
+        let provided = Set(serviceCommands.compactMap(TaskCommand.init(rawValue:)))
+        let legal = Set(legalCommands[state.rawValue] ?? [])
+        return provided.intersection(legal)
+    }
+
+    private func requireExactCoverage<Value: Hashable>(
+        _ values: [Value], expected: [Value], field: String
+    ) throws {
+        guard values.count == Set(values).count, Set(values) == Set(expected) else {
+            throw TaskProtocolError.invalidCoverage(field)
+        }
+    }
+}
+
+enum TaskProtocolError: LocalizedError, Equatable {
+    case missingFixture
+    case unsupportedVersion(Int)
+    case invalidCoverage(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingFixture: "The packaged Task protocol contract is missing."
+        case .unsupportedVersion(let version): "Unsupported Task protocol version \(version)."
+        case .invalidCoverage(let field): "The Task protocol contract has invalid \(field) coverage."
+        }
+    }
+}
+
+enum TaskProtocolV3 {
+    static let version = 3
+    static let current: Result<TaskProtocolContract, Error> = Result { try load() }
+
+    static func load(bundle: Bundle = .module) throws -> TaskProtocolContract {
+        guard let url = bundle.url(forResource: "task_protocol_v3", withExtension: "json") else {
+            throw TaskProtocolError.missingFixture
+        }
+        let contract = try JSONDecoder().decode(TaskProtocolContract.self, from: Data(contentsOf: url))
+        try contract.validate()
+        return contract
+    }
+}
+
+struct TaskAuthority: Equatable {
+    var tools: [String] = []
+    var targets: [String] = []
+    var dataScopes: [String] = []
+    var maximumSteps: Int?
+    var deadlineSeconds: Int?
+
+    var isEmpty: Bool {
+        tools.isEmpty && targets.isEmpty && dataScopes.isEmpty
+            && maximumSteps == nil && deadlineSeconds == nil
+    }
+}
+
+struct TaskStepItem: Identifiable, Equatable {
+    let id: String
+    let ordinal: Int
+    let capability: String
+    let arguments: String
+    let safetyClass: String
+    let state: StepState
+    let dependsOn: [String]
+    let attempts: Int
+    let maxAttempts: Int
+    let result: String?
+    let error: String?
+    let provenance: String?
+
+    var title: String {
+        capability.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
 struct TaskItem: Identifiable, Equatable {
     let id: String
     var title: String
@@ -188,25 +347,31 @@ struct TaskItem: Identifiable, Equatable {
     var source: String
     var turnID: String?
     var availableCommands: Set<TaskCommand>
+    var steps: [TaskStepItem]
+    var authority: TaskAuthority
 
     init(
         id: String,
         title: String,
-        state: String,
+        state: TaskState,
         detail: String,
         sequence: Int,
         source: String = "Requested by you",
         turnID: String? = nil,
-        availableCommands: Set<TaskCommand> = []
+        availableCommands: Set<TaskCommand> = [],
+        steps: [TaskStepItem] = [],
+        authority: TaskAuthority = .init()
     ) {
         self.id = id
         self.title = title
-        self.state = TaskState(serviceValue: state)
+        self.state = state
         self.detail = detail
         self.sequence = sequence
         self.source = source
         self.turnID = turnID
         self.availableCommands = availableCommands
+        self.steps = steps
+        self.authority = authority
     }
 }
 
@@ -258,14 +423,7 @@ struct VoiceOption: Identifiable, Equatable {
 
     static func label(for id: String) -> String {
         switch id {
-        case "qwen-aiden-1.7b": "Aiden · Qwen3-TTS 1.7B candidate"
-        case "qwen-ryan-1.7b": "Ryan · Qwen3-TTS 1.7B candidate"
-        case "qwen-aiden-0.6b": "Aiden · Qwen3-TTS 0.6B candidate"
-        case "qwen-ryan-0.6b": "Ryan · Qwen3-TTS 0.6B candidate"
-        case "kokoro-heart": "Heart · Kokoro"
-        case "kokoro-michael": "Michael · Kokoro"
-        case "lessac": "Lessac · Piper"
-        case "amy": "Amy · Piper"
+        case "qwen-aiden-1.7b": "Aiden · Qwen3-TTS 1.7B"
         default: id
         }
     }
