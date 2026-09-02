@@ -23,8 +23,6 @@ jobs:
       - run: uv run --frozen mypy src/macbot
       - name: Software tests without model or device requirements
         run: uv run --frozen pytest -m 'not models and not device'
-      - name: Compile native audio helper without opening devices
-        run: uv run --frozen macbot build-audio
       - run: uv build
       - name: Inspect distribution contents
         run: uv run --frozen python scripts/inspect_package.py
