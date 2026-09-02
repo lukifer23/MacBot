@@ -48,7 +48,40 @@ def catalog() -> dict[str, Any]:
         raise ValueError(
             "Release model artifacts are absent from the catalog: " + ", ".join(missing)
         )
+    typed = {entry["artifact"] for entry in lab_model_manifest()} | {
+        entry["artifact"] for entry in selected.values()
+    }
+    if set(entries) != typed:
+        raise ValueError("Every catalog artifact must appear exactly once in production or lab")
     return entries
+
+
+def lab_model_manifest() -> list[dict[str, Any]]:
+    """Load typed non-production candidates without making them runtime choices."""
+    raw = json.loads(files("macbot").joinpath("defaults/lab_models.json").read_text())
+    if not isinstance(raw, dict) or set(raw) != {"version", "models"} or raw["version"] != 1:
+        raise ValueError("Lab model manifest has an unsupported shape or version")
+    entries = raw["models"]
+    required = {
+        "artifact",
+        "role",
+        "backend",
+        "provenance",
+        "release_status",
+        "checksum_source",
+        "compatibility",
+    }
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) or set(entry) != required for entry in entries
+    ):
+        raise ValueError("Lab model entries require typed provenance and compatibility")
+    names = [entry["artifact"] for entry in entries]
+    if len(names) != len(set(names)):
+        raise ValueError("Lab model manifest contains duplicate artifacts")
+    selected = {entry["artifact"] for entry in release_model_manifest().values()}
+    if selected.intersection(names):
+        raise ValueError("Production artifacts cannot also appear in the lab manifest")
+    return [dict(entry) for entry in entries]
 
 
 def release_artifacts() -> dict[str, str]:

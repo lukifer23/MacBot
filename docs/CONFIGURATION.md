@@ -23,7 +23,9 @@ Version 2 settings include:
 
 The typed production manifest selects exactly one artifact per role:
 `qwen3.5-2b-official`, Parakeet, Qwen3-TTS 1.7B Aiden, MiniLM, and Silero VAD.
-Alternative catalog entries are lab inputs, not runtime fallback choices.
+Alternative catalog entries are classified in `lab_models.json` with role,
+backend, provenance, checksum source, compatibility, and non-production status;
+they are lab inputs, not runtime fallback choices.
 `qwen3.5-2b-official` is the selected registered LLM. Its catalog entry contains
 the official source revision and source-file hashes plus the pinned llama.cpp
 b10509 F16 and Q4_K_M conversion hashes. Change `models.llm` explicitly to compare another

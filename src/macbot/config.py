@@ -138,6 +138,16 @@ class Settings(StrictModel):
 
 
 RELEASE_MODEL_ROLES = frozenset({"llm", "stt", "tts", "embedding", "vad"})
+RELEASE_MODEL_FIELDS = frozenset(
+    {
+        "artifact",
+        "backend",
+        "provenance",
+        "release_status",
+        "checksum_source",
+        "compatibility",
+    }
+)
 
 
 def release_model_manifest() -> dict[str, dict[str, Any]]:
@@ -155,13 +165,19 @@ def release_model_manifest() -> dict[str, dict[str, Any]]:
         entry = entries[0]
         if not isinstance(entry.get("artifact"), str) or not entry["artifact"]:
             raise ValueError(f"Release role {role} has no artifact")
+        required = RELEASE_MODEL_FIELDS | ({"voice"} if role == "tts" else set())
+        if set(entry) != required:
+            raise ValueError(f"Release role {role} has incomplete or unknown metadata")
+        if entry["release_status"] != "production":
+            raise ValueError(f"Release role {role} is not marked production")
+        if not all(
+            isinstance(entry[field], str) and entry[field] for field in required - {"compatibility"}
+        ):
+            raise ValueError(f"Release role {role} contains invalid metadata")
+        compatibility = entry["compatibility"]
+        if not isinstance(compatibility, dict) or compatibility.get("platform") != "macOS":
+            raise ValueError(f"Release role {role} has invalid compatibility metadata")
         selected[role] = dict(entry)
-    if set(selected["llm"]) != {"artifact", "backend"}:
-        raise ValueError("Release LLM role requires one artifact and backend")
-    if set(selected["tts"]) != {"artifact", "voice"}:
-        raise ValueError("Release TTS role requires one artifact and voice")
-    if any(set(selected[role]) != {"artifact"} for role in {"stt", "embedding", "vad"}):
-        raise ValueError("Release STT, embedding, and VAD roles accept only one artifact")
     return selected
 
 

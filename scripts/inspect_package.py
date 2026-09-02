@@ -11,6 +11,8 @@ required = {
     "macbot/static/event-feed.js",
     "macbot/defaults/config.yaml",
     "macbot/defaults/models.json",
+    "macbot/defaults/lab_models.json",
+    "macbot/defaults/release_models.json",
     "macbot/defaults/task_protocol_v3.json",
     "macbot/native/Info.plist",
 }

@@ -6,6 +6,7 @@ from macbot.config import Settings, load, prepare, release_model_manifest, save
 from macbot.provision import (
     catalog,
     installed_model_inventory,
+    lab_model_manifest,
     model_dir,
     model_roles,
     release_artifacts,
@@ -158,6 +159,11 @@ def test_release_manifest_selects_exactly_one_typed_artifact_per_role(tmp_path):
         "embedding": "minilm",
         "vad": "silero",
     }
+    assert all(entry["release_status"] == "production" for entry in manifest.values())
+    assert all(entry["compatibility"]["platform"] == "macOS" for entry in manifest.values())
+    lab = lab_model_manifest()
+    assert len({entry["artifact"] for entry in lab}) == len(lab)
+    assert not set(release_artifacts().values()).intersection(entry["artifact"] for entry in lab)
     assert model_roles("qwen3.5-2b-official") == ("llm",)
     assert model_roles("qwen3.5-2b") == ()
     (tmp_path / "models/qwen3.5-2b-official").mkdir(parents=True)

@@ -4,28 +4,52 @@
     "llm": [
       {
         "artifact": "qwen3.5-2b-official",
-        "backend": "llama"
+        "backend": "llama",
+        "provenance": "official_upstream_converted_locally",
+        "release_status": "production",
+        "checksum_source": "models.json files[].sha256",
+        "compatibility": {"platform": "macOS", "minimum_version": 14, "architecture": "arm64"}
       }
     ],
     "stt": [
       {
-        "artifact": "parakeet"
+        "artifact": "parakeet",
+        "backend": "parakeet-mlx",
+        "provenance": "official_upstream",
+        "release_status": "production",
+        "checksum_source": "models.json files[].sha256",
+        "compatibility": {"platform": "macOS", "minimum_version": 14, "architecture": "arm64"}
       }
     ],
     "tts": [
       {
         "artifact": "qwen3-tts-1.7b",
-        "voice": "qwen-aiden-1.7b"
+        "voice": "qwen-aiden-1.7b",
+        "backend": "mlx-audio",
+        "provenance": "official_upstream_converted_locally",
+        "release_status": "production",
+        "checksum_source": "models.json files[].sha256",
+        "compatibility": {"platform": "macOS", "minimum_version": 14, "architecture": "arm64"}
       }
     ],
     "embedding": [
       {
-        "artifact": "minilm"
+        "artifact": "minilm",
+        "backend": "onnxruntime",
+        "provenance": "official_upstream",
+        "release_status": "production",
+        "checksum_source": "models.json files[].sha256",
+        "compatibility": {"platform": "macOS", "minimum_version": 14, "architecture": "arm64"}
       }
     ],
     "vad": [
       {
-        "artifact": "silero"
+        "artifact": "silero",
+        "backend": "onnxruntime",
+        "provenance": "official_upstream",
+        "release_status": "production",
+        "checksum_source": "models.json files[].sha256",
+        "compatibility": {"platform": "macOS", "minimum_version": 14, "architecture": "arm64"}
       }
     ]
   }
