@@ -20,8 +20,6 @@ dependencies = [
   "soundfile>=0.13,<1",
   "onnxruntime>=1.29,<2",
   "tokenizers>=0.22,<0.24",
-  "piper-tts==1.7.0",
-  "kokoro-onnx==0.6.1",
   "pypdf>=6.16.2,<7",
   "python-docx>=1.2,<2",
   "huggingface-hub>=1.0,<2",

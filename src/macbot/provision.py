@@ -19,7 +19,6 @@ import httpx
 
 from .config import Settings, atomic_write, release_model_manifest
 
-KOKORO_VOICES = {"kokoro-heart": "af_heart", "kokoro-michael": "am_michael"}
 QWEN_TTS_VOICES = {
     "qwen-aiden-0.6b": ("qwen3-tts-0.6b", "Aiden"),
     "qwen-ryan-0.6b": ("qwen3-tts-0.6b", "Ryan"),
@@ -34,7 +33,7 @@ _ATTESTED_FILES: dict[tuple[str, int, int, int, str], bool] = {}
 def voice_model(name: str) -> str:
     if name in QWEN_TTS_VOICES:
         return QWEN_TTS_VOICES[name][0]
-    return "kokoro" if name in KOKORO_VOICES else name
+    return name
 
 
 def catalog() -> dict[str, Any]:

@@ -14,7 +14,7 @@ import numpy as np
 import soundfile as sf
 
 from .config import Settings
-from .provision import KOKORO_VOICES, QWEN_TTS_VOICES, model_dir, model_file, voices
+from .provision import QWEN_TTS_VOICES, model_dir, model_file, voices
 
 
 def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
@@ -144,77 +144,38 @@ class Synthesizer:
         if name not in voices():
             raise ValueError("TTS voice is not registered")
         self.voice_id = name
-        self.kokoro = None
-        self.qwen = None
-        self.voice = None
-        if name in QWEN_TTS_VOICES:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            from mlx_audio.tts.utils import load_model
+        if name not in QWEN_TTS_VOICES:
+            raise ValueError("The selected production voice must use Qwen TTS")
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        from mlx_audio.tts.utils import load_model
 
-            model_name, self.qwen_speaker = QWEN_TTS_VOICES[name]
-            self.path = model_dir(settings, model_name)
-            self.qwen = load_model(self.path)
-        elif name in KOKORO_VOICES:
-            import onnxruntime as ort
-            from kokoro_onnx import Kokoro
-
-            self.path = model_file(settings, "kokoro", ".onnx")
-            options = ort.SessionOptions()
-            options.intra_op_num_threads = 4
-            options.inter_op_num_threads = 1
-            session = ort.InferenceSession(
-                str(self.path), options, providers=["CPUExecutionProvider"]
-            )
-            self.kokoro = Kokoro.from_session(session, str(model_file(settings, "kokoro", ".bin")))
-        else:
-            from piper import PiperVoice
-
-            self.path = model_file(settings, name, ".onnx")
-            self.voice = PiperVoice.load(str(self.path))
+        model_name, self.qwen_speaker = QWEN_TTS_VOICES[name]
+        self.path = model_dir(settings, model_name)
+        self.qwen = load_model(self.path)
         self.lock = threading.Lock()
         self.cache: OrderedDict[tuple, list[tuple[np.ndarray, int]]] = OrderedDict()
         self.cache_bytes = 0
 
     def _generate(self, text: str, cancel: threading.Event):
-        if self.qwen is not None:
-            generator = self.qwen.generate_custom_voice(
-                text=text,
-                speaker=self.qwen_speaker,
-                language="English",
-                instruct="Speak naturally, warmly, and conversationally.",
-                stream=True,
-                streaming_interval=0.32,
-                temperature=0.8,
-            )
-            try:
-                for result in generator:
-                    if cancel.is_set():
-                        return
-                    samples = np.asarray(result.audio, dtype=np.float32).reshape(-1)
-                    if samples.size:
-                        yield samples, int(result.sample_rate)
-            finally:
-                generator.close()
-            return
-        if self.kokoro is not None:
-            phrases, _ = split_speech(text, final=True)
-            for phrase in phrases:
+        generator = self.qwen.generate_custom_voice(
+            text=text,
+            speaker=self.qwen_speaker,
+            language="English",
+            instruct="Speak naturally, warmly, and conversationally.",
+            stream=True,
+            streaming_interval=0.32,
+            temperature=0.8,
+        )
+        try:
+            for result in generator:
                 if cancel.is_set():
                     return
-                samples, rate = self.kokoro.create(
-                    phrase,
-                    voice=KOKORO_VOICES[self.voice_id],
-                    speed=1.0,
-                    lang="en-us",
-                )
-                yield samples, rate
-            return
-        from piper import SynthesisConfig
-
-        assert self.voice is not None
-        for chunk in self.voice.synthesize(text, SynthesisConfig(length_scale=1.0)):
-            yield chunk.audio_float_array.copy(), chunk.sample_rate
+                samples = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                if samples.size:
+                    yield samples, int(result.sample_rate)
+        finally:
+            generator.close()
 
     def chunks(self, text: str, cancel: threading.Event):
         key = (str(self.path), self.voice_id, text)
@@ -246,4 +207,4 @@ class Synthesizer:
 
     @property
     def supports_speed(self) -> bool:
-        return self.qwen is None
+        return False
