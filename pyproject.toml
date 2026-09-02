@@ -62,7 +62,11 @@ include = ["/src/macbot", "/tests", "/scripts", "/docs", "/config/config.yaml", 
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers"
-markers = ["models: requires provisioned real model weights", "device: requires microphone and speakers with operator present"]
+markers = [
+  "models: requires provisioned real model weights",
+  "device: requires microphone and speakers with operator present",
+  "native_integration: starts real production services and exercises macOS process or transport behavior",
+]
 
 [tool.ruff]
 target-version = "py312"

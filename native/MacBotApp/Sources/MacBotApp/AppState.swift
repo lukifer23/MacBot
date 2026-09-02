@@ -502,10 +502,32 @@ final class AppState: ObservableObject {
             ]
             if let supervisor = status["supervisor"] as? [String: Any],
                let services = supervisor["services"] as? [String: [String: Any]] {
+                let supervisorPhase = supervisor["phase"] as? String ?? "unknown"
+                let resident = supervisor["inference_residency"] as? [String: Any]
+                let ownerPID = resident?["pid"] as? Int
+                let ownerPurpose = resident?["purpose"] as? String ?? "unowned"
+                metrics.append(.init(
+                    id: "supervisor-phase", label: "Runtime lifecycle",
+                    value: ownerPID.map { "\(supervisorPhase) · PID \($0) · \(ownerPurpose)" }
+                        ?? supervisorPhase
+                ))
+                let aggregateRSS = services.values.compactMap { $0["rss_bytes"] as? Double }.reduce(0, +)
+                    + (supervisor["supervisor_rss_bytes"] as? Double ?? 0)
+                metrics.append(.init(
+                    id: "aggregate-rss", label: "Full stack RSS",
+                    value: String(format: "%.2f GiB", aggregateRSS / 1_073_741_824)
+                ))
                 for (name, service) in services.sorted(by: { $0.key < $1.key }) {
-                    let ready = service["ready"] as? Bool == true ? "Ready" : "Unavailable"
+                    let lifecycle = service["phase"] as? String
+                        ?? (service["ready"] as? Bool == true ? "ready" : "unavailable")
                     let rss = (service["rss_bytes"] as? Double).map { String(format: "%.2f GiB", $0 / 1_073_741_824) } ?? "—"
-                    metrics.append(.init(id: "service-\(name)", label: name.capitalized, value: "\(ready) · \(rss)"))
+                    let startup = (service["startup_ms"] as? Double).map { String(format: "%.0f ms", $0) } ?? "pending"
+                    let attempts = service["readiness_attempts"] as? Int ?? 0
+                    let forced = service["forced_kill"] as? Bool == true ? " · forced kill" : ""
+                    metrics.append(.init(
+                        id: "service-\(name)", label: name.capitalized,
+                        value: "\(lifecycle) · \(rss) · \(startup) · \(attempts) probes\(forced)"
+                    ))
                 }
             }
         } catch { show(error) }

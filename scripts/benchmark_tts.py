@@ -17,6 +17,7 @@ import soundfile as sf
 
 from macbot.config import load
 from macbot.provision import catalog, sha256, verify, voice_model
+from macbot.residency import InferenceResidencyLease
 from macbot.speech import Synthesizer
 
 PASSAGES = [
@@ -36,7 +37,7 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[min(len(ordered) - 1, max(0, int(np.ceil(len(ordered) * fraction)) - 1))]
 
 
-def main() -> None:
+def _run() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("voice")
     parser.add_argument("--output", type=Path, required=True)
@@ -127,6 +128,12 @@ def main() -> None:
             indent=2,
         )
     )
+
+
+def main() -> None:
+    settings = load()
+    with InferenceResidencyLease(settings.data_dir, purpose="tts-benchmark"):
+        _run()
 
 
 if __name__ == "__main__":

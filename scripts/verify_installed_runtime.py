@@ -25,6 +25,7 @@ from macbot.auth import AuthStore
 from macbot.config import Settings, prepare, save
 from macbot.native_ipc import read_frame, write_frame
 from macbot.provision import voice_model
+from macbot.residency import InferenceResidencyConflict, InferenceResidencyLease
 
 
 def free_port(allocated):
@@ -62,13 +63,22 @@ def verify(provisioned, model, report):
     assert Path(macbot.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()), (
         "Use a wheel installed in a separate environment, not the editable checkout"
     )
-    with socket.socket() as sock:
-        sock.settimeout(2)
-        assert sock.connect_ex(("1.1.1.1", 443)) in {errno.EPERM, errno.EACCES}, (
-            "External network must be denied by the OS, not merely unavailable"
-        )
     with tempfile.TemporaryDirectory(prefix="macbot-wheel-runtime-") as temporary:
         s = Settings(data_dir=Path(temporary) / "state")
+        residency = InferenceResidencyLease(s.data_dir, purpose="installed-verifier-preflight")
+        try:
+            residency.acquire()
+        except InferenceResidencyConflict as exc:
+            raise RuntimeError(
+                "Installed verification requires exclusive inference residency; "
+                "stop the active MacBot stack before verification"
+            ) from exc
+        residency.release()
+        with socket.socket() as sock:
+            sock.settimeout(2)
+            assert sock.connect_ex(("1.1.1.1", 443)) in {errno.EPERM, errno.EACCES}, (
+                "External network must be denied by the OS, not merely unavailable"
+            )
         s.models.llm = model
         s.models.temperature = 0
         s.models.max_tokens = 128

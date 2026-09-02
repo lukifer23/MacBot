@@ -124,6 +124,7 @@ def run(name, backend, destination, case_set="core"):
         tools = None
         started = time.monotonic()
         try:
+            supervisor.acquire()
             if backend == "llama":
                 supervisor.definitions()
                 outcome = supervisor.start_service(
@@ -249,6 +250,7 @@ def run(name, backend, destination, case_set="core"):
             if tools:
                 tools.close()
             supervisor.stop_all()
+            supervisor.release()
             supervisor.client.close()
             supervisor.auth.close()
 

@@ -52,8 +52,11 @@ directory.
 
 `./scripts/build_native_app.sh --install` stages an app and runtime under one
 release-generation directory, verifies both, writes `release-manifest.json`,
-then atomically swaps the single `current` pointer shared by the stable app and
-runtime links. The previous pointer is retained as `rollback`. Never copy only the app or
+then quiesces the owned runtime and atomically swaps the single `current`
+pointer while holding the host-wide inference lease. The pointer is shared by
+the stable app and runtime links. The previous pointer is retained as
+`rollback`; failed post-activation validation restores the exact earlier
+pointers. Never copy only the app or
 only the runtime over an installed generation. Before activation, preserve any
 older non-symlink app as the timestamped `MacBot.previous-*.app` artifact.
 

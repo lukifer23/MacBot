@@ -26,16 +26,19 @@ uv build
 uv run --frozen python scripts/inspect_package.py
 ```
 
-A wheel must contain templates, static assets, the lab catalog, typed production
-model manifest, default config, and protocol-v3 schema. It must not contain user
+A wheel must contain templates, static assets, the checksum artifact catalog,
+typed lab and production manifests, default config, and protocol-v3 schema. It must not contain user
 documents, model weights, recordings, databases, credentials, logs, or the old
 audio helper. Test installation into a clean environment and execute from a
 different directory, with offline mode after provisioning.
 
 `./scripts/build_native_app.sh --install` stages a clean runtime and app as one
 generation, verifies both, writes `release-manifest.json`, and atomically swaps
-the single `current` pointer used by stable app/runtime links. Do not activate an app from one generation with a runtime
-from another.
+the single `current` pointer used by stable app/runtime links. If the installed
+runtime is active, the installer stops its owned processes, acquires the
+host-wide inference lease, activates the pair, and restores runtime readiness.
+Failed validation restores the exact prior pointers. Do not activate an app
+from one generation with a runtime from another.
 
 The quality gates are intentionally separate:
 
@@ -43,7 +46,10 @@ The quality gates are intentionally separate:
 # software
 make verify
 
-# selected model and native tests
+# real macOS process/transport integration
+make native-integration
+
+# selected model and Swift tests
 uv run --frozen pytest -m 'models and not device'
 swift test --package-path native/MacBotApp -c release
 

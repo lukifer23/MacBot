@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, TextIO
+from typing import Any, BinaryIO, TextIO
 from urllib.parse import urlsplit
 
 import httpx
@@ -24,6 +24,7 @@ from .auth import AuthStore, install_security
 from .config import Settings, atomic_write, load, prepare
 from .history import runtime_history_key
 from .provision import model_file
+from .residency import InferenceResidencyLease
 
 
 @dataclass
@@ -38,7 +39,13 @@ class ServiceDefinition:
 
 
 class MacBotOrchestrator:
-    def __init__(self, settings: Settings | None = None, history_key: bytes | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        history_key: bytes | None = None,
+        *,
+        residency_dir: Path | None = None,
+    ):
         self.settings = settings or load()
         prepare(self.settings)
         if history_key is not None and len(history_key) != 32:
@@ -57,7 +64,11 @@ class MacBotOrchestrator:
         self.readiness: dict[str, bool] = {}
         self.health_failures: dict[str, int] = {}
         self.healthy_since: dict[str, float] = {}
+        self.lifecycle: dict[str, dict[str, Any]] = {}
         self._instance_file: TextIO | None = None
+        self._residency_lease = InferenceResidencyLease(
+            self.settings.data_dir, lease_dir=residency_dir
+        )
 
     def definitions(self):
         s = self.settings
@@ -139,17 +150,76 @@ class MacBotOrchestrator:
                 common,
                 dependencies=dependencies,
             )
+        for name in self.service_definitions:
+            self._transition(name, "pending")
+
+    def _transition(self, name: str, phase: str, **details: Any) -> None:
+        """Record observable lifecycle progress without making status block on a child."""
+        now_ns = time.time_ns()
+        monotonic_ns = time.monotonic_ns()
+        with self.lock:
+            lifecycle = self.lifecycle.setdefault(
+                name,
+                {
+                    "phase": "pending",
+                    "phase_changed_at_ns": now_ns,
+                    "phase_changed_monotonic_ns": monotonic_ns,
+                    "spawned_at_ns": None,
+                    "spawned_monotonic_ns": None,
+                    "ready_at_ns": None,
+                    "ready_monotonic_ns": None,
+                    "stop_requested_at_ns": None,
+                    "stop_requested_monotonic_ns": None,
+                    "exited_at_ns": None,
+                    "exited_monotonic_ns": None,
+                    "readiness_attempts": 0,
+                    "last_probe_ms": None,
+                    "forced_kill": False,
+                    "exit_code": None,
+                },
+            )
+            if lifecycle["phase"] != phase:
+                lifecycle["phase"] = phase
+                lifecycle["phase_changed_at_ns"] = now_ns
+                lifecycle["phase_changed_monotonic_ns"] = monotonic_ns
+            lifecycle.update(details)
+
+    @staticmethod
+    def _startup_phase(name: str) -> str:
+        return {
+            "llm": "loading_language_model",
+            "rag": "loading_retrieval",
+            "assistant": "loading_speech_models",
+            "dashboard": "starting_diagnostics",
+        }.get(name, "waiting_readiness")
 
     def acquire(self):
-        self._instance_file = (self.settings.data_dir / "run/orchestrator.lock").open("a+")
+        self._residency_lease.acquire()
         try:
-            fcntl.flock(self._instance_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("Another MacBot supervisor owns this data directory") from None
-        atomic_write(
-            self.settings.data_dir / "run/orchestrator.json",
-            json.dumps({"pid": os.getpid(), "created": psutil.Process().create_time()}).encode(),
-        )
+            self._instance_file = (self.settings.data_dir / "run/orchestrator.lock").open("a+")
+            try:
+                fcntl.flock(self._instance_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("Another MacBot supervisor owns this data directory") from None
+            atomic_write(
+                self.settings.data_dir / "run/orchestrator.json",
+                json.dumps(
+                    {"pid": os.getpid(), "created": psutil.Process().create_time()}
+                ).encode(),
+            )
+        except Exception:
+            if self._instance_file:
+                self._instance_file.close()
+            self._instance_file = None
+            self._residency_lease.release()
+            raise
+
+    def release(self) -> None:
+        """Release data-directory and host ownership after all children stop."""
+        if self._instance_file:
+            self._instance_file.close()
+            self._instance_file = None
+        self._residency_lease.release()
 
     def start_service(
         self, service: ServiceDefinition, retries: int = 60, backoff: float = 0.5
@@ -158,10 +228,30 @@ class MacBotOrchestrator:
             return self._start_service(service, retries, backoff)
 
     def _start_service(self, service: ServiceDefinition, retries: int, backoff: float) -> dict:
+        if retries < 1 or backoff <= 0:
+            raise ValueError("Service readiness requires positive retries and backoff")
+        startup_started = time.monotonic()
+        deadline = startup_started + retries * backoff
+        self._transition(
+            service.name,
+            "spawning",
+            spawned_at_ns=None,
+            spawned_monotonic_ns=None,
+            ready_at_ns=None,
+            ready_monotonic_ns=None,
+            stop_requested_at_ns=None,
+            stop_requested_monotonic_ns=None,
+            exited_at_ns=None,
+            exited_monotonic_ns=None,
+            readiness_attempts=0,
+            last_probe_ms=None,
+            forced_kill=False,
+            exit_code=None,
+        )
         with self.lock:
-            self.readiness[service.name] = False
             if service.name in self.processes and self.processes[service.name].poll() is None:
                 return {"success": False, "error": "Service is already owned and running"}
+            self.readiness[service.name] = False
             if service.port:
                 host = urlsplit(service.health_endpoint or "").hostname or "127.0.0.1"
                 family = socket.AF_INET6 if ":" in host else socket.AF_INET
@@ -175,6 +265,7 @@ class MacBotOrchestrator:
                         self.failures[service.name] = (
                             f"Port {service.port} is occupied; no process was stopped"
                         )
+                        self._transition(service.name, "failed")
                         return {
                             "success": False,
                             "error": self.failures[service.name],
@@ -209,26 +300,83 @@ class MacBotOrchestrator:
                 if read_fd is not None:
                     os.close(read_fd)
             self.processes[service.name], self.logs[service.name] = process, log
-        for _ in range(retries):
+            spawned_at_ns = time.time_ns()
+            spawned_monotonic_ns = time.monotonic_ns()
+            self._transition(
+                service.name,
+                self._startup_phase(service.name),
+                spawned_at_ns=spawned_at_ns,
+                spawned_monotonic_ns=spawned_monotonic_ns,
+            )
+        attempts = 0
+        while attempts < retries and time.monotonic() < deadline:
             if process.poll() is not None:
                 break
             if not service.health_endpoint:
-                return {"success": True, "pid": process.pid}
+                ready_at_ns = time.time_ns()
+                ready_monotonic_ns = time.monotonic_ns()
+                self._transition(
+                    service.name,
+                    "ready",
+                    ready_at_ns=ready_at_ns,
+                    ready_monotonic_ns=ready_monotonic_ns,
+                )
+                return {
+                    "success": True,
+                    "pid": process.pid,
+                    "startup_ms": (time.monotonic() - startup_started) * 1000,
+                }
+            attempts += 1
+            probe_started = time.monotonic()
             try:
+                remaining = max(0.001, deadline - probe_started)
                 r = self.client.get(
-                    service.health_endpoint, headers=self.auth.headers(service.name)
+                    service.health_endpoint,
+                    headers=self.auth.headers(service.name),
+                    timeout=min(2.0, remaining),
+                )
+                probe_ms = (time.monotonic() - probe_started) * 1000
+                self._transition(
+                    service.name,
+                    self._startup_phase(service.name),
+                    readiness_attempts=attempts,
+                    last_probe_ms=probe_ms,
                 )
                 if r.is_success and (service.name == "llm" or r.json().get("pid") == process.pid):
                     self.failures.pop(service.name, None)
                     self.readiness[service.name] = True
                     self.health_failures[service.name] = 0
-                    return {"success": True, "pid": process.pid}
+                    ready_at_ns = time.time_ns()
+                    ready_monotonic_ns = time.monotonic_ns()
+                    self._transition(
+                        service.name,
+                        "ready",
+                        ready_at_ns=ready_at_ns,
+                        ready_monotonic_ns=ready_monotonic_ns,
+                    )
+                    return {
+                        "success": True,
+                        "pid": process.pid,
+                        "startup_ms": (time.monotonic() - startup_started) * 1000,
+                        "readiness_attempts": attempts,
+                    }
             except (httpx.HTTPError, ValueError):
-                pass
-            if self.stopping.wait(backoff):
+                self._transition(
+                    service.name,
+                    self._startup_phase(service.name),
+                    readiness_attempts=attempts,
+                    last_probe_ms=(time.monotonic() - probe_started) * 1000,
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self.stopping.wait(min(backoff, remaining)):
                 break
         self.stop_service(service.name)
-        self.failures[service.name] = "Service failed readiness; inspect its private log"
+        elapsed_ms = (time.monotonic() - startup_started) * 1000
+        self.failures[service.name] = (
+            f"Service failed readiness after {attempts} probes in {elapsed_ms:.0f} ms; "
+            "inspect its private log"
+        )
+        self._transition(service.name, "failed")
         return {"success": False, "error": self.failures[service.name]}
 
     def stop_service(self, name: str):
@@ -238,23 +386,44 @@ class MacBotOrchestrator:
     def _stop_service(self, name: str):
         with self.lock:
             self.readiness[name] = False
-            process = self.processes.pop(name, None)
-            if process and process.poll() is None:
+            process = self.processes.get(name)
+            log = self.logs.get(name)
+            self._transition(
+                name,
+                "stopping",
+                stop_requested_at_ns=time.time_ns(),
+                stop_requested_monotonic_ns=time.monotonic_ns(),
+            )
+        forced_kill = False
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                forced_kill = True
                 try:
-                    os.killpg(process.pid, signal.SIGTERM)
+                    os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait(timeout=3)
-            log = self.logs.pop(name, None)
+                process.wait(timeout=3)
+        with self.lock:
+            if self.processes.get(name) is process:
+                self.processes.pop(name, None)
+            if self.logs.get(name) is log:
+                self.logs.pop(name, None)
             if log:
                 log.close()
+            self._transition(
+                name,
+                "stopped",
+                exited_at_ns=time.time_ns(),
+                exited_monotonic_ns=time.monotonic_ns(),
+                forced_kill=forced_kill,
+                exit_code=process.returncode if process else None,
+            )
 
     def restart_process(self, name: str) -> dict:
         with self.lifecycle_lock:
@@ -274,6 +443,7 @@ class MacBotOrchestrator:
 
     def status(self) -> dict:
         with self.lock:
+            now_monotonic_ns = time.monotonic_ns()
             services = {}
             for name, definition in self.service_definitions.items():
                 process = self.processes.get(name)
@@ -287,6 +457,11 @@ class MacBotOrchestrator:
                         )
                     except psutil.Error:
                         pass
+                lifecycle = self.lifecycle.get(name, {})
+                spawned = lifecycle.get("spawned_monotonic_ns")
+                ready = lifecycle.get("ready_monotonic_ns")
+                stop_requested = lifecycle.get("stop_requested_monotonic_ns")
+                exited = lifecycle.get("exited_monotonic_ns")
                 services[name] = {
                     "running": alive,
                     "pid": process.pid if process else None,
@@ -296,20 +471,52 @@ class MacBotOrchestrator:
                     "error": self.failures.get(name),
                     "restarts": self.restarts.get(name, 0),
                     "dependencies": list(definition.dependencies),
-                    "state": (
-                        "ready"
-                        if alive and self.readiness.get(name, False)
-                        else "recovering"
-                        if alive
-                        else "failed"
+                    "state": lifecycle.get("phase", "pending"),
+                    "phase": lifecycle.get("phase", "pending"),
+                    "phase_changed_at_ns": lifecycle.get("phase_changed_at_ns"),
+                    "phase_elapsed_ms": (
+                        (now_monotonic_ns - lifecycle["phase_changed_monotonic_ns"]) / 1e6
+                        if lifecycle.get("phase_changed_monotonic_ns")
+                        else None
                     ),
+                    "startup_ms": (
+                        ((ready or exited or now_monotonic_ns) - spawned) / 1e6 if spawned else None
+                    ),
+                    "shutdown_ms": (
+                        ((exited or now_monotonic_ns) - stop_requested) / 1e6
+                        if stop_requested
+                        else None
+                    ),
+                    "readiness_attempts": lifecycle.get("readiness_attempts", 0),
+                    "last_probe_ms": lifecycle.get("last_probe_ms"),
+                    "forced_kill": lifecycle.get("forced_kill", False),
+                    "exit_code": lifecycle.get("exit_code"),
                 }
+            ready = (
+                not self.stopping.is_set()
+                and bool(services)
+                and all(s["ready"] and not s["error"] for s in services.values())
+            )
+            active_phase = "ready" if ready else "pending"
+            if self.stopping.is_set():
+                active_phase = "stopping"
+            elif services:
+                active_phase = next(
+                    (
+                        str(service["phase"])
+                        for service in services.values()
+                        if service["phase"] != "ready"
+                    ),
+                    "ready",
+                )
             return {
                 "pid": os.getpid(),
                 "supervisor_rss_bytes": psutil.Process().memory_info().rss,
+                "inference_residency": self._residency_lease.owner,
                 "services": services,
-                "ready": bool(services)
-                and all(s["ready"] and not s["error"] for s in services.values()),
+                "phase": active_phase,
+                "shutdown_requested": self.stopping.is_set(),
+                "ready": ready,
             }
 
     def monitor(self):
@@ -333,6 +540,7 @@ class MacBotOrchestrator:
             self.readiness[name] = False
             self.failures[name] = "Blocked by unavailable dependencies: " + ", ".join(unavailable)
             self.healthy_since.pop(name, None)
+            self._transition(name, "blocked_dependencies")
             return
         process = self.processes.get(name)
         healthy = bool(process and process.poll() is None)
@@ -353,15 +561,18 @@ class MacBotOrchestrator:
             since = self.healthy_since.setdefault(name, time.monotonic())
             if time.monotonic() - since >= 60:
                 self.restarts[name] = 0
+            self._transition(name, "ready")
             return
         self.healthy_since.pop(name, None)
         self.health_failures[name] = self.health_failures.get(name, 0) + 1
         if process and process.poll() is None and self.health_failures[name] < 3:
+            self._transition(name, "recovering")
             return
         if not healthy:
             count = self.restarts.get(name, 0)
             if count >= 3:
                 self.failures[name] = "Restart limit reached"
+                self._transition(name, "failed")
                 return
             self.restarts[name] = count + 1
             if self.stopping.wait(min(2**count, 8)):
@@ -435,8 +646,7 @@ def main():
         thread.join(timeout=3)
         supervisor.client.close()
         supervisor.auth.close()
-        if supervisor._instance_file:
-            supervisor._instance_file.close()
+        supervisor.release()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import soundfile as sf
 
 from macbot.config import load
 from macbot.provision import verify
+from macbot.residency import InferenceResidencyLease
 from macbot.speech import Transcriber
 
 
@@ -99,4 +100,6 @@ if __name__ == "__main__":
     p.add_argument("--output", required=True, type=Path)
     args = p.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    run(args.output)
+    settings = load()
+    with InferenceResidencyLease(settings.data_dir, purpose="stt-benchmark"):
+        run(args.output)

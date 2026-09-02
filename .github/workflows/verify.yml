@@ -22,7 +22,9 @@ jobs:
       - run: uv run --frozen ruff format --check src tests scripts
       - run: uv run --frozen mypy src/macbot
       - name: Software tests without model or device requirements
-        run: uv run --frozen pytest -m 'not models and not device'
+        run: uv run --frozen pytest -m 'not models and not device and not native_integration'
+      - name: Real macOS service lifecycle integration
+        run: uv run --frozen pytest -m native_integration --durations=20
       - run: uv build
       - name: Inspect distribution contents
         run: uv run --frozen python scripts/inspect_package.py

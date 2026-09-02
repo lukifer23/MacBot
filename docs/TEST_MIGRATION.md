@@ -21,8 +21,10 @@ Test replacements preserve the behavioral concerns rather than mocked implementa
 | Noisy subprocess stdout | Actual child process writing beyond pipe capacity to owned logs, occupied-port preservation and startup-failure cleanup |
 | Tone playback returning booleans | Operator-authorized Swift capture/playback/cancel assertions; separate acoustic/soak/listening gates |
 
-`pytest -m 'not models and not device'` is the software gate. Selected-model,
-native-integration, device-audio, soak, and release-artifact gates run
+`pytest -m 'not models and not device and not native_integration'` is the
+software gate. `pytest -m native_integration` retains the real macOS service
+lifecycle checks as a separately timed gate. Selected-model, device-audio,
+soak, and release-artifact gates run
 separately. No unit result replaces real model trajectories, XCUITest, physical
 audio, user listening acceptance, or endurance recovery.
 

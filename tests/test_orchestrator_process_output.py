@@ -2,9 +2,43 @@
 
 import socket
 import sys
+import threading
+import time
+
+import pytest
 
 from macbot.config import Settings
 from macbot.orchestrator import MacBotOrchestrator, ServiceDefinition
+
+
+def _http_service_script(port: int, *, ready_delay: float = 0, term_delay: float = 0) -> str:
+    return f"""
+import http.server
+import json
+import os
+import signal
+import time
+
+time.sleep({ready_delay!r})
+
+def terminate(*_):
+    time.sleep({term_delay!r})
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, terminate)
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({{"pid": os.getpid(), "status": "ready"}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *_):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", {port}), Handler).serve_forever()
+"""
 
 
 def test_service_output_is_drained(tmp_path):
@@ -63,6 +97,7 @@ def test_startup_failure_closes_its_child(tmp_path):
         supervisor.auth.close()
 
 
+@pytest.mark.native_integration
 def test_closed_stream_time_wait_does_not_block_restart(tmp_path):
     import os
 
@@ -123,43 +158,157 @@ def test_status_remains_available_when_readiness_fails(tmp_path):
 
 
 def test_manual_restart_and_monitor_share_one_lifecycle(tmp_path):
-    import os
     import threading
 
-    from macbot.config import save
-
-    settings = Settings(data_dir=tmp_path)
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        settings.services.dashboard.port = probe.getsockname()[1]
-    supervisor = MacBotOrchestrator(settings)
-    save(settings)
+    supervisor = MacBotOrchestrator(Settings(data_dir=tmp_path))
     service = ServiceDefinition(
-        "dashboard",
-        [sys.executable, "-m", "macbot.web_dashboard"],
-        health_endpoint=settings.services.dashboard.url + "/ready",
-        port=settings.services.dashboard.port,
-        env={
-            **os.environ,
-            "MACBOT_DATA_DIR": str(tmp_path),
-            "MACBOT_CONFIG": str(settings.config_path),
-        },
+        "owned-worker",
+        [sys.executable, "-c", "import time; time.sleep(60)"],
     )
-    supervisor.service_definitions["dashboard"] = service
+    supervisor.service_definitions[service.name] = service
     monitor = threading.Thread(target=supervisor.monitor)
     try:
         assert supervisor.start_service(service)["success"]
+        pids = [supervisor.processes[service.name].pid]
         monitor.start()
-        pids = [supervisor.processes["dashboard"].pid]
         for _ in range(4):
-            assert supervisor.restart_process("dashboard")["success"]
-            pids.append(supervisor.processes["dashboard"].pid)
+            assert supervisor.restart_process(service.name)["success"]
+            pids.append(supervisor.processes[service.name].pid)
         assert len(set(pids)) == 5
-        assert supervisor.restarts.get("dashboard", 0) == 0
-        assert supervisor.status()["services"]["dashboard"]["ready"]
+        assert supervisor.restarts.get(service.name, 0) == 0
+        assert supervisor.status()["services"][service.name]["running"]
     finally:
         supervisor.stop_all()
         if monitor.ident is not None:
             monitor.join(timeout=5)
+        supervisor.client.close()
+        supervisor.auth.close()
+
+
+def test_readiness_reports_real_startup_phase_and_timing(tmp_path):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    supervisor = MacBotOrchestrator(Settings(data_dir=tmp_path))
+    service = ServiceDefinition(
+        "assistant",
+        [sys.executable, "-u", "-c", _http_service_script(port, ready_delay=0.2)],
+        health_endpoint=f"http://127.0.0.1:{port}/ready",
+        port=port,
+    )
+    result = []
+    starter = threading.Thread(
+        target=lambda: result.append(supervisor.start_service(service, retries=20, backoff=0.05))
+    )
+    try:
+        supervisor.service_definitions[service.name] = service
+        starter.start()
+        deadline = time.monotonic() + 1
+        loading = None
+        while time.monotonic() < deadline:
+            loading = supervisor.status()["services"][service.name]
+            if loading["phase"] == "loading_speech_models":
+                break
+            time.sleep(0.005)
+        assert loading is not None
+        assert loading["phase"] == "loading_speech_models"
+        assert loading["running"]
+        assert not loading["ready"]
+        starter.join(timeout=2)
+        assert not starter.is_alive()
+        assert result[0]["success"]
+        ready = supervisor.status()["services"][service.name]
+        assert ready["phase"] == "ready"
+        assert ready["startup_ms"] >= 150
+        assert ready["readiness_attempts"] >= 2
+        assert ready["last_probe_ms"] is not None
+    finally:
+        supervisor.stop_all()
+        starter.join(timeout=2)
+        supervisor.client.close()
+        supervisor.auth.close()
+
+
+def test_status_does_not_block_while_real_child_stops(tmp_path):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    supervisor = MacBotOrchestrator(Settings(data_dir=tmp_path))
+    service = ServiceDefinition(
+        "dashboard",
+        [sys.executable, "-u", "-c", _http_service_script(port, term_delay=0.25)],
+        health_endpoint=f"http://127.0.0.1:{port}/ready",
+        port=port,
+    )
+    stopper = threading.Thread(target=lambda: supervisor.stop_service(service.name))
+    try:
+        supervisor.service_definitions[service.name] = service
+        assert supervisor.start_service(service, retries=20, backoff=0.05)["success"]
+        supervisor.stopping.set()
+        shutdown_requested = supervisor.status()
+        assert shutdown_requested["phase"] == "stopping"
+        assert shutdown_requested["shutdown_requested"]
+        assert not shutdown_requested["ready"]
+        stopper.start()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if supervisor.lifecycle[service.name]["phase"] == "stopping":
+                break
+            time.sleep(0.005)
+        started = time.monotonic()
+        stopping = supervisor.status()["services"][service.name]
+        status_ms = (time.monotonic() - started) * 1000
+        assert stopping["phase"] == "stopping"
+        assert stopping["running"]
+        assert status_ms < 100
+        if stopper.ident is not None:
+            stopper.join(timeout=2)
+        assert not stopper.is_alive()
+        stopped = supervisor.status()["services"][service.name]
+        assert stopped["phase"] == "stopped"
+        assert stopped["shutdown_ms"] >= 200
+        assert not stopped["forced_kill"]
+        assert stopped["exit_code"] == 0
+    finally:
+        supervisor.stop_all()
+        stopper.join(timeout=2)
+        supervisor.client.close()
+        supervisor.auth.close()
+
+
+def test_readiness_deadline_includes_slow_health_request(tmp_path):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    script = f"""
+import http.server
+import time
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        time.sleep(5)
+    def log_message(self, *_):
+        pass
+http.server.HTTPServer(("127.0.0.1", {port}), Handler).serve_forever()
+"""
+    supervisor = MacBotOrchestrator(Settings(data_dir=tmp_path))
+    service = ServiceDefinition(
+        "rag",
+        [sys.executable, "-u", "-c", script],
+        health_endpoint=f"http://127.0.0.1:{port}/ready",
+        port=port,
+    )
+    try:
+        supervisor.service_definitions[service.name] = service
+        started = time.monotonic()
+        result = supervisor.start_service(service, retries=4, backoff=0.05)
+        elapsed = time.monotonic() - started
+        assert not result["success"]
+        assert elapsed < 1
+        assert "after" in result["error"] and "probes" in result["error"]
+        failed = supervisor.status()["services"][service.name]
+        assert failed["phase"] == "failed"
+        assert failed["readiness_attempts"] >= 1
+    finally:
+        supervisor.stop_all()
         supervisor.client.close()
         supervisor.auth.close()

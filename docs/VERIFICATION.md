@@ -27,7 +27,7 @@ artifact evidence are not interchangeable.
 uv run --frozen ruff format --check src tests scripts
 uv run --frozen ruff check src tests scripts
 uv run --frozen mypy src/macbot
-uv run --frozen pytest -m 'not models and not device'
+uv run --frozen pytest -m 'not models and not device and not native_integration'
 uv run --frozen pytest -m 'not device'
 ```
 
@@ -36,6 +36,17 @@ deadline, shutdown, and crash matrix at planning, authorization, effect start,
 executor return, evaluation, synthesis, and terminal commit. The Task, runtime,
 IPC, history, and capability changes require at least 90% changed-line coverage
 and 85% branch coverage.
+
+### Native integration
+
+```sh
+uv run --frozen pytest -m native_integration --durations=20
+swift test --package-path native/MacBotApp -c release
+```
+
+The Python gate starts the real production diagnostics service and exercises
+macOS port-reuse and supervisor ownership. Generic restart serialization uses
+real owned child processes without repeatedly cold-starting the full service.
 
 ### Selected model
 
@@ -108,6 +119,11 @@ reconciliation, single-pointer atomic paired activation, and paired rollback. Th
 must run outside the checkout, refuse report overwrite, use a fresh inherited
 history key, prove the OS blocks external networking, scan durable stores for
 test plaintext, and stop only its owned process tree.
+
+Installed verification and release activation use the same per-user host-wide
+inference lease as the production supervisor. Stop the active stack before an
+isolated verifier run. The installer performs that quiesce automatically and
+must restore exactly one ready stack when it upgrades a running generation.
 
 ### Native product and accessibility
 

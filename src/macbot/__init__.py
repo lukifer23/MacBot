@@ -1,13 +1,8 @@
-"""
-MacBot - Local AI Voice Assistant for macOS
+"""MacBot's import-light public package surface.
 
-A comprehensive offline AI assistant with voice interface,
-web dashboard, and native macOS tool integration.
+Package version and authorship metadata have one authority: ``pyproject.toml``
+and the installed distribution metadata generated from it.
 """
-
-__version__ = "2.0.0"
-__author__ = "MacBot Team"
-__email__ = "info@macbot.local"
 
 
 def main():

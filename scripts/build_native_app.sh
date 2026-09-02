@@ -3,7 +3,10 @@ set -euo pipefail
 
 repo_root="${0:A:h:h}"
 package_root="$repo_root/native/MacBotApp"
-output_root="$repo_root/build/native"
+# Signed bundles are assembled outside cloud-synchronized source checkouts.
+# File Provider can otherwise reattach Finder metadata between xattr cleanup
+# and codesign, invalidating an otherwise identical build.
+output_root="$HOME/Library/Caches/MacBot/native-build"
 app="$output_root/MacBot.app"
 cli="$repo_root/.venv/bin/macbot"
 source_root="$repo_root/src"
@@ -133,30 +136,68 @@ os.chmod(manifest, 0o600)
 PY
   codesign --verify --strict --verbose=2 "$staged_app"
   "$runtime_stage/bin/macbot" --help >/dev/null
-  python3 - "$release_root" "$destination" "$HOME/Library/Application Support/MacBot/runtime" "$HOME/Library/Application Support/MacBot/current" "$HOME/Library/Application Support/MacBot/rollback" <<'PY'
-import os, pathlib, shutil, sys, time
-release, app_target, runtime_target, current, rollback = map(pathlib.Path, sys.argv[1:])
-if app_target.exists() and not app_target.is_symlink():
-    backup = app_target.parent / f"MacBot.previous-{time.time_ns()}.app"
-    os.replace(app_target, backup)
-for target, source in ((runtime_target, current / "runtime"), (app_target, current / "app/MacBot.app")):
-    link = target.with_name(target.name + ".next")
-    link.unlink(missing_ok=True)
-    link.symlink_to(source)
-    os.replace(link, target)
-if current.is_symlink():
-    previous = current.resolve(strict=True)
-    prior = rollback.with_name(rollback.name + ".next")
-    prior.unlink(missing_ok=True)
-    prior.symlink_to(previous)
-    os.replace(prior, rollback)
-next_generation = current.with_name(current.name + ".next")
-next_generation.unlink(missing_ok=True)
-next_generation.symlink_to(release)
-os.replace(next_generation, current)
-PY
+  data_root="$HOME/Library/Application Support/MacBot"
+  stable_cli="$data_root/runtime/bin/macbot"
+  current_pointer="$data_root/current"
+  rollback_pointer="$data_root/rollback"
+  activation_receipt="$release_root/activation-receipt.json"
+  was_running=false
+  activated=false
+
+  runtime_ready() {
+    "$stable_cli" status 2>/dev/null | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ready") else 1)' 2>/dev/null
+  }
+
+  if [[ -x "$stable_cli" ]] && "$stable_cli" status >/dev/null 2>&1; then
+    was_running=true
+    "$stable_cli" stop >/dev/null
+  fi
+
+  rollback_activation() {
+    activation_exit=$?
+    trap - ERR
+    set +e
+    if $activated; then
+      "$stable_cli" stop >/dev/null 2>&1
+      "$runtime_stage/bin/python3" -m macbot.release_activation restore \
+        "$activation_receipt" "$current_pointer" "$rollback_pointer" \
+        --data-dir "$data_root"
+      restore_exit=$?
+      if [[ "$restore_exit" -ne 0 ]]; then
+        echo "MacBot activation failed and rollback was blocked; inspect current and rollback pointers before starting MacBot" >&2
+        exit "$restore_exit"
+      fi
+      if $was_running && ! runtime_ready; then
+        "$stable_cli" start --background >/dev/null 2>&1
+      fi
+    fi
+    echo "MacBot activation failed; the previous paired generation was restored" >&2
+    exit "$activation_exit"
+  }
+  trap rollback_activation ERR
+
+  "$runtime_stage/bin/python3" -m macbot.release_activation activate \
+    "$release_root" "$destination" "$data_root/runtime" \
+    "$current_pointer" "$rollback_pointer" --data-dir "$data_root" \
+    > "$activation_receipt"
+  activated=true
   codesign --verify --strict --verbose=2 "$destination"
-  "$HOME/Library/Application Support/MacBot/runtime/bin/macbot" --help >/dev/null
+  "$stable_cli" --help >/dev/null
+  if $was_running; then
+    for _ in {1..20}; do
+      runtime_ready && break
+      sleep 0.25
+    done
+    if ! runtime_ready; then
+      "$stable_cli" start --background >/dev/null
+    fi
+    for _ in {1..600}; do
+      runtime_ready && break
+      sleep 0.25
+    done
+    runtime_ready
+  fi
+  trap - ERR
   echo "$destination"
 else
   echo "$app"

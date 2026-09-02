@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 UV := uv
 
-.PHONY: deps setup build models start stop doctor test lint typecheck verify
+.PHONY: deps setup build models start stop doctor test native-integration lint typecheck verify
 
 deps:
 	$(UV) sync --frozen --all-extras --group dev
@@ -18,7 +18,9 @@ stop:
 doctor:
 	$(UV) run --frozen macbot doctor
 test:
-	$(UV) run --frozen --all-extras pytest -m 'not models and not device'
+	$(UV) run --frozen --all-extras pytest -m 'not models and not device and not native_integration'
+native-integration:
+	$(UV) run --frozen --all-extras pytest -m native_integration --durations=20
 lint:
 	$(UV) run --frozen ruff check src tests scripts
 	$(UV) run --frozen ruff format --check src tests scripts
