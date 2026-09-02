@@ -9,11 +9,11 @@ artifact evidence are not interchangeable.
 
 | Date | Gate | Result | Scope and limits |
 | --- | --- | --- | --- |
-| 2026-09-01 | Consolidated non-device | **Pass:** 156 passed in 33.87 seconds; Ruff clean; mypy clean for 28 source files | `pytest -m 'not device'`; includes available selected-model tests, but no full trajectory/census, native-runtime, device, listener, soak, or artifact claim |
+| 2026-09-01 | Consolidated non-device | **Pass:** 156 passed in 35.44 seconds; Ruff and format clean; mypy clean for 28 source files | `pytest -m 'not device'`; includes available selected-model tests, but no full trajectory, device, listener, or soak claim |
 | 2026-09-01 | Swift unit/release | **Pass:** 11 passed, 0 failed | Swift package tests only; environment linker search-path warnings remain; no XCUITest, live runtime, visual, accessibility, or installed-app claim |
-| 2026-09-01 | Selected model | **Open** | Full production LLM/STT/TTS/embedder trajectory and census run not yet recorded |
-| 2026-09-01 | Native integration | **Open** | Real isolated runtime, reconnect, permission, and stale-generation flows not yet recorded |
-| 2026-09-01 | Release artifact | **Open** | Final wheel/app hashes, offline startup, strict codesign, single-pointer atomic activation, transactional upgrade, installed manifest, and rollback not yet recorded |
+| 2026-09-01 | Selected model | **Partial:** installed artifacts are exactly one LLM, Parakeet, Qwen TTS, MiniLM, and Silero; no production candidate artifacts remain | Full trajectory quality, live-instance/RSS census, 4B comparison, and blinded TTS qualification remain open |
+| 2026-09-01 | Native integration | **Pass (installed offline scope):** real installed wheel completed protocol-v3 streaming chat, prompt accounting, document import/retrieval, reconciliation, and encrypted-history plaintext scan | Reconnect, permission, stale-generation, XCUITest, and acoustic paths remain open |
+| 2026-09-01 | Release artifact | **Pass (local paired-generation scope):** clean-source manifest, model hashes, strict codesign, OS-denied external network, installed offline startup, atomic activation, and rollback pointer verified | Final remote revision, codesign identity/distribution, and physical acceptance remain open |
 | 2026-09-01 | XCUITest/accessibility | **Open** | Screenshot matrix, keyboard, VoiceOver, large text, narrow window, contrast, and motion not yet recorded |
 | 2026-09-01 | Device audio/listener | **Open** | Physical speech, route changes, acoustic interruption/latency, and blinded voice preference not yet recorded |
 | 2026-09-01 | Soak/recovery | **Open** | Eight-hour interactive and 24-hour idle/wake runs not yet recorded |
@@ -95,7 +95,7 @@ than removed browser mutation routes:
 
 ```sh
 cd /tmp
-sandbox-exec -p '(version 1)(allow default)(deny network*)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))' \
+sandbox-exec -p '(version 1)(allow default)(deny network*)(allow network-bind)(allow network-inbound (local ip "localhost:*"))(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (remote unix-socket))' \
   /absolute/runtime/bin/python /absolute/checkout/scripts/verify_installed_runtime.py \
   --provisioned "$HOME/Library/Application Support/MacBot" \
   --report /absolute/private/new-installed-report.json

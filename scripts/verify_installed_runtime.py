@@ -38,6 +38,7 @@ def free_port(allocated):
 
 
 def native_control_path(data_dir):
+    data_dir = data_dir.resolve()
     path = data_dir / "run/control.sock"
     if len(os.fsencode(path)) < 100:
         return path
@@ -121,7 +122,21 @@ def verify(provisioned, model, report):
                 proc.stdin.close()
                 deadline = time.monotonic() + 120
                 while time.monotonic() < deadline:
-                    assert proc.poll() is None, "Installed supervisor exited during startup"
+                    if proc.poll() is not None:
+                        log.flush()
+                        diagnostic_parts = []
+                        for log_path in [
+                            Path(temporary) / "supervisor.log",
+                            *(s.data_dir / "logs").glob("*.log"),
+                        ]:
+                            diagnostic_parts.append(
+                                f"--- {log_path.name} ---\n"
+                                + log_path.read_text(errors="replace")[-8000:]
+                            )
+                        diagnostic = "\n".join(diagnostic_parts)
+                        raise AssertionError(
+                            "Installed supervisor exited during startup:\n" + diagnostic
+                        )
                     try:
                         response = client.get(
                             s.services.orchestrator.url + "/ready",
@@ -129,7 +144,7 @@ def verify(provisioned, model, report):
                         )
                         if response.status_code == 200:
                             break
-                    except httpx.ConnectError:
+                    except (httpx.ConnectError, httpx.ReadError):
                         pass
                     time.sleep(0.1)
                 else:
