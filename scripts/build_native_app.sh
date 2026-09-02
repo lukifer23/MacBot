@@ -144,16 +144,12 @@ PY
   rollback_pointer="$data_root/rollback"
   activation_receipt="$release_root/activation-receipt.json"
   was_running=false
+  app_was_running=false
   activated=false
 
   runtime_ready() {
     "$stable_cli" status 2>/dev/null | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ready") else 1)' 2>/dev/null
   }
-
-  if [[ -x "$stable_cli" ]] && "$stable_cli" status >/dev/null 2>&1; then
-    was_running=true
-    "$stable_cli" stop >/dev/null
-  fi
 
   rollback_activation() {
     activation_exit=$?
@@ -169,14 +165,35 @@ PY
         echo "MacBot activation failed and rollback was blocked; inspect current and rollback pointers before starting MacBot" >&2
         exit "$restore_exit"
       fi
-      if $was_running && ! runtime_ready; then
-        "$stable_cli" start --background >/dev/null 2>&1
-      fi
+    fi
+    if $app_was_running; then
+      open "$destination" >/dev/null 2>&1
+    elif $was_running && ! runtime_ready; then
+      "$stable_cli" start --background >/dev/null 2>&1
     fi
     echo "MacBot activation failed; the previous paired generation was restored" >&2
     exit "$activation_exit"
   }
   trap rollback_activation ERR
+
+  if [[ -x "$stable_cli" ]] && "$stable_cli" status >/dev/null 2>&1; then
+    was_running=true
+  fi
+  if pgrep -x MacBotApp >/dev/null 2>&1; then
+    app_was_running=true
+    osascript -e 'tell application id "local.macbot.app" to quit' >/dev/null
+    for _ in {1..100}; do
+      pgrep -x MacBotApp >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    if pgrep -x MacBotApp >/dev/null 2>&1; then
+      echo "MacBot.app did not quit before release activation" >&2
+      false
+    fi
+  fi
+  if $was_running && "$stable_cli" status >/dev/null 2>&1; then
+    "$stable_cli" stop >/dev/null
+  fi
 
   "$runtime_stage/bin/python3" -m macbot.release_activation activate \
     "$release_root" "$destination" "$data_root/runtime" \
@@ -185,7 +202,10 @@ PY
   activated=true
   codesign --verify --strict --verbose=2 "$destination"
   "$stable_cli" --help >/dev/null
-  if $was_running; then
+  if $app_was_running; then
+    open "$destination"
+  fi
+  if $was_running || $app_was_running; then
     for _ in {1..20}; do
       runtime_ready && break
       sleep 0.25
