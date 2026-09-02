@@ -21,19 +21,22 @@ generation, action execution, and speech are shown only while the product is
 operational. Controls derive their enabled state from this contract; a missing
 IPC client is never presented as a valid no-op action.
 
-The conversation timeline is the chronological transcript. The Task Center is
-the durable action-oriented view of the same sequenced events. Task records
+The five native destinations are Conversation, Tasks, Library, Diagnostics,
+and Settings. The conversation timeline is the chronological transcript. Tasks
+is the durable research view of the same sequenced events. Task records
 include an ID, turn ID, title, state, detail, authorization source, and an
-explicit set of available commands. Live events carry that command set. Because
-persisted `task_list` records intentionally omit presentation capabilities, the
-native client reconstructs only the protocol-defined commands for their exact
-canonical state; it never offers a retry or a command outside that state.
+explicit set of available commands. Live events and atomic `sync` snapshots
+both carry that command set. Swift intersects the service-provided commands
+with the packaged protocol-v3 legality matrix; missing commands produce
+a read-only task instead of synthesized authority.
 
 The composer has two explicit modes. Conversation submits an immediate `chat`
 turn and may speak its typed reply according to the native preference. Task
 submits `task_create`, persists a bounded plan, and stops at
-`awaiting_authorization`. The Task Center is hydrated with `task_list` whenever
-the private service connection is established or its event epoch resets. Task
+`awaiting_authorization`. The native client atomically reconciles messages,
+Tasks, the active turn, event cursor, and epoch with `sync` whenever the private
+service connection is established, an event gap is detected, or the epoch
+changes. Task
 execution begins only after an explicit `task_command` with `authorize`.
 
 ## Turn flow
@@ -55,9 +58,10 @@ sequenceDiagram
     UI->>Task: explicit task_create
     Task-->>UI: persisted plan + authority manifest
     UI->>Task: authorize
-    Task->>Broker: single-use step receipt
-    Broker-->>Task: durable structured result
-    Task-->>UI: progress + terminal provenance
+    Task->>Broker: single-use ready-step receipt
+    Broker-->>Task: durable observation + evidence
+    Task->>Task: evaluate, continue, replan, block, or finish
+    Task-->>UI: progress + citations + terminal provenance
 ```
 
 Every event includes an epoch and increasing sequence number. Reconnection
@@ -65,18 +69,28 @@ continues from the last cursor; an epoch change forces a state refresh. Turn IDs
 bind transcription, actions, synthesis, cancellation, and UI updates so stale
 output cannot enter a newer turn.
 
-While speech is active, a size-one interim queue periodically sends the latest
-bounded capture window through the same resident transcriber used for the final
-utterance. Interim and final events share one capture/turn ID. A capture epoch
-invalidates late work after Stop, interruption, or a new utterance; final audio
-is still flushed through the ordered turn queue.
+Swift is the only released capture and playback transport. One resident
+Parakeet recognizer produces one final transcript after endpoint
+detection. Listening feedback comes from native capture/VAD activity, not a
+second recognizer. Partial transcription is ephemeral and never enters durable
+history or the event journal. A capture generation invalidates late audio after
+Stop, interruption, endpoint detection, or a new utterance.
+
+The canonical LLM has one request-owned priority lane. Conversation receives the
+next available model lease; cancellation can close only the transport owned by
+that request. Task planning/finalization are lower priority, while semantic
+compaction runs after durable turn completion as background work. Live response
+deltas are coalesced to at most 10 Hz and remain ephemeral.
 
 ## Native IPC
 
-The control socket and audio socket are created in an owner-only runtime
-directory and have mode `0600`. A 256-bit per-launch token is written with mode
-`0600`, consumed by the assistant, then unlinked. Both connections authenticate
-before accepting requests or PCM. Control frames use a four-byte big-endian
+The control and audio sockets are created in an owner-only runtime directory and
+have mode `0600`. The native client opens independent command and event
+connections to the control socket. A 256-bit per-launch token is written with
+mode `0600`, consumed by the assistant, then unlinked. Every connection authenticates
+before accepting requests, events, or PCM. Command and event channels have
+independent bounded deadlines, so a long event wait cannot block an Interrupt
+or authorization command. Control frames use a four-byte big-endian
 length plus JSON and are bounded to 12 MiB for document import. Audio frames use
 the same length prefix, a one-byte operation, and bounded float32 PCM payloads.
 
@@ -92,10 +106,13 @@ it retries after wake instead of reporting false readiness.
 
 ## Persistence and retrieval
 
-Conversation content and task/event payloads are AES-256-GCM encrypted per row
-in SQLite. Associated data binds ciphertext to its table and row ID. Retention
-defaults to 30 days and is enforced by record age. Conversation clear removes
-messages, summaries, and non-Task events while retaining the Task ledger.
+Messages, Tasks/steps, authority manifests, and evidence are canonical encrypted
+SQLite records. Durable Task events retain only ordered state deltas and
+canonical task/revision references; live presentation snapshots are not copied
+into the durable journal. Associated data binds ciphertext to its table and row ID.
+Retention defaults to 30 days and is enforced by source-record age.
+Conversation clear removes messages, summaries, and non-Task events while
+retaining the Task ledger.
 
 Document source text and metadata are authoritative in SQLite. Chunk vectors
 are normalized MiniLM ONNX embeddings stored in a versioned NumPy file and
@@ -105,9 +122,14 @@ active and two recent verified revisions are retained.
 
 ## Trust boundary
 
-The planner's JSON is untrusted until schema, step budget, capability, arguments,
-target scope, and manifest checks pass. Execution starts only after native Task
-authorization; every step consumes a receipt bound to its durable identity and
-normalized arguments. Retrieved documents and tool output can inform evaluation
-but cannot authorize another action. There is no general shell, arbitrary
-file-write, purchasing, messaging, or account mutation capability.
+The planner's JSON is untrusted until schema, dependency, step budget,
+capability, arguments, target scope, and manifest checks pass. Execution starts
+only after native Task authorization; receipt consumption and the durable
+running marker commit in one transaction before the executor is invoked. Every
+step receives a `RequestContext` with task, step, attempt, deadline,
+cancellation, and authorization version. Retrieved documents and tool output
+can inform evaluation but cannot authorize another action. Material changes to
+capability, target, source scope, deadline, or side-effect class return to
+authorization. The kernel permits at most 12 executed steps and two replans.
+There is no general shell, arbitrary file-write, purchasing, messaging, account
+mutation, Pi adapter, or Hermes runtime.

@@ -16,11 +16,14 @@ Version 2 settings include:
 | Section | Settings |
 | --- | --- |
 | `services` | Dashboard 3000, assistant 8123, RAG 8001, supervisor 8090. Loopback only, distinct ports. |
-| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx`), local LLM URL, context length, maximum output tokens, temperature, threads, STT (`parakeet` or `whisper`), and registered voice. |
+| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx` for lab comparisons), local LLM URL, context length, maximum output tokens, temperature, threads, the sole `parakeet` STT, registered Qwen voice, and MiniLM embedding role. |
 | `audio` | Endpoint silence 350 ms, pre-roll 256 ms, speech start 96 ms, maximum utterance 30 seconds, idle capture timeout 300 seconds, VAD threshold 0.5. |
-| `tools` | Enabled capability names, allowed applications, and screenshot directory. Conversation cannot execute side effects; explicit Task plans require bounded native authorization. |
+| `tools` | Exactly `rag_search`, `web_search`, and `web_fetch` for the research release. Conversation cannot execute side effects; explicit Task plans require bounded native authorization. |
 | `privacy` | Encrypted history enablement and retention in days (default 30). The encryption key is held in Keychain. |
 
+The typed production manifest selects exactly one artifact per role:
+`qwen3.5-2b-official`, Parakeet, Qwen3-TTS 1.7B Aiden, MiniLM, and Silero VAD.
+Alternative catalog entries are lab inputs, not runtime fallback choices.
 `qwen3.5-2b-official` is the selected registered LLM. Its catalog entry contains
 the official source revision and source-file hashes plus the pinned llama.cpp
 b10509 F16 and Q4_K_M conversion hashes. Change `models.llm` explicitly to compare another
@@ -39,12 +42,14 @@ diagnostics view reports prompt tokens, reply reserve, configured limit and turn
 pruned in the latest request.
 
 Completed user and assistant messages are stored per conversation. Structured
-task/action results are stored separately and are introduced only as untrusted
-results during the current turn. When the budget is exceeded, the oldest complete
-user turn is removed as a unit. The current turn is never partially truncated; a
+Task observations and evidence are stored separately and enter prompts through
+a dedicated untrusted evidence envelope. The complete prompt budget includes
+system instructions, active turns, recalled summaries, evidence, and the
+generation allowance. When the budget is exceeded, the oldest complete user
+turn is removed as a unit. The current turn is never partially truncated; a
 current turn that cannot fit fails explicitly. Clearing a conversation deletes
-its messages and summaries while retaining its durable Task ledger. Cancellation prevents late history writes
-from restoring cleared turns.
+its messages and summaries while retaining its durable Task ledger. Generation
+ownership prevents a stale turn from restoring cleared or compacted history.
 
 Durable encrypted history and source-linked semantic compaction are implemented.
 Compaction begins at 70%, binds summaries structurally to the exact source turn
@@ -60,21 +65,24 @@ effective configuration so child services agree.
 
 Mute uses AVAudioEngine's voice-processing input mute. The audio device may remain open while playback continues, so macOS may still show its microphone indicator. Full device closure occurs on service stop.
 
-## Voice choices
+## Voice and audio
 
-The accepted product voice is `qwen-aiden-1.7b`, using its native speaking rate.
-Speech-speed control is not exposed because this implementation does not honor
-it. Other registered voices belong to explicit audition and acceptance tooling;
-none is an implicit substitute. Missing models fail explicitly. No automated
-voice check replaces listening acceptance.
+The release configuration selects `qwen-aiden-1.7b` at its native speaking rate.
+Speech-speed control is not exposed because this backend does not honor it.
+Missing models fail explicitly. No automated voice check replaces listening
+acceptance.
 
-After updating from the earlier audio helper, run `macbot build-audio` and restart MacBot. Native IPC protocol 2 uses 16 kHz capture and 48 kHz playback so the voice is no longer downsampled to the STT input rate. The Python bridge rejects an outdated helper with a rebuild instruction. Roll back code, wheel and helper together; voice rollback is selecting a provisioned Piper voice and restarting the assistant.
+Swift owns released capture and playback. It sends 16 kHz microphone PCM and
+plays TTS PCM at the model-reported rate over authenticated native audio IPC.
+There is no Python audio-helper build, helper protocol, Whisper recognizer, or
+voice fallback to provision or roll back.
 
 ## Request routing
 
 Conversation can deterministically select read-only local time, system status,
 document retrieval, configured search, and weather enrichment from the current
-message. It cannot execute side effects. App opening, exact-URL opening, and
-screenshots require explicit Task mode and remain outside the first research
-Task release gate. Tool output and prior turns cannot select capabilities or
-extend authority. Ambiguous follow-ups require an explicit restatement.
+message. It cannot execute side effects. Durable research Tasks can use only
+`rag_search`, `web_search`, and bounded `web_fetch`. App control, URL opening,
+screenshots, shell, arbitrary writes, scheduling, messaging, MCP, and delegation
+are outside this release. Tool output and prior turns cannot select capabilities
+or extend authority. Ambiguous follow-ups require an explicit restatement.

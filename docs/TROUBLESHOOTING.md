@@ -1,32 +1,64 @@
 # Troubleshooting
 
-- **No login / 401:** run `macbot open` again. Login links expire in 60 seconds and can be used once. Do not put tokens in query strings or weaken authentication.
-- **403 / CSRF / Origin:** use the configured loopback origin directly. Do not serve the dashboard through an external proxy. Reopen the dashboard to establish a session and CSRF token.
-- **Model missing:** run `macbot doctor`, then explicitly provision the registered model and `macbot models verify NAME`. There is no fallback model or implicit runtime download.
+- **MacBot shows Disconnected or Needs attention:** open native Diagnostics,
+  inspect the app/runtime/source/protocol generation, then use Retry services.
+  Do not start a second runtime or browser assistant as a workaround.
+- **No diagnostics login / 401:** run `macbot open` again. Login links expire in
+  60 seconds and can be used once. Browser diagnostics are optional and
+  read-only; they are not required for native Conversation or Tasks.
+- **403 / CSRF / Origin:** use the configured loopback origin directly. Do not
+  proxy the diagnostics page or weaken Host, Origin, or CSRF checks.
+- **Model missing:** run `macbot doctor`, provision the production roles with
+  `make models`, then run `macbot models verify NAME`. The runtime does not
+  download or substitute models during inference.
 - **`uv run` cannot import `macbot` despite a valid editable install:** inspect
   `.venv`, `site-packages`, and `_editable_impl_macbot.pth` with `ls -ldO`. If
-  macOS marked the environment `hidden`, stop all project processes, run
+  macOS marked the environment `hidden`, stop project processes, run
   `chflags -R nohidden .venv`, then
   `uv sync --frozen --all-extras --reinstall-package macbot`. Confirm with direct
   import, `macbot --help`, and `macbot doctor`; do not use `PYTHONPATH` to mask it.
-- **Service startup failure:** inspect the corresponding private log in `~/Library/Application Support/MacBot/logs`. An occupied port is reported; MacBot does not kill unrelated processes. Failed startup cleans up owned children. Restart attempts are bounded.
-- **Waiting for this Mac to wake:** macOS blocks Keychain access during dark wake. MacBot intentionally starts no service tree until the Mac is awake and the encrypted-history key is available. Wake and unlock the Mac; the app retries automatically.
-- **Native microphone unavailable:** check macOS microphone permissions for the local helper/launching app. Use Start hands-free explicitly. An AEC capability flag is not proof that the physical microphone and speaker path passed acceptance.
-- **Start hands-free fails with Core Audio `-10875`:** an older audio helper could leave playback at 44.1 kHz while capture used 48 kHz. VoiceProcessingIO rejects this mismatch during initialization. Rebuild the helper with `macbot build-audio` from the updated installation, then restart MacBot. The helper now explicitly matches the output client rate to capture and reports both rates in its `ready` event; capture PCM remains 16 kHz; protocol 2 playback is 48 kHz. Do not change system audio rates or disable echo cancellation to conceal this failure. Verify actual capture/playback with the operator-authorized device test in `tests/test_barge_in.py`; HTTP readiness alone does not exercise this path.
-- **Mute indicator:** input is muted inside voice processing, but the device can remain open to support playback; macOS's microphone indicator may remain visible. Stop the service to close the engine.
-- **No audio:** check the built-in output device, volume, configured voice and private audio log. Test actual playback; readiness and generated samples are not audible proof.
-- **An action does not execute:** state the action and target explicitly (for example, “Open Calculator”). Supported requested actions run once and return their real result without confirmation. Disabled tools, unlisted applications, arbitrary file operations and ambiguous requests remain unavailable or require clarification. Destructive, file-changing, account-changing, purchasing and messaging actions are outside this release.
-- **Empty search:** empty is valid only after a successful search. A unavailable service/index error must be shown as failure. Stop MacBot and use `rebuild-index` when embedding configuration changes. Back up before migration.
-- **Performance:** use the reproducible benchmark scripts and retain raw results. Do not infer speed from GPU use, model size, a single turn, or random noise. See VERIFICATION.md for required gates.
-
-- **Listening, but no transcription:** the earlier multichannel-to-mono conversion could produce all-zero PCM even when native microphone buffers contained a signal. The helper now explicitly selects the processed microphone channel. Rebuild it with `macbot build-audio` and restart. The live input meter measures received PCM; “Hearing you” additionally requires voice detection. “No frames yet” is different from quiet input. Device tests now reject an all-zero stream rather than only checking buffer length.
-- **Browser diagnostics are blocked:** this does not affect the native operator
-  interface. Check `macbot status` and the listener first. Inspect browser
-  blockers or policy with the owner's permission; do not disable security
-  globally or start duplicate servers to work around it.
-- **Robotic or chopped speech:** select an installed Kokoro voice for comparison with Piper, starting at speed 1.0. Speech is now segmented at sentence/word boundaries instead of every 100 characters. Kokoro adds synthesis cost; voice preference and full conversational latency still require measurement and user acceptance.
-
-- **Login disappears after closing all tabs:** the dashboard now restores its tab-scoped CSRF token from an existing valid HttpOnly session cookie through `/auth/session`. Reload after installing the fix. This does not bypass expired login or Chrome client-side page blocking. Browser access and application session recovery are separate checks.
-
-- **Speech is heard but its text is missing:** the latest recognized phrase appears in the persistent “Heard” line and in the conversation. Transcript delivery uses the authenticated native control socket with sequenced replay after reconnect. Restart the owned service from native Diagnostics if the socket cannot reconcile.
-- **Greetings trigger actions or the time triggers search:** update both assistant and dashboard, then restart the assistant. Current-turn routing excludes unrelated tools, and local time uses the Mac clock. Prior action history cannot authorize a new action.
+- **Service startup failure:** inspect the private log under
+  `~/Library/Application Support/MacBot/logs`. An occupied port is reported;
+  MacBot does not kill unrelated processes. Restart attempts are bounded.
+- **Waiting for this Mac to wake:** macOS can block Keychain access during dark
+  wake. MacBot starts no service tree until the Mac is awake and the encrypted
+  history key is available. Wake and unlock the Mac; the app retries.
+- **Native microphone unavailable:** check microphone permission for MacBot.app.
+  Swift owns capture and playback; there is no helper binary to rebuild. Use
+  Start hands-free explicitly. Readiness is not proof that physical audio works.
+- **Listening, but no final transcript:** inspect native capture/VAD activity in
+  Conversation and queue/model state in Diagnostics. MacBot intentionally uses
+  one Parakeet final decoder, not a second interim recognizer. Stop and restart
+  hands-free capture after a route change, then run the physical device gate if
+  the problem persists.
+- **Mute indicator remains visible:** input may be muted inside voice processing
+  while the device remains open for playback. Stop hands-free mode to close the
+  engine.
+- **No or poor speech output:** verify `qwen-aiden-1.7b` is installed, inspect the
+  native audio route and TTS queue, then run a real preview. Generated PCM and a
+  readiness check are not audible or listener-quality evidence.
+- **Interrupt is delayed:** capture the native command acknowledgement, event
+  cursor, queue depth, and audio generation from Diagnostics. Protocol v3 uses
+  independent command and event connections; a 20-second event wait must not
+  hold the command path.
+- **Task will not run:** open Tasks and inspect its persisted plan, dependencies,
+  targets, source scope, authority, deadline, and available commands. A new or
+  material replan must be authorized. `unknown_effect` requires explicit
+  reconciliation and is never retried automatically.
+- **Task capability is unavailable:** the research release contains exactly
+  `rag_search`, `web_search`, and `web_fetch`. Shell, arbitrary writes, app
+  control, scheduling, messaging, MCP, and delegation are intentionally absent.
+- **Empty search:** empty is valid only after a successful search. An unavailable
+  service/index is a typed failure. Stop MacBot and use `rebuild-index` after an
+  embedding-signature change; back up before migration.
+- **State differs after reconnect:** record the displayed epoch and cursor, then
+  retry services. Startup, reconnect, gaps, and epoch changes must apply one
+  atomic `sync` snapshot of messages, Tasks, active turn, cursor, and epoch.
+- **Installed app/runtime mismatch:** inspect
+  `~/Library/Application Support/MacBot/releases/<generation>/release-manifest.json`.
+  Reinstall with `./scripts/build_native_app.sh --install`; never replace only
+  the app or only the runtime.
+- **Performance:** retain raw benchmark output and exact model/app/runtime hashes.
+  Do not infer latency from GPU use, a single turn, or PCM scheduling. See
+  [VERIFICATION.md](VERIFICATION.md) for the separate software, model, native,
+  device, soak, and artifact gates.

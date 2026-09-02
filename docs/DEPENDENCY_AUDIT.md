@@ -1,4 +1,8 @@
-# Dependency audit — 2026-08-30
+# Dependency audit history — 2026-08-30
+
+This is point-in-time evidence for the 2026-08-30 lockfile. It is not a current
+2026-09-01 release-artifact claim; the final exact lock and installed generation
+still require a fresh audit.
 
 The locked Apple Silicon runtime graph was installed locally and checked with
 `pip-audit --local`. Four advisories were initially reported for

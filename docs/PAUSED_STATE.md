@@ -1,99 +1,73 @@
-# MacBot implementation checkpoint — 2026-08-30
+# MacBot working-tree checkpoint — 2026-09-01
 
-This checkpoint is prepared for source-control publication on `main`, based on
-`ba039fde5857d8707c2271bfc2583b323cf86225`. It is not a release claim.
+This is a resumable implementation snapshot based on `effccd76c0a7bf4843463e1f8dc5cfddc6e9b182`.
+It is not a release claim. Durable architecture is documented in
+[ARCHITECTURE.md](ARCHITECTURE.md); test truth belongs in the dated ledger in
+[VERIFICATION.md](VERIFICATION.md).
 
-## Implemented in this checkpoint
+## Implemented in the working tree
 
-- SwiftUI is the sole operator surface. The browser product path was reduced to
-  disabled-by-default, authenticated, read-only developer diagnostics. Browser
-  chat, microphone, playback, interruption, clear, settings, document,
-  approval, action, and restart routes were removed, along with Socket.IO.
-- Conversation and Task are explicit native modes. Conversation uses one response
-  inference and only deterministic read-only enrichments. Side effects require
-  Task mode.
-- A durable encrypted Task kernel now owns canonical task/step states, plans,
-  manifests, steps, attempts, capability receipts, idempotency, results,
-  provenance, pause/cancel, and startup recovery.
-- Task plans and every step are persisted before execution. Each step consumes a
-  single-use receipt bound to its capability and normalized arguments. Recovered
-  uncertain side effects become `unknown_effect` and block instead of replaying.
-- Mixed results remain `partial`. Failure to generate final prose cannot overwrite
-  recorded tool truth. Conversation clear preserves the Task ledger.
-- Event reads are session-filtered, live token/transcription deltas are not
-  synchronously written to encrypted SQLite, per-record retention is enforced,
-  native IPC connections close cleanly, and child environments use allowlists.
-- Readiness now depends on required native IPC. Service supervision has explicit
-  dependency/recovery state and bounded stabilization-aware retry behavior.
-- Configuration has one packaged schema and selected Qwen3.5-2B llama.cpp path.
-  DDGS/provider substitution, the stale executable config, Docker product path,
-  obsolete approval settings, fake TTS benchmark, browser assets, and unsupported
-  speech-speed setting were removed.
-- `qwen-aiden-1.7b` is the configured release-voice target. It remains blocked on
-  listener/device acceptance; no alternate voice silently substitutes for it.
-- RAG supports atomic batch add/delete, bounded index revisions, explicit
-  `no_answer`, relevance gating, and source provenance. Model files receive full
-  SHA-256 attestation before first process use.
-- Native Task Center supports proposal hydration, authorization/denial,
-  pause/resume/cancel, reconnect reconciliation, explicit UI states, controlled
-  restart, destructive confirmations, typed-response speech preference, and
-  Library empty/loading/error states.
+- Native protocol v3 packages one shared Task contract for Python and Swift.
+  Independent command and event connections prevent a long event wait from
+  blocking Interrupt, Send, authorization, or settings. Atomic `sync`
+  reconciliation returns messages, Tasks, the active turn, cursor, and epoch.
+- Conversation and durable research Tasks are explicit native modes across five
+  destinations: Conversation, Tasks, Library, Diagnostics, and Settings.
+- The encrypted Agent Kernel persists plans, dependencies, authority manifests,
+  steps, attempts, evidence, capability receipts, evaluations, replans, and
+  terminal state. It permits at most 12 executed steps and two replans. Material
+  changes return to authorization.
+- Cancel, pause, deadline, shutdown, and error resolution use versioned state
+  transitions. Capability execution carries request/task/step/attempt identity,
+  an absolute deadline, cancellation, and authorization version.
+- Release capabilities are exactly `rag_search`, `web_search`, and bounded
+  `web_fetch`. There is no shell, arbitrary write, app control, scheduling, MCP,
+  messaging, delegation, Pi adapter, or Hermes runtime.
+- Messages, Tasks/steps, authority, and evidence are canonical records. Durable
+  Task events retain task/revision references and state deltas rather than full
+  presentation snapshots. Conversation history and compaction share generation
+  ownership, and partial speech is ephemeral.
+- Swift is the only released audio transport. One resident Parakeet produces
+  final transcription. The production model manifest selects one LLM, STT, TTS,
+  embedder, and VAD: Qwen3.5-2B official, Parakeet, Qwen3-TTS 1.7B Aiden,
+  MiniLM, and Silero.
+- Installation stages and verifies one paired app/runtime generation, writes a
+  release manifest, and atomically swaps one `current` generation pointer shared
+  by the stable app/runtime links. The prior pair is recorded in `rollback`.
+  Browser diagnostics are
+  read-only and have no assistant fallback authority.
 
-## Current verification evidence
+## Verified on 2026-09-01
 
-- Python non-device suite: **140 passed, 5 deselected**.
-- Focused model/config/RAG/TTS suite: **43 passed** during implementation.
-- Swift release suite: **7 passed** on this checkpoint.
-- Native development bundle built; its ad-hoc signature is valid and satisfies
-  its designated requirement. Swift emits two known Command Line Tools default
-  search-path warnings, while the package's valid explicit Testing paths work.
-- Ruff format/check, mypy, and `git diff --check` pass.
-- Wheel and source distribution build successfully and package inspection passes.
-- `pip-audit --local` reports no known third-party vulnerabilities; the unpublished
-  local `macbot` package is correctly listed as unauditable on PyPI.
-- The checkout environment imports `macbot`, loads the console entry point, and
-  completes `macbot doctor` with `ready_to_start: true`.
+- Consolidated non-device gate: **156 passed in 33.87 seconds** with
+  `pytest -m 'not device'`. This includes the available selected-model tests but
+  not the full model trajectory, census, latency, memory, or listener gates.
+- Swift release tests: **11 passed, 0 failed**, with environment linker
+  search-path warnings still emitted.
+- Ruff is clean. Mypy succeeds for **28 source files**.
 
-These gates are independent of hosted CI, installed-wheel verification, device,
-acoustic, listener, visual, accessibility, and operator acceptance.
+The selected-model, live native-integration, installed-artifact, XCUITest,
+accessibility, physical-audio, listener, soak, hosted, and final release gates
+remain open. No result above substitutes for them.
 
-The checkout environment failure was traced to a macOS `hidden` filesystem flag
-on `.venv`, `site-packages`, and the editable `.pth`; Python therefore ignored
-the otherwise correct source path. Stale malformed editable artifacts were
-removed, the flag was cleared recursively, and the locked package was reinstalled.
-No `PYTHONPATH` workaround is used.
+## Historical checkpoint
 
-## Open gaps and next implementation order
+The 2026-08-30 snapshot recorded protocol v2, dual interim/final Parakeet paths,
+a fixed-plan Task worker, a Python audio helper, and 160 non-device tests. Those
+facts describe that earlier tree only. Protocol v3, single-model final STT,
+native-only audio transport, dynamic evaluation/replanning, and native installed
+verification supersede those implementation details.
 
-1. Add final-STT priority/cancellation so an obsolete interim transcription can
-   never delay the final utterance.
-2. Add a shared foreground-priority inference lane. Task planning/final synthesis
-   must yield predictably to Conversation, including before the next model call.
-3. Complete bounded evaluate/replan behavior. The current Task kernel executes a
-   persisted fixed plan; it records a two-replan budget but does not yet perform
-   material-scope reauthorization and replanning.
-4. Restrict the first released Task wedge to document plus configured Brave
-   research. Existing typed side-effect capabilities remain code-registered but
-   must not be enabled for release until research recovery, cancellation,
-   provenance, and authorization pass end to end.
-5. Calibrate the RAG relevance threshold on a fixed corpus to at most 5% false
-   positive answers; current threshold behavior is implemented but not accepted.
-6. Add crash-boundary, forged-receipt, duplicate-effect, pause/preemption,
-   retention, sustained-stream, corpus-growth, and migration evaluation cases.
-7. Raise changed-line coverage to 90% and critical runtime/task/broker/persistence/
-   IPC/lifecycle/retrieval branch coverage to 80%.
-8. Migrate `scripts/verify_installed_runtime.py` from the removed dashboard
-   mutation routes to native IPC, then run the complete packaging and
-   installed/offline-runtime gates on this exact working tree and hosted CI.
-9. Run XCUITest and manual visual, VoiceOver, keyboard, Reduce Motion, Increase
-   Contrast, and large-text acceptance.
-10. Run real microphone/speaker latency, spontaneous/quiet/noisy/echo/barge-in
-    scenarios, release-voice listening approval, cancellation checks, and a
-    30-minute soak.
+## Resume order
 
-## Resume point
+1. Finish the consolidated software/static run after all shared-worktree changes.
+2. Run the selected-model research and citation corpus with real production
+   components.
+3. Build and verify the wheel, native app, release manifest, offline runtime,
+   paired activation, and rollback from the exact final revision.
+4. Run live native integration, XCUITest/accessibility, physical audio and
+   latency, blinded listening, eight-hour interactive soak, and 24-hour
+   idle/wake recovery as separate evidence.
 
-Begin with a clean status/process check. Preserve the current working tree. Run
-the environment, static, and non-device gates once, then implement items 1–4 above before
-expanding tools or claiming Task readiness. Do not add Hermes, Pi, routing,
-multi-agent execution, shell, arbitrary writes, remote MCP, or another provider.
+Do not add fallback runtimes, duplicate model instances, browser authority,
+Hermes, Pi, or mocked release acceptance to close an open gate.

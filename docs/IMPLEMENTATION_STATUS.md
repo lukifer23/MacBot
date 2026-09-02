@@ -1,7 +1,8 @@
-# Implementation status — 2026-08-30
+# Implementation status — 2026-09-01
 
-MacBot now has the intended product boundary and the first durable Task kernel,
-but it is not release-ready. The authoritative current handoff is
+MacBot now has the intended product boundary, native protocol v3, and a bounded
+durable research loop, but it is not release-ready. The authoritative current
+handoff is
 [PAUSED_STATE.md](PAUSED_STATE.md); the detailed release gates remain in
 [VERIFICATION.md](VERIFICATION.md).
 
@@ -12,8 +13,8 @@ SwiftUI MacBot.app
   ├── Conversation
   │     └── deterministic read enrichment + one response inference
   └── explicit Task
-        └── encrypted durable task engine
-              plan → authorize → execute → record → evaluate
+        └── encrypted durable Agent Kernel
+              plan → authorize → execute → observe → evaluate → replan/finish
                          │
                          ├── single-use CapabilityBroker receipts
                          ├── task/step/idempotency/provenance ledger
@@ -24,35 +25,34 @@ Read-only developer diagnostics
 ```
 
 Conversation no longer pays an unconditional planner inference. It cannot run
-side effects. A native Task persists its plan, authority manifest, and steps
-before authorization; every execution passes through the broker. Uncertain
-side effects are never retried automatically, and terminal results retain the
-actual step outcomes.
+side effects. A native Task persists its plan, dependencies, authority manifest,
+and steps before authorization; every execution passes through the broker. Only
+typed transient read failures may retry within the original deadline. Material
+replans return to authorization, uncertain effects never auto-retry, and
+terminal results retain the actual observations and evidence.
 
-## Verified locally in this checkpoint
+## Verified locally on the current working tree
 
-- 140 Python non-device tests pass; five physical-device tests remain separate.
-- Seven native Swift release tests pass.
-- Ruff, mypy, and whitespace validation are clean for the implemented tree.
-- The native development bundle built and passed ad-hoc signature validation.
-- Wheel/source builds and package inspection pass; dependency audit reports no
-  known third-party vulnerabilities.
-- Direct environment import, console entry-point loading, and `macbot doctor`
-  pass without `PYTHONPATH`; doctor reports the provisioned runtime ready to start.
+- Consolidated non-device gate: **156 passed in 33.87 seconds** with
+  `pytest -m 'not device'`. This includes the available selected-model tests but
+  not the full model trajectory, census, latency, memory, or listener gates.
+- Native Swift release gate: **11 passed, 0 failed**. The build still emits
+  environment linker search-path warnings.
+- Ruff is clean. Mypy reports success for **28 source files**.
 
 ## Not yet verified for release
 
-- Final-STT preemption over obsolete interim inference.
-- Foreground-priority model scheduling across Conversation and Task.
-- Dynamic bounded replanning with renewed authorization for material changes.
-- Full research-Task end-to-end corpus and calibrated no-answer threshold.
-- Crash/effect reconciliation and sustained streaming evaluation matrix.
+- Full selected-model research corpus and calibrated no-answer/citation targets.
+- Live native integration against the isolated real runtime.
+- Wheel, paired installed artifact, offline startup, release-manifest identity,
+  single-pointer atomic activation, transactional upgrade, and rollback for
+  this exact tree.
 - Required changed-line and critical-branch coverage thresholds.
-- Native-IPC migration of the currently stale installed-runtime verifier, then
-  fresh wheel/package/offline-installed-runtime evidence for this exact tree.
-- Hosted CI for this exact tree.
-- Native XCUITest, visual, accessibility, device, acoustic, listener, and
-  30-minute soak acceptance.
+- Hosted CI for the exact final revision.
+- Native XCUITest, visual, keyboard, VoiceOver, large-text, contrast, and motion
+  acceptance.
+- Physical audio, acoustic interruption/latency, listener preference, eight-hour
+  interactive soak, and 24-hour idle/wake recovery.
 
 No software test, hosted run, model benchmark, device check, listening session,
 accessibility review, or operator soak substitutes for another gate.

@@ -8,7 +8,13 @@ uv run --frozen macbot migrate-config --source /absolute/path/old-config.yaml
 uv run --frozen macbot migrate-rag --source /absolute/path/old-rag-data
 ```
 
-Configuration migration keeps a private copy of the original, maps supported settings, and reports model-path review requirements. Existing model files are not removed. Version 2 accepts registered models; provision/select the corresponding model explicitly. Inspect the migrated settings, especially disabled tools and allowed applications, before starting.
+Configuration migration keeps a private copy of the original, maps supported
+settings, and reports model-path review requirements. Existing model files are
+not removed. Version 2 configuration remains the settings schema; native
+protocol versioning is independent. Release tools must resolve to exactly
+`rag_search`, `web_search`, and `web_fetch`. Stale browser fallback, application
+allowlist, Whisper, helper-audio, and candidate-voice keys are rejected rather
+than silently retained. Provision the production model manifest explicitly.
 
 RAG migration first copies the source. Legacy JSON records and authoritative
 SQLite records are reconciled by document ID. Conflicting content or metadata
@@ -41,6 +47,21 @@ Restore is offline maintenance and preserves the current directory under
 To roll back code, use the preserved old checkout and its backed-up
 configuration/data; do not point the old application at the new exact-index
 directory.
+
+## Paired app/runtime generations
+
+`./scripts/build_native_app.sh --install` stages an app and runtime under one
+release-generation directory, verifies both, writes `release-manifest.json`,
+then atomically swaps the single `current` pointer shared by the stable app and
+runtime links. The previous pointer is retained as `rollback`. Never copy only the app or
+only the runtime over an installed generation. Before activation, preserve any
+older non-symlink app as the timestamped `MacBot.previous-*.app` artifact.
+
+Rollback selects the previous verified generation's app and runtime together.
+Confirm its release manifest, source revision, protocol version, executable
+hash, runtime hash, and selected model hashes before launching it. A successful
+rollback command is not acceptance until offline startup and state
+reconciliation are observed from that installed pair.
 
 Migration tests using temporary real stores do not prove compatibility with
 every historical Chroma format. A copy of the user's actual legacy source store

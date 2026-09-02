@@ -1,4 +1,4 @@
-# Local API v2
+# Local API and native protocol v3
 
 Default origins: dashboard `http://127.0.0.1:3000`, assistant `:8123`, RAG `:8001`, supervisor `:8090`, llama `:8080`. Every service is loopback-only. `/health` reports liveness without private state; `/ready` is authenticated. Readiness is not device acceptance.
 
@@ -21,9 +21,11 @@ MacBot.app is the sole operator client. The authenticated browser page is disabl
 | `/api/pipeline-check` | GET | Redacted supervisor dependency and recovery state |
 | `/api/diagnostics` | GET | Combined redacted assistant and supervisor evidence |
 
-The native app serially reads the bounded event journal over its authenticated
-private control socket, advancing its cursor only after processing the response.
-It does not merge a live batch ahead of historical replay.
+The native app uses independent authenticated command and event connections.
+Bounded event waits never occupy the command path, so Interrupt, Send,
+authorization, settings, and document operations remain responsive. It advances
+its cursor only after processing a batch and does not merge a live batch ahead
+of historical replay.
 Each event has session ID, turn ID, monotonic sequence, monotonic timestamp,
 state, kind and data. The containing batch includes the assistant epoch; a new
 epoch resets replay cursors and pending work. Conversation states include
@@ -32,7 +34,14 @@ authorization uses the canonical Task states below. An
 accepted response is not completion. No event transport can authorize a
 mutation.
 
-## Native task presentation extension
+## Native reconciliation and Task contract
+
+Every native connection starts with an authenticated hello for protocol v3.
+At startup, reconnect, event-gap detection, or epoch change, the client sends
+`{"op":"sync","protocol_version":3}`. The atomic response contains
+`protocol_version`, `epoch`, `cursor`, canonical durable `messages`, canonical
+`tasks`, and the optional `active_turn`. The client replaces its rehydrated
+state from this snapshot before resuming event replay.
 
 The native client continues to accept existing `action`, `tool`, and
 `tool_result` journal events. It also accepts a typed `task` event so durable or
@@ -57,24 +66,25 @@ multi-step work does not need to masquerade as a one-shot tool:
 
 The native composer sends immediate turns as
 `{"op":"chat","message":"...","speak":true|false}` and durable work as
-`{"op":"task_create","message":"..."}`. Task creation returns a persisted
+`{"op":"task_create","protocol_version":3,"message":"..."}`. Task creation returns a persisted
 task record in `task`; it is not execution approval. On every service connection
-and event-epoch reset, the client sends `{"op":"task_list"}` and replaces its
-durable Task Center snapshot with the returned `tasks`.
+and event-epoch reset, the client reconciles with `sync`. `task_list` remains a
+bounded protocol-v3 command for focused diagnostics, not a competing hydration
+path.
 
 Canonical task states are `proposed`, `awaiting_authorization`, `queued`,
 `running`, `pause_requested`, `paused`, `cancel_requested`, `blocked`,
-`completed`, `partial`, `failed`, and `cancelled`. Existing one-shot action
-states are mapped into this presentation model. Live events supply their exact
-`commands`. Persisted list records are mapped from canonical state only:
+`completed`, `partial`, `failed`, and `cancelled`. Task protocol v3 also defines
+the exact Step states and Failure classes. Live events and list snapshots supply
+their exact `commands`:
 `awaiting_authorization` permits `authorize|deny`, `running` permits
 `pause|cancel`, `pause_requested`, `queued`, and `blocked` permit `cancel`, and
 `paused` permits `resume|cancel`. Terminal states permit no command. The native
 client sends
-`{"op":"task_command","task_id":"...","command":"authorize|deny|pause|resume|cancel"}`
+`{"op":"task_command","protocol_version":3,"task_id":"...","command":"authorize|deny|pause|resume|cancel"}`
 and immediately applies the returned task snapshot. The service remains the
 authority and rejects stale, cross-session, invalid-state, and repeated
-commands.
+commands. Missing or incompatible Task protocol versions fail closed.
 
 Errors distinguish invalid input (400), missing authentication (401), denied origin/CSRF/authorization (403), missing record (404), and unavailable downstream services (503). Native commands are authenticated by the private socket token and bound to the single native session.
 
@@ -86,4 +96,14 @@ Authenticated `/api/documents` supports GET and POST `{content,title,type,metada
 
 Authenticated `/status`, `/services`, `/metrics`, `/ready`, POST `/service/NAME/restart`, and POST `/shutdown`. Status stays HTTP 200 during recovery, with per-service readiness/errors; `/ready` returns 503 until all services are ready. Unknown services are rejected. Occupied ports do not authorize terminating their owners. Shutdown stops only child process groups created by this instance. The CLI waits for observed owned processes to exit before reporting stopped.
 
-Conversation never authorizes side effects. Task proposals are persisted before execution, approved once through the native Task Center, and each step consumes a single-use capability receipt. `transcription` and `user` events share a turn ID and render as one user message, not duplicates.
+Conversation never authorizes side effects. Research Task proposals are
+persisted before execution, approved through the native Tasks destination, and
+each ready step consumes a single-use capability receipt. The released
+capabilities are `rag_search`, `web_search`, and bounded `web_fetch`; fetched
+content is size/content/redirect constrained and recorded as evidence with a
+body hash. Material replans require renewed authorization.
+
+Partial speech appears only as ephemeral `partial_transcription` events. It is
+never written to encrypted history or the durable event journal. Final
+`transcription` and `user` presentation share one turn ID and render as one user
+message, not duplicates.

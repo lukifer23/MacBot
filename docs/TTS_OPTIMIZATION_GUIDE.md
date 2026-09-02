@@ -1,9 +1,25 @@
 # Speech implementation
 
-Piper 1.7 and Kokoro ONNX 0.6.1 are explicit local selections. Piper remains available; Kokoro Heart and Michael share a pinned 82M model and voice pack. No backend is substituted on failure. Runtime uses only provisioned files and packaged phonemization resources. Kokoro uses CPU ONNX with four inference threads.
+The production manifest selects one TTS artifact:
+`qwen3-tts-1.7b` with the `qwen-aiden-1.7b` voice. Runtime selection is explicit;
+there is no Piper, Kokoro, or smaller-Qwen fallback in the production
+installation. Alternative catalog entries are lab inputs and must not remain in
+a qualified release generation.
 
-Model text is buffered to sentence boundaries, with a word/clause boundary fallback for long sentences. Decimal numbers and common title abbreviations stay intact across token fragments. The former 100-character split could bisect a word. One ordered playback worker consumes phrases, with a four-item synthesis queue and four 50 ms playback credits. Cancellation invalidates queued audio immediately; an in-flight ONNX inference finishes before the synthesis worker can start its next phrase. This is not an acoustic cancellation guarantee.
+One ordered synthesis path emits generation-bound PCM to Swift, which is the
+only released playback owner. Cancellation invalidates queued audio for the
+request generation. Capture remains a separate 16 kHz native stream for the
+single Parakeet final decoder. There is no Python audio helper to build,
+package, supervise, or reconcile.
 
-Synthesis uses each voice's actual rate (Piper 22.05 kHz, Kokoro 24 kHz); playback is resampled to 48 kHz, separately from 16 kHz microphone capture. A protocol check requires an updated Swift helper. The bounded cache key includes model path, voice ID, speed and text.
+The 2026-08-29 model screen measured Qwen3-TTS 1.7B Aiden at 142 ms first-chunk
+p50 and 159 ms p95 in isolated synthesis. Those are scheduling measurements,
+not audible latency or full-stack memory evidence. The selected voice still
+requires blinded listener acceptance, first-audible p95 below 250 ms for the TTS
+gate, aggregate full-stack RSS below 8 GiB, route-change testing, interruption,
+and endurance acceptance. See [MODEL_SCREENING.md](MODEL_SCREENING.md) and
+[VERIFICATION.md](VERIFICATION.md).
 
-On 2026-08-28 a local exploratory short paragraph took 1.62–1.98 seconds to generate in full with Kokoro, producing 7.47–8.73 seconds of audio. These were isolated voice auditions, not first-audio latency or a controlled p95 benchmark. Phrase streaming is measured separately. User voice preference, sustained conversation, echo suppression and the full [verification gates](VERIFICATION.md) remain open.
+Historical Piper/Kokoro/helper measurements describe the 2026-08-28 prototype
+only. They must not be used to diagnose or qualify the current native/Qwen
+release path.

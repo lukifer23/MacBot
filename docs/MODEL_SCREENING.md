@@ -1,5 +1,13 @@
 # Local model screening — 2026-08-29
 
+This file preserves dated benchmark evidence. The 2026-09-01 production manifest
+selects one artifact per role: `qwen3.5-2b-official`, Parakeet,
+Qwen3-TTS 1.7B Aiden, MiniLM, and Silero. It does not load alternative models as
+fallbacks. A future 4B LLM comparison must use a locally converted,
+checksum-pinned official `Qwen/Qwen3-4B-Instruct-2507` artifact and the complete
+trajectory gates in [VERIFICATION.md](VERIFICATION.md), not the older third-party
+GGUF. No 4B selection claim has been made.
+
 These are actual runs on this M3 Pro using the source-built llama.cpp **b10509**
 binary (`fe8156f789011f6ea0baf6917ea09f88b89d9554`). The model screens used
 `llama-server` SHA-256
@@ -77,5 +85,7 @@ conversational and pronunciation passages were synthesized per resident model.
 
 These are synthesis scheduling measurements, not audible latency or voice
 quality. WAV outputs and immutable JSON reports are retained in the private
-MacBot reports directory. Aiden 1.7B is configured for owner audition; user
-listening acceptance and the 30-minute device soak remain open.
+MacBot reports directory. The production manifest selects Aiden 1.7B as its
+sole TTS artifact. Blinded listener acceptance, full-stack RSS, physical
+first-audio latency, and endurance gates remain open, so this is not a voice
+quality claim.

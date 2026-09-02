@@ -29,7 +29,8 @@ does not subscribe to conversation events.
 - Last-turn details show STT, first text, TTS first chunk and total duration where measured. They do not fabricate values for unused stages.
 
 The native UI remains a hands-free preview until physical device testing, the
-30-minute soak, accessibility review, and user listening acceptance pass. A
+eight-hour interactive and 24-hour idle/wake soaks, accessibility review, and
+user listening acceptance pass. A
 working diagnostic page is not product acceptance.
 
 Native Diagnostics owns operator recovery. The browser must not restart services
