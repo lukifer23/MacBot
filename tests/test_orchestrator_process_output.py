@@ -4,11 +4,31 @@ import socket
 import sys
 import threading
 import time
+import traceback
 
 import pytest
 
 from macbot.config import Settings
 from macbot.orchestrator import MacBotOrchestrator, ServiceDefinition
+
+
+def _lifecycle_diagnostic(
+    supervisor: MacBotOrchestrator, service: ServiceDefinition, thread: threading.Thread
+) -> str:
+    process = supervisor.processes.get(service.name)
+    log_path = supervisor.settings.data_dir / "logs" / f"{service.name}.log"
+    stack = ""
+    if thread.ident is not None and (frame := sys._current_frames().get(thread.ident)) is not None:
+        stack = "".join(traceback.format_stack(frame))
+    return repr(
+        {
+            "lifecycle": supervisor.lifecycle.get(service.name),
+            "process_pid": process.pid if process else None,
+            "process_poll": process.poll() if process else None,
+            "log": log_path.read_text(errors="replace") if log_path.exists() else "missing",
+            "thread_stack": stack,
+        }
+    )
 
 
 def _http_service_script(port: int, *, ready_delay: float = 0, term_delay: float = 0) -> str:
@@ -215,7 +235,7 @@ def test_readiness_reports_real_startup_phase_and_timing(tmp_path):
         assert loading["running"]
         assert not loading["ready"]
         starter.join(timeout=6)
-        assert not starter.is_alive()
+        assert not starter.is_alive(), _lifecycle_diagnostic(supervisor, service, starter)
         assert result[0]["success"]
         ready = supervisor.status()["services"][service.name]
         assert ready["phase"] == "ready"
@@ -243,7 +263,8 @@ def test_status_does_not_block_while_real_child_stops(tmp_path):
     stopper = threading.Thread(target=lambda: supervisor.stop_service(service.name))
     try:
         supervisor.service_definitions[service.name] = service
-        assert supervisor.start_service(service, retries=100, backoff=0.05)["success"]
+        started = supervisor.start_service(service, retries=100, backoff=0.05)
+        assert started["success"], _lifecycle_diagnostic(supervisor, service, stopper)
         supervisor.stopping.set()
         shutdown_requested = supervisor.status()
         assert shutdown_requested["phase"] == "stopping"
