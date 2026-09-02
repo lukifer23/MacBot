@@ -6,11 +6,13 @@ Center, local document library, settings, recovery, and diagnostics all reflect
 one assistant-owned runtime. The loopback web surface is read-only diagnostics;
 it is not an alternate chat, microphone, settings, or action path.
 
-**Modernization is in progress. This checkpoint is not yet a verified
+**Modernization is implemented but the product is not yet a verified
 hands-free release.** Protocol v3, the durable research loop, native audio
-ownership, and paired installation are implemented in the working tree. The
-selected-model, installed-artifact, physical audio, listening, accessibility,
-and endurance gates remain separate release evidence.
+ownership, paired installation, and host-wide model-residency ownership are in
+the current source. Scoped selected-model, native-integration, and installed
+artifact checks pass. Research-quality, physical audio, listening,
+accessibility, endurance, coverage, and final hosted gates remain separate
+release evidence.
 
 ## Build the native application
 
@@ -21,8 +23,6 @@ and Apple Command Line Tools.
 git clone https://github.com/lukifer23/MacBot.git
 cd MacBot
 ./scripts/bootstrap_mac.sh
-uv sync --frozen --all-extras
-uv run --frozen macbot setup
 uv run --frozen macbot build-inference
 uv run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
 ./scripts/build_native_app.sh --install
@@ -33,15 +33,18 @@ The install build stages one paired app/runtime generation under
 `~/Library/Application Support/MacBot/releases`, verifies the wheel, packaged
 protocol, executable, and strict ad hoc signature, writes a release manifest,
 then atomically switches one `current` generation pointer shared by the stable
-app and runtime links. The previous verified
-generation remains available for rollback. The installed application contains
-no checkout path. A build without `--install` remains a repository-linked
-development bundle.
+app and runtime links. When upgrading an active installation, it quits the
+native owner, stops its service tree, activates the pair under the host-wide
+inference lease, relaunches the app, and waits for readiness. The previous
+verified generation remains available for paired rollback. The installed
+application contains no checkout path. A build without `--install` creates a
+repository-linked development bundle in the native build cache.
 
-All mutable settings, models, documents, credentials, history, and logs live
-under `~/Library/Application Support/MacBot`. Normal operation never rewrites
-tracked defaults. Runtime models are provisioned explicitly and must work
-offline; a failed backend is never silently replaced.
+Mutable settings, models, documents, history databases, and logs live under
+`~/Library/Application Support/MacBot`. Brave Search and history credentials
+live in macOS Keychain. Normal operation never rewrites tracked defaults.
+Runtime models are provisioned explicitly and must work offline; a failed
+backend is never silently replaced.
 
 The selected LLM is built locally from pinned official Qwen source weights with
 llama.cpp b10509 and verified against registered F16 and Q4_K_M hashes. Model
@@ -57,18 +60,19 @@ recovery, and the persistent menu-bar control. It exposes five destinations:
 Conversation, Tasks, Library, Diagnostics, and Settings. It connects to one
 owned Python service tree through independent owner-only command and event
 connections plus framed PCM. A long event wait cannot serialize Interrupt,
-authorization, Send, or settings. Each launch uses a
-single-use 256-bit token. Quitting the app stops only the MacBot-owned service
-tree.
+authorization, Send, or settings. Each launch uses one ephemeral 256-bit token
+to authenticate its command, event, and audio connections. Quitting the app
+stops only the MacBot-owned service tree.
 
 The assistant service owns the event journal, conversation context, durable Task
 engine, capability broker, synthesis scheduling, and cancellation. Conversation
 uses one response inference and may add only deterministic read-only enrichment.
 An explicit Task persists a bounded plan and authority manifest before native
-authorization, then executes one ready step through a single-use receipt,
-persists its evidence, evaluates the result, and either continues, finishes,
-blocks, or replans. Material replans return to authorization. Retrieved text
-and tool results remain untrusted and cannot extend authority.
+authorization, then executes its ready planned steps through single-use
+receipts, persists observations, and evaluates the accumulated result. It may
+finish, block, or request one bounded replan; material replans return to
+authorization. Per-observation evaluation, dependency-aware planning, and
+claim-linked citation validation remain unfinished Agent Kernel work.
 
 Brave Search uses a credential stored in Keychain. Without a configured
 supported provider, web search is unavailable rather than silently substituted.
@@ -110,14 +114,16 @@ credential require confirmation.
 ## Verification
 
 ```sh
-uv run ruff format --check src tests scripts
-uv run ruff check src tests scripts
-uv run mypy src/macbot
-uv run pytest -m 'not models and not device'
-uv run pytest -m 'not device'
+uv run --frozen ruff format --check src tests scripts
+uv run --frozen ruff check src tests scripts
+uv run --frozen mypy src/macbot
+uv run --frozen pytest -m 'not models and not device and not native_integration'
+uv run --frozen pytest -m native_integration --durations=20
+uv run --frozen pytest -m 'models and not device'
 swift test --package-path native/MacBotApp -c release
-uv run pip-audit --local
-uv build && python3 scripts/inspect_package.py
+uv run --frozen pip-audit --local
+uv build
+uv run --frozen python scripts/inspect_package.py
 ./scripts/build_native_app.sh
 ```
 
@@ -130,6 +136,7 @@ artifact check is an open gate, never a passing skip. See
 ## Documentation
 
 - [Architecture and native IPC](docs/ARCHITECTURE.md)
+- [First-run and operator guide](docs/USER_GUIDE.md)
 - [Setup and development](docs/DEVELOPMENT.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [API](docs/API_REFERENCE.md)
@@ -138,8 +145,8 @@ artifact check is an open gate, never a passing skip. See
 - [Migration and rollback](docs/MIGRATION.md)
 - [Verification and measured evidence](docs/VERIFICATION.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Current checkpoint](docs/PAUSED_STATE.md)
-- [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+- [Current implementation status](docs/IMPLEMENTATION_STATUS.md)
+- [Historical implementation checkpoint](docs/PAUSED_STATE.md)
 - [Agent harness decision](docs/AGENT_HARNESS.md)
 - [Model screening](docs/MODEL_SCREENING.md)
 - [Dependency audit history](docs/DEPENDENCY_AUDIT.md)

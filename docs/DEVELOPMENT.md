@@ -32,13 +32,10 @@ documents, model weights, recordings, databases, credentials, logs, or the old
 audio helper. Test installation into a clean environment and execute from a
 different directory, with offline mode after provisioning.
 
-`./scripts/build_native_app.sh --install` stages a clean runtime and app as one
-generation, verifies both, writes `release-manifest.json`, and atomically swaps
-the single `current` pointer used by stable app/runtime links. If the installed
-runtime is active, the installer stops its owned processes, acquires the
-host-wide inference lease, activates the pair, and restores runtime readiness.
-Failed validation restores the exact prior pointers. Do not activate an app
-from one generation with a runtime from another.
+`./scripts/build_native_app.sh --install` creates and activates one paired
+generation. Its quiesce, validation, failure restoration, rollback, and
+retention contract is documented once in [MIGRATION.md](MIGRATION.md). Do not
+activate an app from one generation with a runtime from another.
 
 The quality gates are intentionally separate:
 

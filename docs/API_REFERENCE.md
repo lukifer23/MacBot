@@ -65,7 +65,7 @@ multi-step work does not need to masquerade as a one-shot tool:
 ```
 
 The native composer sends immediate turns as
-`{"op":"chat","message":"...","speak":true|false}` and durable work as
+`{"op":"chat","protocol_version":3,"message":"...","speak":true|false}` and durable work as
 `{"op":"task_create","protocol_version":3,"message":"..."}`. Task creation returns a persisted
 task record in `task`; it is not execution approval. On every service connection
 and event-epoch reset, the client reconciles with `sync`. `task_list` remains a
@@ -88,9 +88,24 @@ commands. Missing or incompatible Task protocol versions fail closed.
 
 Errors distinguish invalid input (400), missing authentication (401), denied origin/CSRF/authorization (403), missing record (404), and unavailable downstream services (503). Native commands are authenticated by the private socket token and bound to the single native session.
 
+Every native operation includes `protocol_version: 3`. Supported operations are
+`sync`, `status`, `settings`, `update_settings`, `events`, `chat`,
+`task_create`, `task_list`, `task_command`, `preview_voice`, `listen`,
+`interrupt`, `clear`, `documents`, `document_import`, `document_delete`, and
+`document_search`. A successful frame is `{"ok":true,...}`. A failed command is
+`{"ok":false,"error":"...","message":"...","failure":{"code":"...","message":"...","retryable":false,"failure_class":"denied|invalid_request|permanent"}}`.
+The packaged protocol resource is canonical for Task states and commands; the
+remaining operation payloads are still hand-maintained in Swift and Python and
+must be schema-generated before claiming a single-source complete protocol.
+
 ## RAG service
 
-Authenticated `/api/documents` supports GET and POST `{content,title,type,metadata}`. Document GET/DELETE, POST `/api/search` and GET `/api/stats` remain available. Empty search results are a successful empty list; unavailable/index failure is not an empty result. Retrieval text is untrusted tool data.
+Authenticated `/api/documents` supports GET and POST
+`{content,title,type,metadata}`. Document GET/DELETE, POST
+`/api/documents/batch`, POST `/api/documents/batch-delete`, POST `/api/search`,
+POST `/api/embed`, and GET `/api/stats` remain available. Empty search results
+are a successful empty list; unavailable/index failure is not an empty result.
+Retrieval text is untrusted tool data.
 
 ## Supervisor
 
@@ -103,7 +118,9 @@ capabilities are `rag_search`, `web_search`, and bounded `web_fetch`; fetched
 content is size/content/redirect constrained and recorded as evidence with a
 body hash. Material replans require renewed authorization.
 
-Partial speech appears only as ephemeral `partial_transcription` events. It is
-never written to encrypted history or the durable event journal. Final
+The released runtime emits one final `transcription`; it does not emit partial
+speech. If a future single-decoder streaming path emits
+`partial_transcription`, that event is classified as ephemeral and must never be
+written to encrypted history or the durable event journal. Final
 `transcription` and `user` presentation share one turn ID and render as one user
 message, not duplicates.

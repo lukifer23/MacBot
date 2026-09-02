@@ -2,10 +2,13 @@
 
 ## Ownership
 
-`MacBot.app` is the only user-facing lifecycle and operator owner. It starts one supervised
-Python service tree, connects through private Unix sockets, and stops that tree
-on Quit. Closing the conversation window does not imply that hands-free capture
-has stopped; the menu-bar state remains visible until Stop or Quit.
+`MacBot.app` is the only interactive lifecycle and operator owner. The
+supervisor is the sole service-tree authority. The CLI and installer are
+maintenance clients: they may stop or replace the owned tree, but they do not
+create a second interactive assistant. The app connects through private Unix
+sockets and stops its tree on Quit. Closing the conversation window does not
+imply that hands-free capture has stopped; the menu-bar state remains visible
+until Stop or Quit.
 
 The optional loopback diagnostics view is a read-only observer of the same
 service tree. It is not allowed to create a model, submit turns, capture or play
@@ -51,29 +54,32 @@ sequenceDiagram
     participant Model as Response-only LLM
 
     Audio->>Assistant: framed 16 kHz PCM
-    Assistant-->>UI: partial/final transcription events
+    Assistant-->>UI: final transcription event
     Assistant->>Model: Conversation context + read-only enrichment
     Model-->>UI: sequenced response deltas
     Assistant-->>Audio: generation-bound PCM chunks
     UI->>Task: explicit task_create
     Task-->>UI: persisted plan + authority manifest
     UI->>Task: authorize
-    Task->>Broker: single-use ready-step receipt
+    Task->>Broker: single-use receipt for each ready planned step
     Broker-->>Task: durable observation + evidence
-    Task->>Task: evaluate, continue, replan, block, or finish
-    Task-->>UI: progress + citations + terminal provenance
+    Task->>Task: evaluate accumulated outcomes, replan, block, or finish
+    Task-->>UI: progress + evidence provenance + terminal result
 ```
 
-Every event includes an epoch and increasing sequence number. Reconnection
-continues from the last cursor; an epoch change forces a state refresh. Turn IDs
-bind transcription, actions, synthesis, cancellation, and UI updates so stale
-output cannot enter a newer turn.
+Every event includes an increasing sequence number. Event batches and atomic
+reconciliation include the assistant epoch. Reconnection continues from the
+last cursor; an epoch change forces a state refresh. Turn IDs bind
+transcription, actions, synthesis, cancellation, and UI updates so stale output
+cannot enter a newer turn.
 
 Swift is the only released capture and playback transport. One resident
 Parakeet recognizer produces one final transcript after endpoint
 detection. Listening feedback comes from native capture/VAD activity, not a
-second recognizer. Partial transcription is ephemeral and never enters durable
-history or the event journal. A capture generation invalidates late audio after
+second recognizer. The released runtime does not produce partial transcripts;
+the event contract classifies them as ephemeral for any future single-decoder
+streaming work. A partial must never enter durable history or the event journal.
+A capture generation invalidates late audio after
 Stop, interruption, endpoint detection, or a new utterance.
 
 The canonical LLM has one request-owned priority lane. Conversation receives the
@@ -122,8 +128,9 @@ active and two recent verified revisions are retained.
 
 ## Trust boundary
 
-The planner's JSON is untrusted until schema, dependency, step budget,
-capability, arguments, target scope, and manifest checks pass. Execution starts
+The planner's JSON is untrusted until schema, step budget, capability,
+arguments, target scope, and manifest checks pass. The current planner emits an
+ordered step list without explicit dependencies. Execution starts
 only after native Task authorization; receipt consumption and the durable
 running marker commit in one transaction before the executor is invoked. Every
 step receives a `RequestContext` with task, step, attempt, deadline,
@@ -131,5 +138,10 @@ cancellation, and authorization version. Retrieved documents and tool output
 can inform evaluation but cannot authorize another action. Material changes to
 capability, target, source scope, deadline, or side-effect class return to
 authorization. The kernel permits at most 12 executed steps and two replans.
+Today it executes the authorized ready list, evaluates the accumulated
+observations, and may ask for another bounded evidence plan. Per-step
+evaluate/continue decisions, dependency-aware planning, contradiction handling,
+and claim-to-evidence citation validation remain open implementation work
+tracked in [VERIFICATION.md](VERIFICATION.md).
 There is no general shell, arbitrary file-write, purchasing, messaging, account
 mutation, Pi adapter, or Hermes runtime.

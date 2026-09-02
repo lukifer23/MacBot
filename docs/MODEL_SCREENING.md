@@ -65,11 +65,14 @@ Qwen3.5-1.7B and is not Qwen3-ASR-1.7B.
 Run candidates sequentially with unrelated workloads stopped:
 
 ```bash
-uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b \
+uv run --frozen --all-extras python scripts/benchmark_models.py qwen3.5-2b-official \
   --case-set core --output /new/private/report.jsonl
 ```
 
-Reports refuse overwrite. Device speech latency, acoustic echo behavior, broad
+Stop the active MacBot app and service tree before starting a direct benchmark;
+the benchmark acquires the same host-wide inference lease and must never run
+beside another model stack. Reports refuse overwrite. Device speech latency,
+acoustic echo behavior, broad
 assistant quality, and user listening acceptance remain separate gates.
 
 ## Qwen3-TTS audition candidates

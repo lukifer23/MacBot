@@ -5,7 +5,7 @@ handler, approval registry, generic resource/error wrappers, and browser operato
 adapters are removed from the supported package. Their responsibilities now
 belong to `Runtime`, `TaskEngine`, `CapabilityBroker`, `EventJournal`,
 `AuthStore`, `DocumentStore`, native IPC, Swift audio, and the owned-process
-supervisor. Old internal Python imports are not a supported v2 API. Browser
+supervisor. Old internal Python imports are not a supported public API. Browser
 diagnostics retain only authenticated read-only health evidence.
 
 Test replacements preserve the behavioral concerns rather than mocked implementation details:
@@ -29,7 +29,9 @@ separately. No unit result replaces real model trajectories, XCUITest, physical
 audio, user listening acceptance, or endurance recovery.
 
 The installed-runtime verifier now drives authenticated protocol-v3 native IPC,
-including atomic `sync`, Conversation, Tasks, settings/status, and document
-import/search. Its implementation is present; a fresh installed/offline run on
-the exact final artifact is still an open release gate tracked in
-[VERIFICATION.md](VERIFICATION.md).
+including atomic `sync`, Conversation streaming, status/prompt accounting, and
+document import/search. It also checks encrypted-history plaintext absence and
+OS-enforced offline startup. Task authorization, settings mutation, physical
+audio, and native UI interaction are not part of that verifier and require
+their own gates. The eventual exact release artifact must repeat the installed
+run tracked in [VERIFICATION.md](VERIFICATION.md).

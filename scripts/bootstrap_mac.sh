@@ -19,5 +19,5 @@ uv sync --frozen --all-extras --group dev
 # path. Clear only that metadata flag; installed-wheel runtimes do not use an
 # editable .pth file.
 find .venv/lib/python3.12/site-packages -maxdepth 1 -name '*.pth' -exec chflags nohidden {} +
-PYTHONPATH="$PWD/src" .venv/bin/macbot setup
+uv run --frozen macbot setup
 echo 'Environment ready. Run make build and make models explicitly to provision native engines and model weights.'

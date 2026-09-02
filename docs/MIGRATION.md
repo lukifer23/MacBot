@@ -62,9 +62,17 @@ older non-symlink app as the timestamped `MacBot.previous-*.app` artifact.
 
 Rollback selects the previous verified generation's app and runtime together.
 Confirm its release manifest, source revision, protocol version, executable
-hash, runtime hash, and selected model hashes before launching it. A successful
-rollback command is not acceptance until offline startup and state
-reconciliation are observed from that installed pair.
+hash, runtime hash, and selected model hashes before launching it. The installer
+automatically restores the prior pair when post-activation validation fails;
+there is not yet a public manual rollback command. Manual recovery must switch
+the paired pointers under the same activation lock and host-wide inference
+lease, then prove offline startup and state reconciliation. Merely changing a
+pointer is not rollback acceptance.
+
+Only `current` and `rollback` are authoritative. The installer does not yet
+prune older generation directories automatically, so generation retention is
+an open release gate. Until pruning is implemented, identify both symlink
+targets first and remove no generation manually during an upgrade or rollback.
 
 Migration tests using temporary real stores do not prove compatibility with
 every historical Chroma format. A copy of the user's actual legacy source store

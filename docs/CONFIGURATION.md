@@ -28,10 +28,12 @@ backend, provenance, checksum source, compatibility, and non-production status;
 they are lab inputs, not runtime fallback choices.
 `qwen3.5-2b-official` is the selected registered LLM. Its catalog entry contains
 the official source revision and source-file hashes plus the pinned llama.cpp
-b10509 F16 and Q4_K_M conversion hashes. Change `models.llm` explicitly to compare another
-registered candidate. MLX names have `-mlx` suffix and require `llm_backend:
-mlx` and the `mlx` extra. Selecting a missing backend/model fails; no
-substitution or runtime downloads occur.
+b10509 F16 and Q4_K_M conversion hashes. Production configuration is validated
+against the release manifest and rejects another selection. Compare a lab
+candidate only through the isolated benchmark scripts and a temporary settings
+object; do not change production configuration. MLX names have `-mlx` suffix
+and require the `mlx` extra. Selecting a missing or non-release artifact for
+production fails; no substitution or runtime downloads occur.
 
 `qwen3-1.7b` selects the pinned Unsloth Q4_K_M quantization of **Qwen3-1.7B**, not a Qwen3.5 or ASR checkpoint. Provision it explicitly with `macbot models download qwen3-1.7b`; the registry records the upstream commit, file hash and license. Its availability does not establish it as a better default.
 

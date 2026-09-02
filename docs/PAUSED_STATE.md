@@ -1,11 +1,16 @@
-# MacBot working-tree checkpoint — 2026-09-01
+# Historical MacBot checkpoint — 2026-09-01
 
 This is a resumable implementation snapshot based on `effccd76c0a7bf4843463e1f8dc5cfddc6e9b182`.
 It is not a release claim. Durable architecture is documented in
 [ARCHITECTURE.md](ARCHITECTURE.md); test truth belongs in the dated ledger in
 [VERIFICATION.md](VERIFICATION.md).
 
-## Implemented in the working tree
+This snapshot is intentionally frozen. It predates the later lifecycle,
+residency, installed-generation, and verification work summarized in
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Do not update its counts
+or use it as current operational guidance.
+
+## Implemented at this checkpoint
 
 - Native protocol v3 packages one shared Task contract for Python and Swift.
   Independent command and event connections prevent a long event wait from
@@ -58,7 +63,7 @@ facts describe that earlier tree only. Protocol v3, single-model final STT,
 native-only audio transport, dynamic evaluation/replanning, and native installed
 verification supersede those implementation details.
 
-## Resume order
+## Resume order recorded at this checkpoint
 
 1. Finish the consolidated software/static run after all shared-worktree changes.
 2. Run the selected-model research and citation corpus with real production

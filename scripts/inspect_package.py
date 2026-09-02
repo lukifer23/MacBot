@@ -14,7 +14,6 @@ required = {
     "macbot/defaults/lab_models.json",
     "macbot/defaults/release_models.json",
     "macbot/defaults/task_protocol_v3.json",
-    "macbot/native/Info.plist",
 }
 version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
 artifacts = list(Path("dist").glob(f"macbot-{version}-*.whl")) + list(
@@ -72,5 +71,11 @@ for path in artifacts:
             ]
         )
     ]
+    obsolete = [
+        name
+        for name in names
+        if "/native/AudioBridge.swift" in name or "/native/Info.plist" in name
+    ]
     assert not bad, (path, bad)
+    assert not obsolete, (path, obsolete)
     print(path.name, "contents verified", len(names), "files")

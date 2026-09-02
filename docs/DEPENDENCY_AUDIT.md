@@ -1,8 +1,13 @@
-# Dependency audit history — 2026-08-30
+# Dependency audit history
 
-This is point-in-time evidence for the 2026-08-30 lockfile. It is not a current
-2026-09-01 release-artifact claim; the final exact lock and installed generation
-still require a fresh audit.
+The current 2026-09-01 local audit used `uv.lock` SHA-256
+`d7d60b433ca3c38aab7891304b4bb4388bf58ffd13759acf37e1403722e25cbd` and
+`uv run --frozen pip-audit --local`. It reported no known third-party
+vulnerabilities. The unpublished local `macbot 2.1.0` package was the only
+unauditable entry. This is lock/environment evidence, not an installed app,
+model, reachability, or redistribution claim.
+
+## 2026-08-30 history
 
 The locked Apple Silicon runtime graph was installed locally and checked with
 `pip-audit --local`. Four advisories were initially reported for

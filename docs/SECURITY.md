@@ -2,16 +2,24 @@
 
 MacBot runs for one local macOS user. Loopback is a transport restriction, not authentication. It does not protect secrets from another process already running as that user or from an administrator.
 
-- Every control/data request needs a valid browser session or the credential for its target service. Service credentials are rejected when an Origin header is present. Query-string credentials are never accepted.
+- Every loopback HTTP control/data request needs a valid browser session or the
+  credential for its target service. Service credentials are rejected when an
+  Origin header is present. Query-string credentials are never accepted.
+- Native command, event, and audio connections authenticate over owner-only
+  Unix sockets with one ephemeral per-launch token. The token file is consumed
+  at startup; the in-memory token authenticates each connection for that launch.
 - Browser login exchanges a one-use, short-lived token for an HttpOnly, SameSite=Strict cookie and separate CSRF token. Cookie authentication alone cannot mutate state. HTTP on loopback is intentional; do not expose it through a tunnel or reverse proxy.
 - Host, Origin and cross-site browser requests are checked. The developer diagnostics page is authenticated, read-only, and does not receive conversation events. Wildcard CORS is not enabled.
 - Conversation can select only deterministic read-only enrichment from the current user text. Model output, history, and retrieved documents cannot grant authority.
 - Task mode persists the proposed plan and exact capability manifest before authorization. Every step uses a single-use receipt bound to its task, normalized arguments, expiry, and safety class. Material scope changes require a new proposal and authorization.
 - Release Tasks expose only `rag_search`, `web_search`, and `web_fetch`.
   `web_fetch` rejects credentials, fragments, non-HTTP schemes, nonstandard
-  ports, private/loopback/link-local/reserved destinations, unsafe redirects,
-  unsupported content, and oversized bodies. Evidence records retain canonical
-  identity, retrieval time, excerpt, provenance, and body hash.
+  ports, hostnames that resolve to private/loopback/link-local/reserved
+  destinations at validation time, unsafe redirects, unsupported content, and
+  oversized bodies. Evidence records retain canonical identity, retrieval
+  time, excerpt, provenance, and body hash. The current resolver and HTTP
+  connection perform separate DNS resolutions; eliminating that rebinding
+  window by connecting to a validated address is an open release-security gate.
 - App/URL opening, screenshots, shell, arbitrary file creation/deletion,
   scheduling, messaging, MCP, delegation, and self-modifying skills are not
   exposed.
