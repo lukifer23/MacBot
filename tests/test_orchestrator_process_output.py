@@ -33,10 +33,10 @@ def _lifecycle_diagnostic(
 
 def _http_service_script(port: int, *, ready_delay: float = 0, term_delay: float = 0) -> str:
     return f"""
-import http.server
 import json
 import os
 import signal
+import socket
 import time
 
 time.sleep({ready_delay!r})
@@ -47,17 +47,22 @@ def terminate(*_):
 
 signal.signal(signal.SIGTERM, terminate)
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = json.dumps({{"pid": os.getpid(), "status": "ready"}}).encode()
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *_):
-        pass
-
-http.server.HTTPServer(("127.0.0.1", {port}), Handler).serve_forever()
+body = json.dumps({{"pid": os.getpid(), "status": "ready"}}).encode()
+response = b"HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: " + str(len(body)).encode() + b"\\r\\nConnection: close\\r\\n\\r\\n" + body
+with socket.socket() as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", {port}))
+    server.listen()
+    while True:
+        connection, _ = server.accept()
+        with connection:
+            request = b""
+            while b"\\r\\n\\r\\n" not in request:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            connection.sendall(response)
 """
 
 
