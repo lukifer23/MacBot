@@ -21,6 +21,10 @@ if [[ "${1:-}" == "--install" ]]; then
   release_root="$HOME/Library/Application Support/MacBot/releases/$generation"
   mkdir -p "$release_root"
   chmod 700 "$release_root"
+  # Assemble release artifacts outside cloud-synchronized workspaces so Finder
+  # metadata cannot race the strict signing boundary.
+  output_root="$release_root/build"
+  app="$output_root/MacBot.app"
   runtime_stage="$($repo_root/scripts/install_runtime.sh --stage "$release_root/runtime")"
   cli="$runtime_stage/bin/macbot"
   source_root=""
