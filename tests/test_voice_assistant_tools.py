@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from macbot.config import Settings, load, prepare, save
+from macbot.config import Settings, prepare, save
 from macbot.orchestrator import MacBotOrchestrator
 from macbot.runtime import Runtime
 
@@ -22,7 +22,7 @@ def port():
 
 @pytest.fixture(scope="module")
 def engine(tmp_path_factory):
-    root = load().data_dir
+    root = Settings().data_dir
     settings = Settings(data_dir=tmp_path_factory.mktemp("real-runtime"))
     prepare(settings)
     for name in [
@@ -117,18 +117,6 @@ def test_ordinary_conversation_never_plans_or_runs_an_action(engine, greeting):
     assert not any(e["kind"] in {"action", "tool", "tool_result", "approval"} for e in events)
 
 
-def test_real_local_time_uses_clock_result_before_response_and_never_searches(engine):
-    engine.clear("clock")
-    events = completed(engine, "What time is it?", session="clock")
-    results = [e for e in events if e["kind"] == "tool_result"]
-    assert len(results) == 1
-    assert results[0]["data"]["tool"] == "local_time"
-    assert results[0]["data"]["result"]["source"] == "mac_clock"
-    assert not any(e["data"].get("tool") == "web_search" for e in events)
-    first_result = results[0]["seq"]
-    assert any(e["kind"] == "delta" and e["seq"] > first_result for e in events)
-
-
 def test_document_only_request_cannot_invoke_external_search(engine):
     response = engine.tools.client.post(
         engine.settings.services.rag.url + "/api/documents",
@@ -147,14 +135,11 @@ def test_document_only_request_cannot_invoke_external_search(engine):
     assert "cobalt" in text(events).lower()
 
 
-def test_compound_app_request_produces_two_grounded_actions_without_executing(engine):
+def test_task_planner_rejects_desktop_side_effects_outside_research_wedge(engine):
     intent = engine.intent.route("Open Calculator and Notes", threading.Event())
-    assert intent.mode == "act"
-    assert [(action.name, action.arguments["app"]) for action in intent.actions] == [
-        ("open_app", "Calculator"),
-        ("open_app", "Notes"),
-    ]
-    assert all(action.source_span in "Open Calculator and Notes" for action in intent.actions)
+    assert intent.mode == "clarify"
+    assert intent.actions == ()
+    assert intent.clarification
 
 
 def test_context_compacts_at_seventy_percent_and_preserves_recent_fact(engine):
@@ -195,7 +180,14 @@ def test_context_compacts_at_seventy_percent_and_preserves_recent_fact(engine):
             session=session,
         )
         assert "cobalt" in text(events).lower()
-        compacted = [e for e in engine.events.read(0)["events"] if e["kind"] == "context_compacted"]
+        deadline = time.monotonic() + 30
+        compacted = []
+        while time.monotonic() < deadline and not compacted:
+            compacted = [
+                e
+                for e in engine.events.read(0, timeout=0.1, session_id=session)["events"]
+                if e["kind"] == "context_compacted"
+            ]
         assert compacted
         assert engine.status()["context"]["prompt_tokens"] + 256 <= 4096
     finally:
@@ -224,19 +216,3 @@ def test_interruption_discards_late_output_before_next_turn(engine, attempt):
         for e in engine.events.read(cutoff)["events"]
     )
     assert engine.turns.qsize() <= 4 and engine.speech.qsize() <= 4
-
-
-@pytest.mark.device
-def test_requested_app_executes_once_and_returns_actual_result(engine):
-    import psutil
-
-    session = "device-app"
-    engine.clear(session)
-    events = completed(engine, "Open Calculator.", session=session)
-    results = [e for e in events if e["kind"] == "tool_result"]
-    assert len(results) == 1
-    assert results[0]["data"]["tool"] == "open_app"
-    assert results[0]["data"]["result"] == {"status": "completed", "app": "Calculator"}
-    assert any(p.info["name"] == "Calculator" for p in psutil.process_iter(["name"]))
-    assert not any(e["kind"] == "approval" for e in events)
-    assert any(e["kind"] == "delta" and e["seq"] > results[0]["seq"] for e in events)

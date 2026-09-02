@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -46,6 +47,31 @@ class RecoveryDisposition(StrEnum):
     VERIFY_BEFORE_RETRY = "verify_before_retry"
 
 
+class FailureClass(StrEnum):
+    NOT_CONFIGURED = "not_configured"
+    INVALID_REQUEST = "invalid_request"
+    DENIED = "denied"
+    TRANSIENT_READ = "transient_read"
+    PERMANENT = "permanent"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+    UNKNOWN_EFFECT = "unknown_effect"
+    INTEGRITY_FAILURE = "integrity_failure"
+
+
+def classify_failure(exc: BaseException) -> FailureClass:
+    """Map executor failures to the durable retry policy without string matching."""
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return FailureClass.TIMEOUT
+    if isinstance(exc, PermissionError):
+        return FailureClass.DENIED
+    if isinstance(exc, ValueError):
+        return FailureClass.INVALID_REQUEST
+    if isinstance(exc, (ConnectionError, OSError)):
+        return FailureClass.TRANSIENT_READ
+    return FailureClass.PERMANENT
+
+
 TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     TaskState.PROPOSED: frozenset(
         {TaskState.AWAITING_AUTHORIZATION, TaskState.QUEUED, TaskState.CANCELLED, TaskState.FAILED}
@@ -59,6 +85,7 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     TaskState.RUNNING: frozenset(
         {
             TaskState.AWAITING_AUTHORIZATION,
+            TaskState.QUEUED,
             TaskState.PAUSE_REQUESTED,
             TaskState.CANCEL_REQUESTED,
             TaskState.BLOCKED,
@@ -67,12 +94,16 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
             TaskState.FAILED,
         }
     ),
-    TaskState.PAUSE_REQUESTED: frozenset({TaskState.PAUSED, TaskState.PARTIAL, TaskState.FAILED}),
+    TaskState.PAUSE_REQUESTED: frozenset(
+        {TaskState.PAUSED, TaskState.CANCEL_REQUESTED, TaskState.PARTIAL, TaskState.FAILED}
+    ),
     TaskState.PAUSED: frozenset(
         {TaskState.QUEUED, TaskState.CANCEL_REQUESTED, TaskState.BLOCKED, TaskState.FAILED}
     ),
     TaskState.CANCEL_REQUESTED: frozenset({TaskState.CANCELLED, TaskState.PARTIAL}),
-    TaskState.BLOCKED: frozenset({TaskState.QUEUED, TaskState.PARTIAL, TaskState.FAILED}),
+    TaskState.BLOCKED: frozenset(
+        {TaskState.QUEUED, TaskState.PARTIAL, TaskState.FAILED, TaskState.CANCELLED}
+    ),
     TaskState.COMPLETED: frozenset(),
     TaskState.PARTIAL: frozenset(),
     TaskState.FAILED: frozenset(),
@@ -171,6 +202,9 @@ class TaskStep:
     arguments: dict[str, Any]
     safety_class: SafetyClass
     idempotency_key: str
+    depends_on: tuple[str, ...] = ()
+    max_attempts: int = 2
+    attempts: int = 0
     step_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     state: StepState = StepState.PLANNED
     result: dict[str, Any] | None = None
@@ -182,6 +216,7 @@ class TaskStep:
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["state"] = self.state.value
+        value["depends_on"] = list(self.depends_on)
         return value
 
 

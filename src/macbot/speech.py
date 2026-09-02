@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import struct
 import subprocess
 import tempfile
 import threading
@@ -15,7 +14,6 @@ import numpy as np
 import soundfile as sf
 
 from .config import Settings
-from .pipe_io import read_exact, write_all
 from .provision import KOKORO_VOICES, QWEN_TTS_VOICES, model_dir, model_file, voices
 
 
@@ -83,58 +81,22 @@ class Transcriber:
         os.environ["HF_HUB_OFFLINE"] = "1"
         self.settings = settings
         self.lock = threading.Lock()
-        self.model = None
-        self.worker = None
-        if settings.models.stt == "parakeet":
-            import mlx.core as mx
-            from parakeet_mlx import from_pretrained
+        import mlx.core as mx
+        from parakeet_mlx import from_pretrained
 
-            self.model = from_pretrained(str(model_dir(settings, "parakeet")))
-            mx.eval(self.model.parameters())
-        else:
-            binary = settings.data_dir / "bin" / "macbot-whisper"
-            if not binary.exists():
-                raise FileNotFoundError(
-                    "Run macbot build-inference to build the resident Whisper worker"
-                )
-            with (settings.data_dir / "logs" / "whisper.log").open("ab") as log:
-                self.worker = subprocess.Popen(
-                    [str(binary), str(model_file(settings, "whisper-base", ".bin"))],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=log,
-                    bufsize=0,
-                )
-            assert self.worker.stdin is not None
-            os.set_blocking(self.worker.stdin.fileno(), False)
-            if self._response() != "ready":
-                raise RuntimeError("Whisper model initialization failed")
-
-    def _response(self) -> str:
-        assert self.worker and self.worker.stdout
-        size = struct.unpack(">I", read_exact(self.worker.stdout, 4, 30))[0]
-        if size > 1024 * 1024:
-            raise ValueError("Whisper response exceeds limit")
-        return read_exact(self.worker.stdout, size, 3).decode()
+        self.model = from_pretrained(str(model_dir(settings, "parakeet")))
+        mx.eval(self.model.parameters())
 
     def transcribe(self, audio: np.ndarray) -> str:
         if not 0 < len(audio) <= self.settings.audio.max_utterance_sec * 16000:
             raise ValueError("Audio duration outside configured range")
         audio = np.clip(audio, -1, 1).astype(np.float32)
         with self.lock:
-            if self.model is not None:
-                import mlx.core as mx
-                from parakeet_mlx.audio import get_logmel
+            import mlx.core as mx
+            from parakeet_mlx.audio import get_logmel
 
-                mel = get_logmel(mx.array(audio), self.model.preprocessor_config)
-                return self.model.generate(mel)[0].text.strip()
-            assert self.worker and self.worker.stdin
-            data = audio.astype("<f4").tobytes()
-            write_all(self.worker.stdin, struct.pack(">I", len(data)) + data, 5)
-            text = self._response()
-            if text.startswith("ERROR:"):
-                raise RuntimeError(text)
-            return text.strip()
+            mel = get_logmel(mx.array(audio), self.model.preprocessor_config)
+            return self.model.generate(mel)[0].text.strip()
 
     def decode(self, content: bytes, suffix: str) -> np.ndarray:
         # Decoder input is a private file, never an attacker-controlled URL or protocol.
@@ -172,16 +134,7 @@ class Transcriber:
             return audio
 
     def close(self):
-        if self.worker:
-            if self.worker.stdin:
-                self.worker.stdin.close()
-            try:
-                self.worker.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.worker.kill()
-                self.worker.wait()
-            if self.worker.stdout:
-                self.worker.stdout.close()
+        pass
 
 
 class Synthesizer:

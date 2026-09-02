@@ -5,24 +5,15 @@ import threading
 import numpy as np
 import pytest
 
-from macbot.config import load
+from macbot.config import Settings
 from macbot.speech import Synthesizer, split_speech
 
 pytestmark = pytest.mark.models
 
 
-@pytest.mark.parametrize(
-    "voice,rate",
-    [
-        ("lessac", 22050),
-        ("kokoro-heart", 24000),
-        ("kokoro-michael", 24000),
-        ("qwen-aiden-0.6b", 24000),
-        ("qwen-aiden-1.7b", 24000),
-    ],
-)
+@pytest.mark.parametrize("voice,rate", [("qwen-aiden-1.7b", 24000)])
 def test_real_synthesis_cache_and_cancellation(voice, rate):
-    settings = load()
+    settings = Settings()
     settings.models.tts_voice = voice
     synth = Synthesizer(settings)
     cancel = threading.Event()
@@ -68,5 +59,5 @@ def test_speech_retains_partial_final_word_until_flush():
 
 
 def test_product_configuration_has_no_unimplemented_speech_speed():
-    settings = load()
+    settings = Settings()
     assert "tts_speed" not in type(settings.models).model_fields

@@ -94,6 +94,9 @@ class HistoryStore:
                 turn_id TEXT NOT NULL, state TEXT NOT NULL, nonce BLOB NOT NULL,
                 ciphertext BLOB NOT NULL, created_ns INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS tasks_session_created
+                ON tasks(session_id, created_ns DESC);
+            CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
             CREATE TABLE IF NOT EXISTS events(
                 epoch TEXT NOT NULL, seq INTEGER NOT NULL, session_id TEXT NOT NULL,
                 turn_id TEXT NOT NULL, state TEXT NOT NULL, kind TEXT NOT NULL,
@@ -117,6 +120,20 @@ class HistoryStore:
                 UNIQUE(task_id, idempotency_key)
             );
             CREATE INDEX IF NOT EXISTS task_steps_state ON task_steps(state);
+            CREATE TABLE IF NOT EXISTS evidence(
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                step_id TEXT NOT NULL REFERENCES task_steps(id) ON DELETE CASCADE,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                body_hash TEXT NOT NULL,
+                nonce BLOB NOT NULL,
+                ciphertext BLOB NOT NULL,
+                created_ns INTEGER NOT NULL,
+                UNIQUE(task_id, source_kind, source_id, body_hash)
+            );
+            CREATE INDEX IF NOT EXISTS evidence_task_created
+                ON evidence(task_id, created_ns);
             CREATE TABLE IF NOT EXISTS capability_receipts(
                 id TEXT PRIMARY KEY,
                 token_digest TEXT NOT NULL UNIQUE,
@@ -186,24 +203,19 @@ class HistoryStore:
             raise ValueError("Message limit out of range")
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,turn_id,nonce,ciphertext FROM messages WHERE session_id=? "
+                "SELECT id,turn_id,nonce,ciphertext,created_ns FROM messages AS message "
+                "WHERE message.session_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM summaries AS summary, json_each(summary.source_ids) AS source "
+                "WHERE summary.session_id=message.session_id AND source.value=message.turn_id) "
                 "ORDER BY created_ns DESC, ordinal DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-            compacted = {
-                turn_id
-                for (source_ids,) in self.db.execute(
-                    "SELECT source_ids FROM summaries WHERE session_id=?", (session_id,)
-                )
-                for turn_id in json.loads(source_ids)
-            }
         messages: list[dict[str, Any]] = []
-        for row_id, turn_id, nonce, ciphertext in reversed(rows):
-            if turn_id in compacted:
-                continue
+        for row_id, turn_id, nonce, ciphertext, created_ns in reversed(rows):
             message = self._open("messages", row_id, nonce, ciphertext)
             message["_id"] = row_id
             message["_turn_id"] = turn_id
+            message["_created_ns"] = created_ns
             messages.append(message)
         return messages
 
@@ -213,6 +225,10 @@ class HistoryStore:
         source_turn_ids: list[str],
         content: str,
         embedding: np.ndarray,
+        *,
+        generation: int,
+        prompt_version: str,
+        model_version: str,
     ) -> str:
         if not source_turn_ids or len(set(source_turn_ids)) != len(source_turn_ids):
             raise ValueError("Summary source turns must be unique and nonempty")
@@ -221,7 +237,15 @@ class HistoryStore:
             raise ValueError("Summary embedding is invalid")
         row_id = uuid.uuid4().hex
         now = time.time_ns()
-        payload = {"content": content, "embedding": vector.tolist()}
+        if generation < 1 or not prompt_version or not model_version:
+            raise ValueError("Summary provenance is incomplete")
+        payload = {
+            "content": content,
+            "embedding": vector.tolist(),
+            "generation": generation,
+            "prompt_version": prompt_version,
+            "model_version": model_version,
+        }
         nonce, ciphertext = self._seal("summaries", row_id, payload)
         with self.lock, self.db:
             self._session(session_id, now)
@@ -259,6 +283,9 @@ class HistoryStore:
                     "source_turn_ids": json.loads(source_ids),
                     "content": payload["content"],
                     "score": float(stored @ vector),
+                    "generation": payload["generation"],
+                    "prompt_version": payload["prompt_version"],
+                    "model_version": payload["model_version"],
                 }
             )
         results.sort(key=lambda item: item["score"], reverse=True)
@@ -347,6 +374,157 @@ class HistoryStore:
                     ),
                 )
 
+    def attach_task_plan(
+        self, task_id: str, task: dict[str, Any], steps: Iterable[dict[str, Any]]
+    ) -> None:
+        """Atomically attach a completed plan to its pre-existing proposal envelope."""
+        records = [dict(step) for step in steps]
+        session_id = str(task["session_id"])
+        turn_id = str(task["turn_id"])
+        if str(task.get("task_id")) != task_id or any(
+            str(step.get("task_id")) != task_id
+            or str(step.get("session_id")) != session_id
+            or str(step.get("turn_id")) != turn_id
+            for step in records
+        ):
+            raise ValueError("Task plan does not match its durable proposal")
+        ordinals = [step.get("ordinal") for step in records]
+        keys = [str(step.get("idempotency_key", "")) for step in records]
+        if (
+            not records
+            or ordinals != list(range(len(records)))
+            or len(keys) != len(set(keys))
+            or any(not key for key in keys)
+        ):
+            raise ValueError("Task plan requires ordered steps and unique idempotency keys")
+        payload = dict(task)
+        payload["state"] = TaskState.PROPOSED.value
+        task_nonce, task_ciphertext = self._seal("tasks", task_id, payload)
+        with self.lock, self.db:
+            current = self.db.execute(
+                "SELECT state,session_id,turn_id FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            existing_step = self.db.execute(
+                "SELECT 1 FROM task_steps WHERE task_id=? LIMIT 1", (task_id,)
+            ).fetchone()
+            if (
+                not current
+                or current[0] != TaskState.PROPOSED.value
+                or current[1] != session_id
+                or current[2] != turn_id
+                or existing_step
+            ):
+                raise ValueError("Task proposal is not eligible for plan attachment")
+            changed = self.db.execute(
+                "UPDATE tasks SET nonce=?,ciphertext=? WHERE id=? AND state=?",
+                (task_nonce, task_ciphertext, task_id, TaskState.PROPOSED.value),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Task proposal changed while attaching its plan")
+            for record in records:
+                step_id = str(record["step_id"])
+                record["state"] = StepState.PLANNED.value
+                nonce, ciphertext = self._seal("task_steps", step_id, record)
+                self.db.execute(
+                    "INSERT INTO task_steps VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        step_id,
+                        task_id,
+                        session_id,
+                        turn_id,
+                        int(record["ordinal"]),
+                        str(record["capability"]),
+                        str(record["safety_class"]),
+                        str(record["idempotency_key"]),
+                        StepState.PLANNED.value,
+                        nonce,
+                        ciphertext,
+                        int(record.get("created_ns", time.time_ns())),
+                    ),
+                )
+
+    def append_replan(
+        self,
+        task_id: str,
+        steps: Iterable[dict[str, Any]],
+        *,
+        capability_manifest: dict[str, Any],
+        requires_authorization: bool,
+    ) -> dict[str, Any]:
+        """Append a bounded plan revision and atomically choose authorization or continuation."""
+        records = [dict(step) for step in steps]
+        if not records:
+            raise ValueError("A replan must add at least one step")
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT state,nonce,ciphertext FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if not row or row[0] != TaskState.RUNNING.value:
+                raise ValueError("Only a running task can accept a replan")
+            task = self._open("tasks", task_id, row[1], row[2])
+            existing = self.db.execute(
+                "SELECT ordinal,idempotency_key FROM task_steps WHERE task_id=? ORDER BY ordinal",
+                (task_id,),
+            ).fetchall()
+            start = len(existing)
+            existing_keys = {item[1] for item in existing}
+            keys = [str(record.get("idempotency_key", "")) for record in records]
+            if (
+                [record.get("ordinal") for record in records]
+                != list(range(start, start + len(records)))
+                or len(keys) != len(set(keys))
+                or existing_keys.intersection(keys)
+                or any(not key for key in keys)
+            ):
+                raise ValueError("Replanned steps must be ordered and non-duplicative")
+            if start + len(records) > int(task.get("step_budget", 0)):
+                raise ValueError("Replan exceeds the durable step budget")
+            remaining = int(task.get("replan_budget", 0))
+            if remaining <= 0:
+                raise ValueError("Task replan budget exhausted")
+            target = (
+                TaskState.AWAITING_AUTHORIZATION if requires_authorization else TaskState.QUEUED
+            )
+            task["state"] = target.value
+            task["revision"] = int(task.get("revision", 0)) + 1
+            task["planning_attempts"] = int(task.get("planning_attempts", 1)) + 1
+            task["replan_budget"] = remaining - 1
+            task["capability_manifest"] = capability_manifest
+            task["updated_ns"] = time.time_ns()
+            nonce, ciphertext = self._seal("tasks", task_id, task)
+            self.db.execute(
+                "UPDATE tasks SET state=?,nonce=?,ciphertext=? WHERE id=? AND state=?",
+                (
+                    target.value,
+                    nonce,
+                    ciphertext,
+                    task_id,
+                    TaskState.RUNNING.value,
+                ),
+            )
+            for record in records:
+                record["state"] = StepState.PLANNED.value
+                step_id = str(record["step_id"])
+                step_nonce, step_ciphertext = self._seal("task_steps", step_id, record)
+                self.db.execute(
+                    "INSERT INTO task_steps VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        step_id,
+                        task_id,
+                        str(task["session_id"]),
+                        str(task["turn_id"]),
+                        int(record["ordinal"]),
+                        str(record["capability"]),
+                        str(record["safety_class"]),
+                        str(record["idempotency_key"]),
+                        StepState.PLANNED.value,
+                        step_nonce,
+                        step_ciphertext,
+                        int(record.get("created_ns", time.time_ns())),
+                    ),
+                )
+        return task
+
     def load_task(self, task_id: str) -> dict[str, Any] | None:
         with self.lock:
             row = self.db.execute(
@@ -369,6 +547,7 @@ class HistoryStore:
         *,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         with self.lock, self.db:
             row = self.db.execute(
@@ -376,9 +555,13 @@ class HistoryStore:
             ).fetchone()
             if not row:
                 raise KeyError("Unknown task")
-            _, after = require_task_transition(row[0], str(target))
             payload = self._open("tasks", task_id, row[1], row[2])
+            revision = int(payload.get("revision", 0))
+            if expected_revision is not None and revision != expected_revision:
+                raise RuntimeError("Task changed concurrently")
+            _, after = require_task_transition(row[0], str(target))
             payload["state"] = after.value
+            payload["revision"] = revision + 1
             payload["updated_ns"] = time.time_ns()
             if result is not None:
                 payload["result"] = result
@@ -400,10 +583,23 @@ class HistoryStore:
                 "ORDER BY created_ns DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        tasks = []
+            step_rows = []
+            if rows:
+                placeholders = ",".join("?" for _ in rows)
+                step_rows = self.db.execute(
+                    "SELECT id,task_id,nonce,ciphertext FROM task_steps "
+                    f"WHERE task_id IN ({placeholders}) ORDER BY task_id,ordinal",
+                    tuple(row[0] for row in rows),
+                ).fetchall()
+        steps_by_task: dict[str, list[dict[str, Any]]] = {}
+        for step_id, task_id, nonce, ciphertext in step_rows:
+            steps_by_task.setdefault(task_id, []).append(
+                self._open("task_steps", step_id, nonce, ciphertext)
+            )
+        tasks: list[dict[str, Any]] = []
         for task_id, nonce, ciphertext in rows:
             task = self._open("tasks", task_id, nonce, ciphertext)
-            task["steps"] = self.load_steps(task_id)
+            task["steps"] = steps_by_task.get(task_id, [])
             tasks.append(task)
         return tasks
 
@@ -414,6 +610,7 @@ class HistoryStore:
         *,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.lock, self.db:
             row = self.db.execute(
@@ -437,6 +634,8 @@ class HistoryStore:
                 payload["result"] = result
             if error is not None:
                 payload["error"] = error
+            if details:
+                payload.update(details)
             nonce, ciphertext = self._seal("task_steps", step_id, payload)
             self.db.execute(
                 "UPDATE task_steps SET state=?,nonce=?,ciphertext=? WHERE id=? AND state=?",
@@ -444,25 +643,54 @@ class HistoryStore:
             )
         return payload
 
+    def increment_step_attempt(self, step_id: str) -> dict[str, Any]:
+        """Persist an execution attempt before issuing its single-use receipt."""
+        with self.lock, self.db:
+            row = self.db.execute(
+                "SELECT state,nonce,ciphertext FROM task_steps WHERE id=?", (step_id,)
+            ).fetchone()
+            if not row or row[0] not in {StepState.PLANNED.value, StepState.BLOCKED.value}:
+                raise ValueError("Task step is not eligible for another attempt")
+            payload = self._open("task_steps", step_id, row[1], row[2])
+            attempts = int(payload.get("attempts", 0)) + 1
+            if attempts > int(payload.get("max_attempts", 1)):
+                raise ValueError("Task step retry budget exhausted")
+            payload["attempts"] = attempts
+            nonce, ciphertext = self._seal("task_steps", step_id, payload)
+            changed = self.db.execute(
+                "UPDATE task_steps SET nonce=?,ciphertext=? WHERE id=? AND state=?",
+                (nonce, ciphertext, step_id, row[0]),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Task step changed while recording its attempt")
+        return payload
+
     def recover_inflight_steps(self) -> list[dict[str, Any]]:
-        """Quarantine interrupted work and classify whether retry can be automatic."""
+        """Reconcile every nonterminal task and ambiguous step after process loss."""
         recovered: list[dict[str, Any]] = []
         with self.lock, self.db:
             rows = self.db.execute(
-                "SELECT id,task_id,safety_class,nonce,ciphertext FROM task_steps WHERE state=?",
-                (StepState.RUNNING.value,),
+                "SELECT id,task_id,safety_class,state,nonce,ciphertext FROM task_steps "
+                "WHERE state IN (?,?)",
+                (StepState.AUTHORIZED.value, StepState.RUNNING.value),
             ).fetchall()
             affected_tasks: set[str] = set()
-            for step_id, task_id, safety_class, nonce, ciphertext in rows:
+            for step_id, task_id, safety_class, step_state, nonce, ciphertext in rows:
                 payload = self._open("task_steps", step_id, nonce, ciphertext)
-                disposition = recovery_disposition(safety_class)
-                recovered_state = (
-                    StepState.BLOCKED
-                    if disposition.value == "retry_safe"
-                    else StepState.UNKNOWN_EFFECT
-                )
+                if step_state == StepState.AUTHORIZED.value:
+                    # The atomic start boundary proves this capability never began.
+                    disposition_value = "not_started"
+                    recovered_state = StepState.BLOCKED
+                else:
+                    disposition = recovery_disposition(safety_class)
+                    disposition_value = disposition.value
+                    recovered_state = (
+                        StepState.BLOCKED
+                        if disposition.value == "retry_safe"
+                        else StepState.UNKNOWN_EFFECT
+                    )
                 payload["state"] = recovered_state.value
-                payload["recovery_disposition"] = disposition.value
+                payload["recovery_disposition"] = disposition_value
                 payload["recovered_ns"] = time.time_ns()
                 new_nonce, new_ciphertext = self._seal("task_steps", step_id, payload)
                 self.db.execute(
@@ -472,43 +700,68 @@ class HistoryStore:
                         new_nonce,
                         new_ciphertext,
                         step_id,
-                        StepState.RUNNING.value,
+                        step_state,
                     ),
+                )
+                # Preserve the receipt as audit evidence while making any unused
+                # token permanently unusable after restart.
+                self.db.execute(
+                    "UPDATE capability_receipts SET consumed=1 WHERE step_id=? AND consumed=0",
+                    (step_id,),
                 )
                 affected_tasks.add(task_id)
                 recovered.append(
                     {
                         "task_id": task_id,
                         "step_id": step_id,
-                        "disposition": disposition.value,
+                        "disposition": disposition_value,
                     }
                 )
-            for task_id in affected_tasks:
-                row = self.db.execute(
-                    "SELECT state,nonce,ciphertext FROM tasks WHERE id=?", (task_id,)
-                ).fetchone()
-                if not row or row[0] not in {
-                    TaskState.QUEUED.value,
-                    TaskState.RUNNING.value,
-                    TaskState.AWAITING_AUTHORIZATION.value,
-                    TaskState.PAUSE_REQUESTED.value,
-                    TaskState.CANCEL_REQUESTED.value,
-                }:
+            terminal = tuple(
+                state.value
+                for state in (
+                    TaskState.COMPLETED,
+                    TaskState.PARTIAL,
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                )
+            )
+            task_rows = self.db.execute(
+                "SELECT id,state,nonce,ciphertext FROM tasks WHERE state NOT IN (?,?,?,?)",
+                terminal,
+            ).fetchall()
+            for task_id, task_state, nonce, ciphertext in task_rows:
+                target: TaskState | None = None
+                reason = ""
+                if task_state == TaskState.PROPOSED.value:
+                    target, reason = TaskState.FAILED, "planning_interrupted"
+                elif task_state in {TaskState.QUEUED.value, TaskState.RUNNING.value}:
+                    target, reason = TaskState.BLOCKED, "execution_interrupted"
+                elif task_state == TaskState.PAUSE_REQUESTED.value:
+                    target, reason = TaskState.PAUSED, "pause_completed_during_restart"
+                elif task_state == TaskState.CANCEL_REQUESTED.value:
+                    succeeded = self.db.execute(
+                        "SELECT 1 FROM task_steps WHERE task_id=? AND state=? LIMIT 1",
+                        (task_id, StepState.SUCCEEDED.value),
+                    ).fetchone()
+                    target = TaskState.PARTIAL if succeeded else TaskState.CANCELLED
+                    reason = "cancel_completed_during_restart"
+                if target is None:
+                    # Awaiting authorization, paused, and already blocked tasks are
+                    # stable states and need no inferred transition.
                     continue
-                payload = self._open("tasks", task_id, row[1], row[2])
-                payload["state"] = TaskState.BLOCKED.value
+                payload = self._open("tasks", task_id, nonce, ciphertext)
+                payload["state"] = target.value
+                payload["revision"] = int(payload.get("revision", 0)) + 1
                 payload["updated_ns"] = time.time_ns()
+                payload["recovery_reason"] = reason
                 new_nonce, new_ciphertext = self._seal("tasks", task_id, payload)
                 self.db.execute(
                     "UPDATE tasks SET state=?,nonce=?,ciphertext=? WHERE id=? AND state=?",
-                    (
-                        TaskState.BLOCKED.value,
-                        new_nonce,
-                        new_ciphertext,
-                        task_id,
-                        row[0],
-                    ),
+                    (target.value, new_nonce, new_ciphertext, task_id, task_state),
                 )
+                if task_id not in affected_tasks:
+                    recovered.append({"task_id": task_id, "step_id": "", "disposition": reason})
         return recovered
 
     def issue_capability_receipt(
@@ -579,9 +832,10 @@ class HistoryStore:
             )
         return receipt_id + "." + token
 
-    def consume_capability_receipt(
+    def consume_receipt_and_start_step(
         self, receipt: str, step_id: str, capability: str, arguments_hash: str
     ) -> dict[str, Any]:
+        """Atomically consume step authority and persist the effect-start boundary."""
         try:
             receipt_id, token = receipt.split(".", 1)
         except ValueError as exc:
@@ -603,12 +857,33 @@ class HistoryStore:
                 or row[5]
             ):
                 raise PermissionError("Capability receipt is expired, consumed, or mismatched")
+            step = self.db.execute(
+                "SELECT state,nonce,ciphertext FROM task_steps WHERE id=?", (step_id,)
+            ).fetchone()
+            if not step or step[0] != StepState.AUTHORIZED.value:
+                raise PermissionError("Task step is not authorized to start")
+            payload = self._open("task_steps", step_id, step[1], step[2])
+            payload["state"] = StepState.RUNNING.value
+            payload["started_ns"] = time.time_ns()
+            step_nonce, step_ciphertext = self._seal("task_steps", step_id, payload)
             changed = self.db.execute(
                 "UPDATE capability_receipts SET consumed=1 WHERE id=? AND consumed=0",
                 (receipt_id,),
             ).rowcount
             if changed != 1:
                 raise PermissionError("Capability receipt was already consumed")
+            started = self.db.execute(
+                "UPDATE task_steps SET state=?,nonce=?,ciphertext=? WHERE id=? AND state=?",
+                (
+                    StepState.RUNNING.value,
+                    step_nonce,
+                    step_ciphertext,
+                    step_id,
+                    StepState.AUTHORIZED.value,
+                ),
+            ).rowcount
+            if started != 1:
+                raise PermissionError("Task step start raced with another executor")
             return self._open("capability_receipts", receipt_id, row[6], row[7])
 
     def requeue_recovered_read_step(self, step_id: str) -> dict[str, Any]:
@@ -642,7 +917,26 @@ class HistoryStore:
 
     def save_event(self, epoch: str, event: dict[str, Any]) -> None:
         row_id = f"{epoch}:{event['seq']}"
-        nonce, ciphertext = self._seal("events", row_id, event.get("data", {}))
+        data = event.get("data", {})
+        if event.get("kind") == "task" and isinstance(data, dict):
+            raw_task = data.get("task")
+            task: dict[str, Any] = raw_task if isinstance(raw_task, dict) else {}
+            data = {
+                "event": data.get("event"),
+                "task_id": task.get("task_id") or event.get("turn_id"),
+                "revision": task.get("revision"),
+                **{
+                    key: data[key]
+                    for key in (
+                        "reason",
+                        "failure_class",
+                        "retrying",
+                        "authority_diff",
+                    )
+                    if key in data
+                },
+            }
+        nonce, ciphertext = self._seal("events", row_id, data)
         with self.lock, self.db:
             self.db.execute(
                 "INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?,?,?,?)",
@@ -658,6 +952,39 @@ class HistoryStore:
                     time.time_ns(),
                 ),
             )
+
+    def save_evidence(self, record: dict[str, Any]) -> str:
+        """Persist one canonical evidence record without duplicating full payloads in events."""
+        evidence_id = str(record["evidence_id"])
+        nonce, ciphertext = self._seal("evidence", evidence_id, record)
+        with self.lock, self.db:
+            existing = self.db.execute(
+                "SELECT id FROM evidence WHERE task_id=? AND source_kind=? AND source_id=? "
+                "AND body_hash=?",
+                (
+                    record["task_id"],
+                    record["source_kind"],
+                    record["source_id"],
+                    record["body_hash"],
+                ),
+            ).fetchone()
+            if existing:
+                return str(existing[0])
+            self.db.execute(
+                "INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    evidence_id,
+                    record["task_id"],
+                    record["step_id"],
+                    record["source_kind"],
+                    record["source_id"],
+                    record["body_hash"],
+                    nonce,
+                    ciphertext,
+                    int(record["retrieved_ns"]),
+                ),
+            )
+        return evidence_id
 
     def clear_session(self, session_id: str) -> None:
         with self.lock, self.db:
@@ -676,7 +1003,16 @@ class HistoryStore:
 
     def clear_all(self) -> None:
         with self.lock, self.db:
-            for table in ("messages", "summaries", "tasks", "sessions", "events"):
+            for table in (
+                "capability_receipts",
+                "evidence",
+                "task_steps",
+                "messages",
+                "summaries",
+                "tasks",
+                "sessions",
+                "events",
+            ):
                 self.db.execute(f"DELETE FROM {table}")
 
     def cleanup(self) -> None:

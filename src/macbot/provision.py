@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from .config import Settings, atomic_write
+from .config import Settings, atomic_write, release_model_manifest
 
 KOKORO_VOICES = {"kokoro-heart": "af_heart", "kokoro-michael": "am_michael"}
 QWEN_TTS_VOICES = {
@@ -38,19 +38,54 @@ def voice_model(name: str) -> str:
 
 
 def catalog() -> dict[str, Any]:
-    return json.loads(files("macbot").joinpath("defaults/models.json").read_text())
+    entries = json.loads(files("macbot").joinpath("defaults/models.json").read_text())
+    if not isinstance(entries, dict):
+        raise ValueError("Model catalog must be a mapping")
+    selected = release_model_manifest()
+    missing = sorted(
+        entry["artifact"] for entry in selected.values() if entry["artifact"] not in entries
+    )
+    if missing:
+        raise ValueError(
+            "Release model artifacts are absent from the catalog: " + ", ".join(missing)
+        )
+    return entries
+
+
+def release_artifacts() -> dict[str, str]:
+    """Return the one production artifact selected for each typed model role."""
+    return {role: str(entry["artifact"]) for role, entry in release_model_manifest().items()}
+
+
+def model_roles(name: str) -> tuple[str, ...]:
+    """Classify an artifact without treating benchmark candidates as production."""
+    entries = catalog()
+    if name not in entries:
+        raise ValueError(f"Unregistered model: {name}")
+    return tuple(role for role, artifact in release_artifacts().items() if artifact == name)
+
+
+def installed_model_inventory(settings: Settings) -> dict[str, Any]:
+    """Report selected and extra artifacts; never delete or silently relocate either."""
+    root = settings.data_dir / "models"
+    installed = (
+        sorted(path.name for path in root.iterdir() if path.is_dir()) if root.is_dir() else []
+    )
+    selected = release_artifacts()
+    selected_names = set(selected.values())
+    return {
+        "selected": selected,
+        "installed": installed,
+        "extra": [name for name in installed if name not in selected_names],
+    }
 
 
 def voices() -> list[str]:
-    return (
-        [
-            name
-            for name, item in catalog().items()
-            if any(f["name"].endswith(".onnx.json") for f in item["files"])
-        ]
-        + list(KOKORO_VOICES)
-        + list(QWEN_TTS_VOICES)
-    )
+    selected = release_model_manifest()["tts"]
+    voice = selected.get("voice")
+    if not isinstance(voice, str) or voice_model(voice) != selected["artifact"]:
+        raise ValueError("Release TTS voice does not match its selected artifact")
+    return [voice]
 
 
 def sha256(path: Path) -> str:
@@ -280,61 +315,12 @@ def verify(settings: Settings, name: str) -> dict[str, Any]:
     return {"model": name, "revision": item["revision"], "verified": True}
 
 
-def native_binary(settings: Settings) -> Path:
-    path = settings.data_dir / "bin" / "macbot-audio"
-    if not path.is_file():
-        raise FileNotFoundError("Native audio helper missing; run macbot build-audio")
-    return path
-
-
-def build_audio(settings: Settings) -> Path:
-    out = settings.data_dir / "bin" / "macbot-audio"
-    out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    source = files("macbot").joinpath("native/AudioBridge.swift")
-    plist = files("macbot").joinpath("native/Info.plist")
-    subprocess.run(
-        [
-            "xcrun",
-            "swiftc",
-            "-O",
-            "-swift-version",
-            "5",
-            str(source),
-            "-framework",
-            "AVFoundation",
-            "-framework",
-            "AVFAudio",
-            "-Xlinker",
-            "-sectcreate",
-            "-Xlinker",
-            "__TEXT",
-            "-Xlinker",
-            "__info_plist",
-            "-Xlinker",
-            str(plist),
-            "-o",
-            str(out),
-        ],
-        check=True,
-        timeout=120,
-    )
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", "--identifier", "local.macbot.audio", str(out)],
-        check=True,
-        timeout=30,
-    )
-    return out
-
-
 def install_binaries(settings: Settings, repo: Path) -> None:
     out = settings.data_dir / "bin"
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for component, names in (
-        ("llama.cpp", ["llama-server", "llama-bench", "llama-quantize"]),
-        ("whisper.cpp", ["whisper-server", "whisper-cli"]),
-    ):
-        source = repo / "models" / component / "build" / "bin"
-        for name in names:
-            if not (source / name).is_file():
-                raise FileNotFoundError(f"Build {component} before installing binaries")
-            shutil.copy2(source / name, out / name)
+    component = "llama.cpp"
+    source = repo / "models" / component / "build" / "bin"
+    for name in ["llama-server", "llama-bench", "llama-quantize"]:
+        if not (source / name).is_file():
+            raise FileNotFoundError(f"Build {component} before installing binaries")
+        shutil.copy2(source / name, out / name)

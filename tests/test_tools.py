@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from macbot.auth import AuthStore
@@ -19,33 +17,23 @@ def registry(tmp_path):
     auth.close()
 
 
-def test_read_only_system_metrics_are_real_and_prompt(registry):
-    start = time.monotonic()
-    result = registry.read("system_info", {})
-    assert set(result) == {"cpu_percent", "memory_percent", "disk_percent"}
-    assert all(0 <= value <= 100 for value in result.values())
-    assert time.monotonic() - start < 1
-
-
 def test_side_effects_cannot_use_the_read_execution_path(registry):
     with pytest.raises(PermissionError):
         registry.read("open_app", {"app": "Calculator"})
 
 
-def test_disabled_tools_have_no_manifest_or_execution_path(registry):
-    registry.settings.tools.enabled = []
-    with pytest.raises(PermissionError):
-        registry.validate("web_search", {"query": "anything"})
-    assert registry.definitions() == []
+def test_release_capability_manifest_cannot_be_disabled_or_extended(registry):
+    with pytest.raises(ValueError, match="exactly"):
+        registry.settings.tools.enabled = []
+    with pytest.raises(ValueError, match="exactly"):
+        registry.settings.tools.enabled = ["rag_search", "web_search", "web_fetch", "open_app"]
 
 
 @pytest.mark.parametrize(
     "name,args",
     [
-        ("open_app", {"app": "Terminal"}),
-        ("open_app", {"app": "Calculator", "extra": "command"}),
-        ("browse_website", {"url": "file:///etc/passwd"}),
-        ("browse_website", {"url": "https://user:pass@example.org"}),
+        ("web_fetch", {"url": "file:///etc/passwd"}),
+        ("web_fetch", {"url": "https://user:pass@example.org"}),
         ("web_search", {"query": ["not", "text"]}),
     ],
 )
@@ -100,24 +88,18 @@ def test_qwen35_xml_style_calls_are_data():
 def test_ordinary_or_ambiguous_text_cannot_request_actions(registry, text):
     assert registry.definitions(text) == []
     with pytest.raises(PermissionError, match="explicit request"):
-        registry.validate_request(text, "open_app", {"app": "Safari"})
+        registry.validate_request(text, "web_search", {"query": "Safari"})
 
 
 @pytest.mark.parametrize(
     "text,name,args",
     [
-        ("Please open the Calculator app for me.", "open_app", {"app": "Calculator"}),
-        ("Can you launch Notes on my Mac?", "open_app", {"app": "Notes"}),
         (
-            "Open https://example.org in the browser.",
-            "browse_website",
+            "Read https://example.org and summarize it.",
+            "web_fetch",
             {"url": "https://example.org"},
         ),
         ("Search the web for sourdough recipes.", "web_search", {"query": "sourdough recipes"}),
-        ("Check the weather in Chicago.", "weather", {"location": "Chicago"}),
-        ("Save a screenshot of my screen.", "screenshot", {}),
-        ("What time is now?", "local_time", {}),
-        ("Show current CPU, memory and disk usage.", "system_info", {}),
         (
             "Find the installation guide in my knowledge base.",
             "rag_search",
@@ -134,20 +116,10 @@ def test_request_scopes_tools_and_cannot_repeat(registry, text, name, args):
 
 def test_requested_target_cannot_be_substituted(registry):
     with pytest.raises(PermissionError, match="explicit request"):
-        registry.validate_request("Open Calculator.", "open_app", {"app": "Safari"})
-    with pytest.raises(PermissionError, match="explicit request"):
         registry.validate_request(
-            "Open https://example.org", "browse_website", {"url": "https://evil.invalid"}
+            "Read https://example.org", "web_fetch", {"url": "https://evil.invalid"}
         )
-    definitions = registry.definitions("Open Calculator.")
-    assert definitions[0]["function"]["parameters"]["properties"]["app"]["enum"] == ["Calculator"]
-
-
-def test_local_time_comes_from_actual_clock(registry):
-    from datetime import datetime
-
-    before = datetime.now().astimezone()
-    result = registry.read("local_time", {})
-    after = datetime.now().astimezone()
-    assert before <= datetime.fromisoformat(result["datetime"]) <= after
-    assert result["source"] == "mac_clock"
+    definitions = registry.definitions("Read https://example.org")
+    assert definitions[0]["function"]["parameters"]["properties"]["url"]["enum"] == [
+        "https://example.org"
+    ]

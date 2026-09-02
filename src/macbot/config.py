@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from importlib.resources import files
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import yaml
@@ -50,7 +51,7 @@ class Models(StrictModel):
     max_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.1, ge=0, le=2)
     threads: int = Field(default=4, ge=1, le=32)
-    stt: Literal["parakeet", "whisper"] = "parakeet"
+    stt: Literal["parakeet"] = "parakeet"
     tts_voice: str = "qwen-aiden-1.7b"
     embedding: Literal["minilm"] = "minilm"
 
@@ -83,22 +84,17 @@ class Audio(StrictModel):
 
 
 class ToolPolicy(StrictModel):
-    enabled: list[str] = Field(
-        default_factory=lambda: [
-            "local_time",
-            "system_info",
-            "rag_search",
-            "open_app",
-            "web_search",
-            "browse_website",
-            "screenshot",
-            "weather",
-        ]
-    )
-    allowed_apps: list[str] = Field(
-        default_factory=lambda: ["Safari", "Finder", "Calculator", "Notes"]
-    )
-    screenshot_dir: str = "~/Desktop"
+    enabled: list[str] = Field(default_factory=lambda: ["rag_search", "web_search", "web_fetch"])
+
+    @field_validator("enabled")
+    @classmethod
+    def release_capabilities_only(cls, value: list[str]) -> list[str]:
+        expected = {"rag_search", "web_search", "web_fetch"}
+        if len(value) != len(set(value)) or set(value) != expected:
+            raise ValueError(
+                "Release capabilities must be exactly rag_search, web_search, web_fetch"
+            )
+        return value
 
 
 class Privacy(StrictModel):
@@ -141,6 +137,58 @@ class Settings(StrictModel):
         return getattr(self.services, name)
 
 
+RELEASE_MODEL_ROLES = frozenset({"llm", "stt", "tts", "embedding", "vad"})
+
+
+def release_model_manifest() -> dict[str, dict[str, Any]]:
+    """Load the sole production model selection, separate from lab candidates."""
+    raw = json.loads(files("macbot").joinpath("defaults/release_models.json").read_text())
+    if not isinstance(raw, dict) or raw.get("version") != 1 or set(raw) != {"version", "roles"}:
+        raise ValueError("Release model manifest has an unsupported shape or version")
+    roles = raw["roles"]
+    if not isinstance(roles, dict) or set(roles) != RELEASE_MODEL_ROLES:
+        raise ValueError("Release model manifest must define every production role exactly once")
+    selected: dict[str, dict[str, Any]] = {}
+    for role, entries in roles.items():
+        if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+            raise ValueError(f"Release role {role} must contain exactly one artifact")
+        entry = entries[0]
+        if not isinstance(entry.get("artifact"), str) or not entry["artifact"]:
+            raise ValueError(f"Release role {role} has no artifact")
+        selected[role] = dict(entry)
+    if set(selected["llm"]) != {"artifact", "backend"}:
+        raise ValueError("Release LLM role requires one artifact and backend")
+    if set(selected["tts"]) != {"artifact", "voice"}:
+        raise ValueError("Release TTS role requires one artifact and voice")
+    if any(set(selected[role]) != {"artifact"} for role in {"stt", "embedding", "vad"}):
+        raise ValueError("Release STT, embedding, and VAD roles accept only one artifact")
+    return selected
+
+
+def validate_release_selection(settings: Settings) -> None:
+    """Fail closed if production configuration diverges from its signed-off roles."""
+    roles = release_model_manifest()
+    actual = {
+        "llm": settings.models.llm,
+        "llm_backend": settings.models.llm_backend,
+        "stt": settings.models.stt,
+        "tts": settings.models.tts_voice,
+        "embedding": settings.models.embedding,
+    }
+    expected = {
+        "llm": roles["llm"]["artifact"],
+        "llm_backend": roles["llm"]["backend"],
+        "stt": roles["stt"]["artifact"],
+        "tts": roles["tts"]["voice"],
+        "embedding": roles["embedding"]["artifact"],
+    }
+    if actual != expected:
+        changed = sorted(key for key in expected if actual[key] != expected[key])
+        raise ValueError(
+            "Production model selection diverges from release_models.json: " + ", ".join(changed)
+        )
+
+
 def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix=".macbot-", dir=path.parent)
@@ -179,25 +227,6 @@ def load(config_path: str | Path | None = None, environ: dict[str, str] | None =
         raise ValueError("Configuration must be a mapping")
     if raw and raw.get("version") != 2:
         raise ValueError("Legacy configuration: run macbot migrate-config --source PATH")
-    services = raw.get("services")
-    if isinstance(services, dict) and "browser_fallback_enabled" in services:
-        if "diagnostics_enabled" in services:
-            raise ValueError("Configuration contains conflicting diagnostics settings")
-        services["diagnostics_enabled"] = services.pop("browser_fallback_enabled")
-    tools = raw.get("tools")
-    if isinstance(tools, dict):
-        # These fields belonged to the removed in-memory approval path. The
-        # durable CapabilityBroker is now the sole execution authority.
-        tools.pop("approval_seconds", None)
-        tools.pop("auto_run_requested", None)
-    models = raw.get("models")
-    if isinstance(models, dict):
-        # Speech speed was never honored by the accepted Qwen release voice.
-        # Consume the old fixed-value field during migration, but reject any
-        # value that could imply an active product capability.
-        legacy_speed = models.pop("tts_speed", 1.0)
-        if legacy_speed != 1.0:
-            raise ValueError("Speech speed is not supported by the release voice")
     if "data_dir" in raw:
         candidate = Path(raw["data_dir"]).expanduser()
         root = (
@@ -216,7 +245,9 @@ def load(config_path: str | Path | None = None, environ: dict[str, str] | None =
             for part in parts[:-1]:
                 node = node.setdefault(part, {})
             node[parts[-1]] = yaml.safe_load(value)
-    return Settings.model_validate(raw)
+    settings = Settings.model_validate(raw)
+    validate_release_selection(settings)
+    return settings
 
 
 def save(settings: Settings) -> None:

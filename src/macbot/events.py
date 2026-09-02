@@ -48,7 +48,10 @@ class EventJournal:
         # Streaming fragments are delivered live but never force an encrypted
         # SQLite transaction. Final messages and state transitions are persisted
         # by their authoritative owners.
-        if self.sink and kind not in EPHEMERAL_KINDS:
+        ephemeral = kind in EPHEMERAL_KINDS or (
+            kind == "transcription" and data.get("partial") is True
+        )
+        if self.sink and not ephemeral:
             self.sink(self.epoch, asdict(event))
         return event
 
@@ -66,7 +69,9 @@ class EventJournal:
             if self.seq <= after and not self.closed and not reset:
                 self.condition.wait_for(lambda: self.seq > after or self.closed, timeout=timeout)
             visible = [e for e in self.items if session_id is None or e.session_id == session_id]
-            gap = bool(visible and after and after < visible[0].seq - 1)
+            # Sequence numbers are global. Events belonging to another session
+            # are not a reconnect gap; only eviction from the bounded journal is.
+            gap = bool(self.items and after and after < self.items[0].seq - 1)
             return {
                 "events": [asdict(e) for e in visible if e.seq > after],
                 "cursor": self.seq,

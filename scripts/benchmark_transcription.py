@@ -30,12 +30,11 @@ def distance(expected, actual):
     return row[-1]
 
 
-def run(backend, output):
+def run(output):
     s = load()
-    s.models.stt = backend
     root = s.data_dir / "benchmarks/librispeech"
     manifest = json.loads((root / "manifest.json").read_text())
-    receipt = verify(s, "parakeet" if backend == "parakeet" else "whisper-base")
+    receipt = verify(s, "parakeet")
     start = time.monotonic()
     stt = Transcriber(s)
     load_ms = (time.monotonic() - start) * 1000
@@ -53,8 +52,6 @@ def run(backend, output):
                 expected = words(record["transcript"])
                 actual = words(text)
                 processes = [psutil.Process()]
-                if stt.worker:
-                    processes.append(psutil.Process(stt.worker.pid))
                 result = {
                     "id": record["id"],
                     "repeat": repeat,
@@ -70,7 +67,7 @@ def run(backend, output):
                 with output.open("a") as f:
                     f.write(json.dumps(result) + "\n")
                 print(
-                    backend,
+                    "parakeet",
                     repeat,
                     record["id"],
                     round(elapsed, 1),
@@ -80,7 +77,7 @@ def run(backend, output):
         warm = [r for r in results if r["repeat"] == 1]
         times = sorted(r["elapsed_ms"] for r in warm)
         summary = {
-            "backend": backend,
+            "backend": "parakeet",
             "model": receipt,
             "corpus_revision": manifest["revision"],
             "load_ms": load_ms,
@@ -99,8 +96,7 @@ def run(backend, output):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("backend", choices=["parakeet", "whisper"])
     p.add_argument("--output", required=True, type=Path)
     args = p.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    run(args.backend, args.output)
+    run(args.output)

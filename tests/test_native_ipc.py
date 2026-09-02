@@ -26,16 +26,16 @@ def test_native_ipc_authentication_and_bounded_status(tmp_path):
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(server.path))
-            write_frame(client, {"op": "authenticate", "token": token})
+            write_frame(client, {"op": "authenticate", "token": token, "protocol_version": 3})
             assert read_frame(client)["ok"]
-            write_frame(client, {"op": "status"})
+            write_frame(client, {"op": "status", "protocol_version": 3})
             response = read_frame(client)
             assert response["ok"] and response["status"]["phase"] == "idle"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as audio:
             audio.connect(str(server.audio_path))
-            write_frame(audio, {"op": "authenticate", "token": token})
+            write_frame(audio, {"op": "authenticate", "token": token, "protocol_version": 3})
             response = read_frame(audio)
-            assert response == {"ok": True, "protocol": 1, "sample_rate": 16000}
+            assert response == {"ok": True, "protocol": 3, "sample_rate": 16000}
             payload = bytes([2]) + np.zeros(512, dtype="<f4").tobytes()
             audio.sendall(struct.pack(">I", len(payload)) + payload)
             ready = (

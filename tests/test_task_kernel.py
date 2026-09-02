@@ -1,8 +1,16 @@
 import os
+import threading
+import time
+import uuid
 
 import pytest
 
-from macbot.capabilities import CapabilityAuthority, CapabilityBroker, CapabilityDefinition
+from macbot.capabilities import (
+    CapabilityAuthority,
+    CapabilityBroker,
+    CapabilityDefinition,
+    RequestContext,
+)
 from macbot.config import Settings, prepare
 from macbot.history import HistoryStore
 from macbot.tasks import (
@@ -34,6 +42,18 @@ def persist(ledger: HistoryStore, task: TaskPlan):
     steps = task.durable_steps()
     ledger.create_task(task.as_dict(), [step.as_dict() for step in steps])
     return steps
+
+
+def context(task: TaskPlan, step) -> RequestContext:
+    return RequestContext(
+        request_id=task.task_id,
+        task_id=task.task_id,
+        step_id=step.step_id,
+        attempt_id=uuid.uuid4().hex,
+        deadline_ns=time.time_ns() + 1_000_000_000,
+        cancellation=threading.Event(),
+        authorization_version=0,
+    )
 
 
 def test_task_and_steps_are_encrypted_and_written_atomically(ledger):
@@ -122,11 +142,14 @@ def test_broker_consumes_one_receipt_and_persists_the_real_result(ledger):
     )
     receipt = broker.issue(step, CapabilityAuthority.READ)
     assert receipt.split(".", 1)[1].encode() not in ledger.path.read_bytes()
-    assert broker.execute(step, receipt) == {"text": "HELLO"}
+    request = context(task, step)
+    assert broker.execute(step, receipt, request) == {"text": "HELLO"}
     assert calls == ["hello"]
-    assert ledger.load_steps(task.task_id)[0]["result"] == {"text": "HELLO"}
+    durable = ledger.load_steps(task.task_id)[0]["result"]
+    assert durable["text"] == "HELLO"
+    assert durable["_capability_result"]["provenance"]["attempt_id"] == request.attempt_id
     with pytest.raises(PermissionError, match="consumed"):
-        broker.execute(step, receipt)
+        broker.execute(step, receipt, context(task, step))
     assert calls == ["hello"]
 
 
@@ -149,9 +172,27 @@ def test_broker_rejects_wrong_authority_and_persists_executor_failure(ledger):
         broker.issue(step, CapabilityAuthority.READ)
     receipt = broker.issue(step, CapabilityAuthority.EXPLICIT_REQUEST)
     with pytest.raises(RuntimeError, match="operator-visible"):
-        broker.execute(step, receipt)
+        broker.execute(step, receipt, context(task, step))
     failed = ledger.load_steps(task.task_id)[0]
     assert failed["state"] == "unknown_effect"
     assert failed["error"] == "RuntimeError: operator-visible failure"
     with pytest.raises(PermissionError, match="not eligible"):
         broker.issue(step, CapabilityAuthority.EXPLICIT_REQUEST)
+
+
+def test_task_listing_uses_one_task_query_and_one_batched_step_query(ledger):
+    for index in range(3):
+        task = plan("s", "lookup_secret", "read", {"query": f"value-{index}"})
+        persist(ledger, task)
+    statements = []
+    ledger.db.set_trace_callback(statements.append)
+    try:
+        tasks = ledger.list_tasks("s")
+    finally:
+        ledger.db.set_trace_callback(None)
+    selects = [statement for statement in statements if statement.startswith("SELECT")]
+    assert len(tasks) == 3
+    assert all(len(task["steps"]) == 1 for task in tasks)
+    assert len(selects) == 2
+    assert "FROM tasks" in selects[0]
+    assert "FROM task_steps" in selects[1]

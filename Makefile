@@ -9,7 +9,6 @@ setup: deps
 	$(UV) run --frozen macbot setup
 build:
 	$(UV) run --frozen macbot build-inference --source "$(CURDIR)"
-	$(UV) run --frozen macbot build-audio
 models:
 	$(UV) run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
 start:
@@ -19,7 +18,7 @@ stop:
 doctor:
 	$(UV) run --frozen macbot doctor
 test:
-	$(UV) run --frozen --all-extras pytest
+	$(UV) run --frozen --all-extras pytest -m 'not models and not device'
 lint:
 	$(UV) run --frozen ruff check src tests scripts
 	$(UV) run --frozen ruff format --check src tests scripts

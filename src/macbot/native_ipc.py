@@ -18,6 +18,7 @@ from .config import Settings
 from .config import save as save_settings
 from .provision import model_dir, voice_model, voices
 from .runtime import Runtime
+from .task_protocol import PROTOCOL_OPERATIONS, TASK_PROTOCOL_VERSION, require_task_protocol
 
 MAX_FRAME = 12 * 1024 * 1024
 
@@ -130,19 +131,59 @@ class NativeIPCServer:
         connection.settimeout(25)
         try:
             hello = read_frame(connection)
-            if hello != {"op": "authenticate", "token": self.token}:
-                write_frame(connection, {"ok": False, "error": "authentication_failed"})
+            if hello != {
+                "op": "authenticate",
+                "token": self.token,
+                "protocol_version": TASK_PROTOCOL_VERSION,
+            }:
+                write_frame(
+                    connection,
+                    {
+                        "ok": False,
+                        "error": "authentication_failed",
+                        "failure": {
+                            "code": "authentication_failed",
+                            "message": "Native authentication failed",
+                            "retryable": False,
+                            "failure_class": "denied",
+                        },
+                    },
+                )
                 return
-            write_frame(connection, {"ok": True, "protocol": 1, "epoch": self.runtime.events.epoch})
+            write_frame(
+                connection,
+                {
+                    "ok": True,
+                    "protocol": TASK_PROTOCOL_VERSION,
+                    "epoch": self.runtime.events.epoch,
+                },
+            )
             while not self.stopping.is_set():
                 request = read_frame(connection)
                 try:
                     response = self._dispatch(request)
                     write_frame(connection, {"ok": True, **response})
                 except (ValueError, PermissionError, RuntimeError) as exc:
+                    failure_class = (
+                        "denied"
+                        if isinstance(exc, PermissionError)
+                        else "invalid_request"
+                        if isinstance(exc, ValueError)
+                        else "permanent"
+                    )
                     write_frame(
                         connection,
-                        {"ok": False, "error": type(exc).__name__, "message": str(exc)},
+                        {
+                            "ok": False,
+                            "error": type(exc).__name__,
+                            "message": str(exc),
+                            "failure": {
+                                "code": type(exc).__name__,
+                                "message": str(exc),
+                                "retryable": False,
+                                "failure_class": failure_class,
+                            },
+                        },
                     )
         except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
             pass
@@ -171,10 +212,17 @@ class NativeIPCServer:
         connection.settimeout(5)
         try:
             hello = read_frame(connection)
-            if hello != {"op": "authenticate", "token": self.token}:
+            if hello != {
+                "op": "authenticate",
+                "token": self.token,
+                "protocol_version": TASK_PROTOCOL_VERSION,
+            }:
                 write_frame(connection, {"ok": False, "error": "authentication_failed"})
                 return
-            write_frame(connection, {"ok": True, "protocol": 1, "sample_rate": 16000})
+            write_frame(
+                connection,
+                {"ok": True, "protocol": TASK_PROTOCOL_VERSION, "sample_rate": 16000},
+            )
             connection.settimeout(1)
             with self.audio_write_lock:
                 previous = self.audio_connection
@@ -237,6 +285,49 @@ class NativeIPCServer:
 
     def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
+        if request.get("protocol_version") != TASK_PROTOCOL_VERSION:
+            raise ValueError(f"Native operations require protocol_version {TASK_PROTOCOL_VERSION}")
+        if not isinstance(op, str) or op not in PROTOCOL_OPERATIONS - {"authenticate"}:
+            raise ValueError("Unsupported native operation")
+        if op == "sync":
+            messages: list[dict[str, Any]] = []
+            if self.runtime.history_store:
+                for stored_message in self.runtime.history_store.load_messages(
+                    "native", limit=2000
+                ):
+                    role = stored_message.get("role")
+                    content = stored_message.get("content")
+                    if role not in {"user", "assistant"} or not isinstance(content, str):
+                        continue
+                    messages.append(
+                        {
+                            "id": str(stored_message.get("_id", "")),
+                            "role": role,
+                            "content": content,
+                            "created_at": int(stored_message.get("_created_ns", 0)),
+                            "turn_id": stored_message.get("_turn_id"),
+                        }
+                    )
+            tasks = self.runtime.task_engine.list("native") if self.runtime.task_engine else []
+            with self.runtime.lock:
+                turn = self.runtime.current
+                active_turn = (
+                    {
+                        "id": turn.id,
+                        "phase": turn.phase,
+                        "user_text": turn.text,
+                    }
+                    if turn and not turn.terminal
+                    else None
+                )
+            return {
+                "protocol_version": TASK_PROTOCOL_VERSION,
+                "epoch": self.runtime.events.epoch,
+                "cursor": self.runtime.events.seq,
+                "messages": messages,
+                "tasks": tasks,
+                "active_turn": active_turn,
+            }
         if op == "status":
             status = self.runtime.status()
             try:
@@ -281,15 +372,16 @@ class NativeIPCServer:
                 "tts_voice",
             }:
                 raise ValueError("Unsupported settings update")
+            candidate = self.settings.model_copy(deep=True)
             if "diagnostics_enabled" in values:
                 value = values["diagnostics_enabled"]
                 if not isinstance(value, bool):
                     raise ValueError("Diagnostics setting must be boolean")
-                self.settings.services.diagnostics_enabled = value
+                candidate.services.diagnostics_enabled = value
             for key, target in {
-                "retention_days": self.settings.privacy,
-                "endpoint_ms": self.settings.audio,
-                "context_length": self.settings.models,
+                "retention_days": candidate.privacy,
+                "endpoint_ms": candidate.audio,
+                "context_length": candidate.models,
             }.items():
                 if key in values:
                     value = values[key]
@@ -301,8 +393,12 @@ class NativeIPCServer:
                 if not isinstance(voice, str) or voice not in voices():
                     raise ValueError("TTS voice is not registered")
                 model_dir(self.settings, voice_model(voice))
-                self.settings.models.tts_voice = voice
-            save_settings(self.settings)
+                candidate.models.tts_voice = voice
+            save_settings(candidate)
+            self.settings.services = candidate.services
+            self.settings.privacy = candidate.privacy
+            self.settings.audio = candidate.audio
+            self.settings.models = candidate.models
             return {"state": "saved", "restart_required": True}
         if op == "events":
             after = request.get("after", 0)
@@ -315,24 +411,37 @@ class NativeIPCServer:
                 raise ValueError("Invalid event cursor")
             return self.runtime.events.read(after, timeout=20, epoch=epoch, session_id="native")
         if op == "chat":
+            speak = request.get("speak", True)
+            if not isinstance(speak, bool):
+                raise ValueError("speak must be boolean")
             turn = self.runtime.submit(
                 request.get("message"),
-                speak=bool(request.get("speak", True)),
+                speak=speak,
                 session_id="native",
             )
             return {"state": "accepted", "turn_id": turn.id}
         if op == "task_create":
+            require_task_protocol(request)
             if not self.runtime.task_engine:
                 raise RuntimeError("Durable Task mode requires encrypted history")
             message = request.get("message")
             if not isinstance(message, str):
                 raise ValueError("Task message must be text")
-            return {"task": self.runtime.task_engine.create(message, "native")}
+            task = self.runtime.task_engine.create(message, "native")
+            return {
+                "protocol_version": TASK_PROTOCOL_VERSION,
+                "task": self.runtime.task_engine.snapshot(task, event="proposed"),
+            }
         if op == "task_list":
+            require_task_protocol(request)
             if not self.runtime.task_engine:
-                return {"tasks": []}
-            return {"tasks": self.runtime.task_engine.list("native")}
+                return {"protocol_version": TASK_PROTOCOL_VERSION, "tasks": []}
+            return {
+                "protocol_version": TASK_PROTOCOL_VERSION,
+                "tasks": self.runtime.task_engine.list("native"),
+            }
         if op == "task_command":
+            require_task_protocol(request)
             if not self.runtime.task_engine:
                 raise RuntimeError("Durable Task mode requires encrypted history")
             task_id = request.get("task_id")
@@ -351,7 +460,10 @@ class NativeIPCServer:
                 task = self.runtime.task_engine.cancel(task_id, "native")
             else:
                 raise ValueError("Unsupported Task command")
-            return {"task": task}
+            return {
+                "protocol_version": TASK_PROTOCOL_VERSION,
+                "task": self.runtime.task_engine.snapshot(task),
+            }
         if op == "preview_voice":
             turn = self.runtime.submit(
                 "Hey, I’m MacBot. I’m ready when you are.",

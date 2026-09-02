@@ -277,6 +277,20 @@ class DocumentStore:
             if root.exists():
                 shutil.rmtree(root)
             self.db.execute("DELETE FROM revisions WHERE name=?", (name,))
+        retained_keys: set[str] = set()
+        for name in retained:
+            chunks_path = self.indexes / name / "chunks.json"
+            if not chunks_path.is_file():
+                continue
+            chunks = json.loads(chunks_path.read_text())
+            retained_keys.update(
+                str(chunk["key"])
+                for chunk in chunks
+                if isinstance(chunk, dict) and isinstance(chunk.get("key"), str)
+            )
+        for (key,) in self.db.execute("SELECT key FROM embeddings").fetchall():
+            if key not in retained_keys:
+                self.db.execute("DELETE FROM embeddings WHERE key=?", (key,))
 
     @staticmethod
     def _validate_document(item: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:

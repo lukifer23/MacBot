@@ -1,0 +1,68 @@
+{
+  "protocol_version": 3,
+  "channels": ["command", "event", "audio"],
+  "operations": [
+    "authenticate", "sync", "status", "settings", "update_settings", "events",
+    "chat", "task_create", "task_list", "task_command", "preview_voice", "listen",
+    "interrupt", "clear", "documents", "document_import", "document_delete",
+    "document_search"
+  ],
+  "reconciliation_fields": ["protocol_version", "epoch", "cursor", "messages", "tasks", "active_turn"],
+  "error_fields": ["code", "message", "retryable", "failure_class"],
+  "task_states": [
+    "proposed",
+    "awaiting_authorization",
+    "queued",
+    "running",
+    "pause_requested",
+    "paused",
+    "cancel_requested",
+    "blocked",
+    "completed",
+    "partial",
+    "failed",
+    "cancelled"
+  ],
+  "step_states": [
+    "planned",
+    "authorized",
+    "running",
+    "succeeded",
+    "failed",
+    "blocked",
+    "skipped",
+    "unknown_effect"
+  ],
+  "failure_classes": [
+    "not_configured",
+    "invalid_request",
+    "denied",
+    "transient_read",
+    "permanent",
+    "cancelled",
+    "timeout",
+    "unknown_effect",
+    "integrity_failure"
+  ],
+  "commands": [
+    "authorize",
+    "deny",
+    "pause",
+    "resume",
+    "cancel"
+  ],
+  "legal_commands": {
+    "proposed": [],
+    "awaiting_authorization": ["authorize", "deny"],
+    "queued": ["cancel"],
+    "running": ["pause", "cancel"],
+    "pause_requested": ["cancel"],
+    "paused": ["resume", "cancel"],
+    "cancel_requested": [],
+    "blocked": ["cancel"],
+    "completed": [],
+    "partial": [],
+    "failed": [],
+    "cancelled": []
+  }
+}

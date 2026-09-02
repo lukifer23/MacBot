@@ -14,6 +14,7 @@ import httpx
 
 from .auth import AuthStore
 from .config import Settings
+from .inference import InferenceLane, InferenceProfile, InferenceRequest, inference_profiles
 from .provision import model_dir
 
 
@@ -21,8 +22,12 @@ class LocalLLM:
     def __init__(self, settings: Settings, auth: AuthStore):
         self.settings, self.auth = settings, auth
         self.client = httpx.Client(timeout=httpx.Timeout(30, connect=3), trust_env=False)
-        self.response: httpx.Response | None = None
-        self.lock = threading.Lock()
+        self.inference = InferenceLane()
+        self.profiles = inference_profiles(
+            settings.models.max_tokens,
+            settings.models.temperature,
+            settings.models.context_length,
+        )
         self.cache_lock = threading.Lock()
         self.prompt_token_cache: OrderedDict[str, int] = OrderedDict()
         self.context_stats: dict = {}
@@ -41,16 +46,43 @@ class LocalLLM:
         cancel: threading.Event,
         *,
         schema: dict | None = None,
+        request_id: str | None = None,
+        request_kind: str = "model",
+        priority: int | None = None,
+        profile: str | None = None,
+    ) -> Iterator[dict]:
+        selected = self._profile(profile, request_kind, schema is not None)
+        request = self.inference.acquire(
+            request_id=request_id,
+            kind=selected.request_kind,
+            priority=priority,
+            cancel=cancel,
+        )
+        if request is None:
+            return
+        with request:
+            yield from self._stream_owned(
+                messages, definitions, request, schema=schema, profile=selected
+            )
+
+    def _stream_owned(
+        self,
+        messages: list[dict],
+        definitions: list[dict],
+        request: InferenceRequest,
+        *,
+        schema: dict | None,
+        profile: InferenceProfile,
     ) -> Iterator[dict]:
         if self.model is not None:
-            yield from self._mlx(messages, definitions, cancel)
+            yield from self._mlx(messages, definitions, request, profile)
             return
         body: dict = {
             "model": "local",
             "messages": messages,
             "stream": True,
-            "temperature": self.settings.models.temperature,
-            "max_tokens": self.settings.models.max_tokens,
+            "temperature": profile.temperature,
+            "max_tokens": profile.max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         if definitions:
@@ -62,16 +94,16 @@ class LocalLLM:
         # repeatedly resend evicted turns or drop half a tool exchange.
         body["messages"] = messages
         pruned = 0
-        while not cancel.is_set():
+        while not request.is_cancelled():
             token_count = self._llama_prompt_tokens(body)
-            if token_count + self.settings.models.max_tokens <= self.settings.models.context_length:
+            if token_count + profile.max_tokens <= self.settings.models.context_length:
                 break
             self._drop_oldest_turn(body["messages"])
             pruned += 1
-        if cancel.is_set():
+        if request.is_cancelled():
             return
-        yield self._context_event(token_count, pruned)
-        if cancel.is_set():
+        yield self._context_event(token_count, pruned, profile)
+        if request.is_cancelled():
             return
         try:
             with self.client.stream(
@@ -80,11 +112,10 @@ class LocalLLM:
                 json=body,
                 headers=self.auth.headers("llm"),
             ) as response:
-                with self.lock:
-                    self.response = response
+                request.bind_active_cancel(lambda: self._shutdown_response(response))
                 response.raise_for_status()
                 for line in response.iter_lines():
-                    if cancel.is_set():
+                    if request.is_cancelled():
                         return
                     if not line.startswith("data:"):
                         continue
@@ -98,13 +129,32 @@ class LocalLLM:
                     if choices:
                         yield choices[0].get("delta", {})
         except (httpx.HTTPError, OSError):
-            if not cancel.is_set():
+            if not request.is_cancelled():
                 raise
         finally:
-            with self.lock:
-                self.response = None
+            request.unbind_active_cancel()
 
-    def count_tokens(self, messages: list[dict]) -> int:
+    def count_tokens(
+        self,
+        messages: list[dict],
+        *,
+        request_id: str | None = None,
+        request_kind: str = "model",
+        priority: int | None = None,
+        cancel: threading.Event | None = None,
+    ) -> int:
+        request = self.inference.acquire(
+            request_id=request_id,
+            kind=request_kind,
+            priority=priority,
+            cancel=cancel,
+        )
+        if request is None:
+            return 0
+        with request:
+            return self._count_tokens_owned(messages)
+
+    def _count_tokens_owned(self, messages: list[dict]) -> int:
         clean = copy.deepcopy(messages)
         if self.model is not None:
             assert self.tokenizer is not None
@@ -155,7 +205,13 @@ class LocalLLM:
                 self.prompt_token_cache.popitem(last=False)
         return count
 
-    def _mlx(self, messages: list[dict], definitions: list[dict], cancel: threading.Event):
+    def _mlx(
+        self,
+        messages: list[dict],
+        definitions: list[dict],
+        request: InferenceRequest,
+        profile: InferenceProfile,
+    ) -> Iterator[dict]:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -191,8 +247,7 @@ class LocalLLM:
         )
         pruned = 0
         while (
-            len(self.tokenizer.encode(prompt, add_special_tokens=False))
-            + self.settings.models.max_tokens
+            len(self.tokenizer.encode(prompt, add_special_tokens=False)) + profile.max_tokens
             > self.settings.models.context_length
         ):
             self._drop_oldest_turn(formatted)
@@ -206,9 +261,9 @@ class LocalLLM:
                 enable_thinking=False,
             )
         yield self._context_event(
-            len(self.tokenizer.encode(prompt, add_special_tokens=False)), pruned
+            len(self.tokenizer.encode(prompt, add_special_tokens=False)), pruned, profile
         )
-        if cancel.is_set():
+        if request.is_cancelled():
             return
         buffer = ""
         tool_mode = False
@@ -217,10 +272,10 @@ class LocalLLM:
             self.model,
             self.tokenizer,
             prompt,
-            max_tokens=self.settings.models.max_tokens,
-            sampler=make_sampler(temp=self.settings.models.temperature),
+            max_tokens=profile.max_tokens,
+            sampler=make_sampler(temp=profile.temperature),
         ):
-            if cancel.is_set():
+            if request.is_cancelled():
                 return
             if first and chunk.text:
                 first = False
@@ -250,31 +305,44 @@ class LocalLLM:
             raise ValueError("Current turn and tool results exceed the configured context window")
         del messages[users[0] : users[1]]
 
-    def _context_event(self, tokens: int, pruned: int) -> dict:
+    def _context_event(self, tokens: int, pruned: int, profile: InferenceProfile) -> dict:
         self.context_stats = {
             "prompt_tokens": tokens,
-            "reserved_output_tokens": self.settings.models.max_tokens,
+            "reserved_output_tokens": profile.max_tokens,
             "limit": self.settings.models.context_length,
             "pruned_turns": pruned,
             "policy": "whole_turn_pruning",
+            "profile": profile.name,
         }
         return {"_context": self.context_stats}
 
-    def cancel(self):
-        with self.lock:
-            response = self.response
-        if response is not None:
-            # Wake the reader, but let its context manager close the response.
-            # Closing the descriptor here races the reader's select/recv on
-            # macOS and can leave it asleep until the 30-second read timeout.
-            stream = response.extensions.get("network_stream")
-            sock = stream.get_extra_info("socket") if stream is not None else None
-            if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+    def _profile(self, name: str | None, request_kind: str, constrained: bool) -> InferenceProfile:
+        if name is None:
+            name = {
+                "foreground": "conversation",
+                "task": "task_plan" if constrained else "task_final",
+                "background": "compaction",
+            }.get(request_kind, "model")
+        try:
+            return self.profiles[name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown inference profile: {name}") from exc
+
+    @staticmethod
+    def _shutdown_response(response: httpx.Response) -> None:
+        # Wake this request's reader, but let its context manager own response close.
+        stream = response.extensions.get("network_stream")
+        sock = stream.get_extra_info("socket") if stream is not None else None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def cancel(self, request_id: str | None = None) -> bool:
+        """Cancel one identified request; an unowned global cancel is intentionally a no-op."""
+        return self.inference.cancel(request_id) if request_id is not None else False
 
     def close(self):
-        self.cancel()
+        self.inference.close()
         self.client.close()

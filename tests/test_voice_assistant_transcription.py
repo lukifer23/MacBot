@@ -4,20 +4,19 @@ import hashlib
 import json
 import time
 
+import numpy as np
 import pytest
 import soundfile as sf
 
-from macbot.config import load
+from macbot.config import Settings
 from macbot.runtime import Runtime
 from macbot.speech import Transcriber
 
 pytestmark = pytest.mark.models
 
 
-@pytest.mark.parametrize("backend", ["parakeet", "whisper"])
-def test_resident_transcriber_recognizes_complete_human_recording(backend):
-    s = load()
-    s.models.stt = backend
+def test_resident_transcriber_recognizes_complete_human_recording():
+    s = Settings()
     root = s.data_dir / "benchmarks/librispeech"
     assert (root / "manifest.json").is_file(), "Run scripts/provision_benchmark_audio.py explicitly"
     record = json.loads((root / "manifest.json").read_text())["records"][0]
@@ -36,18 +35,17 @@ def test_resident_transcriber_recognizes_complete_human_recording(backend):
         model.close()
 
 
-def test_real_capture_pipeline_publishes_interim_transcription():
-    settings = load()
+def test_real_capture_pipeline_reports_vad_activity_and_only_final_transcription():
+    settings = Settings()
     settings.privacy.history_enabled = False
     settings.models.stt = "parakeet"
-    settings.models.tts_voice = "lessac"
-    settings.audio.endpoint_ms = 2000
+    settings.audio.endpoint_ms = 350
     root = settings.data_dir / "benchmarks/librispeech"
     record = json.loads((root / "manifest.json").read_text())["records"][0]
     samples, rate = sf.read(root / record["file"], dtype="float32")
     assert rate == 16000
 
-    runtime = Runtime(settings)
+    runtime = Runtime(settings, load_tts=False)
     try:
         runtime.listening = True
         runtime.capture_session = "partial-test"
@@ -56,24 +54,41 @@ def test_real_capture_pipeline_publishes_interim_transcription():
             if len(frame) < 512:
                 break
             runtime.audio.capture.put(frame.copy(), timeout=1)
+        for _ in range(20):
+            runtime.audio.capture.put(np.zeros(512, dtype="float32"), timeout=1)
         deadline = time.monotonic() + 10
-        partial = None
+        activity = None
+        final = None
         cursor = 0
-        while time.monotonic() < deadline and partial is None:
+        seen_partial = False
+        while time.monotonic() < deadline and final is None:
             journal = runtime.events.read(cursor, timeout=0.25)
             cursor = journal["cursor"]
-            partial = next(
+            activity = activity or next(
                 (
                     event
                     for event in journal["events"]
-                    if event["kind"] == "transcription" and event["data"].get("partial")
+                    if event["kind"] == "capture_activity" and event["data"].get("active")
                 ),
                 None,
             )
-        assert partial is not None
-        assert partial["session_id"] == "partial-test"
-        assert partial["turn_id"]
-        assert partial["data"]["text"].strip()
+            seen_partial = seen_partial or any(
+                event["kind"] == "transcription" and event["data"].get("partial")
+                for event in journal["events"]
+            )
+            final = next(
+                (
+                    event
+                    for event in journal["events"]
+                    if event["kind"] == "transcription" and not event["data"].get("partial")
+                ),
+                final,
+            )
+        assert activity is not None
+        assert final is not None
+        assert final["session_id"] == "partial-test"
+        assert final["data"]["text"].strip()
+        assert not seen_partial
     finally:
         runtime.listening = False
         runtime.capture_epoch += 1

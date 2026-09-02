@@ -33,20 +33,9 @@ audio:
   idle_timeout_sec: 300
 tools:
   enabled:
-  - local_time
-  - system_info
   - rag_search
-  - open_app
   - web_search
-  - browse_website
-  - screenshot
-  - weather
-  allowed_apps:
-  - Safari
-  - Finder
-  - Calculator
-  - Notes
-  screenshot_dir: ~/Desktop
+  - web_fetch
 privacy:
   history_enabled: true
   retention_days: 30

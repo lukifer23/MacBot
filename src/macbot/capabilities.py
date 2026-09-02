@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
-from .tasks import StepState, TaskStep
+from .tasks import FailureClass, StepState, TaskStep, classify_failure
 
 JsonType = Literal["string", "integer", "number", "boolean", "object", "array"]
 
@@ -30,7 +33,7 @@ class CapabilityLedger(Protocol):
         ttl_seconds: int,
     ) -> str: ...
 
-    def consume_capability_receipt(
+    def consume_receipt_and_start_step(
         self, receipt: str, step_id: str, capability: str, arguments_hash: str
     ) -> dict[str, Any]: ...
 
@@ -41,7 +44,86 @@ class CapabilityLedger(Protocol):
         *,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
+
+    def save_evidence(self, record: dict[str, Any]) -> str: ...
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """Identity, deadline, cancellation, and authority carried across one capability call."""
+
+    request_id: str
+    task_id: str
+    step_id: str
+    attempt_id: str
+    deadline_ns: int
+    cancellation: threading.Event
+    authorization_version: int
+
+    def check(self) -> None:
+        if self.cancellation.is_set():
+            raise InterruptedError("Capability request was cancelled")
+        if time.time_ns() >= self.deadline_ns:
+            raise TimeoutError("Capability request deadline expired")
+
+
+@dataclass(frozen=True)
+class EvidenceRecord:
+    evidence_id: str
+    task_id: str
+    step_id: str
+    source_kind: str
+    source_id: str
+    canonical_url: str | None
+    title: str
+    retrieved_ns: int
+    excerpt: str
+    body_hash: str
+    relevance: float | None
+    provenance: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "task_id": self.task_id,
+            "step_id": self.step_id,
+            "source_kind": self.source_kind,
+            "source_id": self.source_id,
+            "canonical_url": self.canonical_url,
+            "title": self.title,
+            "retrieved_ns": self.retrieved_ns,
+            "excerpt": self.excerpt,
+            "body_hash": self.body_hash,
+            "relevance": self.relevance,
+            "provenance": self.provenance,
+        }
+
+
+@dataclass(frozen=True)
+class CapabilityResult:
+    outcome: dict[str, Any]
+    failure_class: str | None
+    retryable: bool
+    started_ns: int
+    completed_ns: int
+    provenance: dict[str, Any]
+    evidence_ids: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome,
+            "failure_class": self.failure_class,
+            "retryable": self.retryable,
+            "timing": {
+                "started_ns": self.started_ns,
+                "completed_ns": self.completed_ns,
+                "duration_ms": (self.completed_ns - self.started_ns) / 1e6,
+            },
+            "provenance": self.provenance,
+            "evidence_ids": list(self.evidence_ids),
+        }
 
 
 @dataclass(frozen=True)
@@ -121,30 +203,108 @@ class CapabilityBroker:
             ttl_seconds,
         )
 
-    def execute(self, step: TaskStep | Mapping[str, Any], receipt: str) -> dict[str, Any]:
+    def execute(
+        self,
+        step: TaskStep | Mapping[str, Any],
+        receipt: str,
+        context: RequestContext,
+    ) -> dict[str, Any]:
         values = self._step_values(step)
+        if context.task_id != values.get("task_id") or context.step_id != values["step_id"]:
+            raise PermissionError("Request context does not own this capability step")
+        context.check()
         arguments = self._validate_arguments(values["capability"], values["arguments"])
         digest = self.arguments_hash(values["capability"], arguments)
-        self.ledger.consume_capability_receipt(
+        self.ledger.consume_receipt_and_start_step(
             receipt, values["step_id"], values["capability"], digest
         )
-        self.ledger.transition_step(values["step_id"], StepState.RUNNING)
         definition = self._definitions[values["capability"]]
+        started_ns = time.time_ns()
         try:
             result = definition.executor(arguments)
+            context.check()
             if not isinstance(result, dict):
                 raise TypeError("Capability executor must return a JSON object")
             self.arguments_hash(values["capability"] + ":result", result)
         except Exception as exc:
+            failure = classify_failure(exc)
+            retryable = failure in {FailureClass.TIMEOUT, FailureClass.TRANSIENT_READ}
             target = (
-                StepState.FAILED if values["safety_class"] == "read" else StepState.UNKNOWN_EFFECT
+                StepState.BLOCKED
+                if values["safety_class"] == "read" and retryable
+                else StepState.FAILED
+                if values["safety_class"] == "read"
+                else StepState.UNKNOWN_EFFECT
             )
             self.ledger.transition_step(
-                values["step_id"], target, error=f"{type(exc).__name__}: {exc}"
+                values["step_id"],
+                target,
+                error=f"{type(exc).__name__}: {exc}",
+                details={"failure_class": failure.value, "retryable": retryable},
             )
             raise
-        self.ledger.transition_step(values["step_id"], StepState.SUCCEEDED, result=result)
+        evidence_ids = tuple(self._persist_evidence(values, result))
+        completed_ns = time.time_ns()
+        typed = CapabilityResult(
+            outcome=result,
+            failure_class=None,
+            retryable=False,
+            started_ns=started_ns,
+            completed_ns=completed_ns,
+            provenance={
+                "capability": values["capability"],
+                "arguments_hash": digest,
+                "attempt_id": context.attempt_id,
+                "authorization_version": context.authorization_version,
+            },
+            evidence_ids=evidence_ids,
+        )
+        durable_result = dict(result)
+        durable_result["_capability_result"] = typed.as_dict()
+        self.ledger.transition_step(values["step_id"], StepState.SUCCEEDED, result=durable_result)
         return result
+
+    def _persist_evidence(self, values: Mapping[str, Any], result: Mapping[str, Any]) -> list[str]:
+        candidates: list[Mapping[str, Any]] = []
+        evidence = result.get("evidence")
+        if isinstance(evidence, Mapping):
+            candidates.append(evidence)
+        rows = result.get("results")
+        if isinstance(rows, list):
+            candidates.extend(item for item in rows if isinstance(item, Mapping))
+        matches = result.get("matches")
+        if isinstance(matches, list):
+            candidates.extend(item for item in matches if isinstance(item, Mapping))
+        ids: list[str] = []
+        for item in candidates[:20]:
+            url = item.get("url")
+            excerpt = str(item.get("excerpt") or item.get("snippet") or item.get("content") or "")
+            source_id = str(
+                item.get("source_id")
+                or item.get("document_id")
+                or url
+                or hashlib.sha256(excerpt.encode()).hexdigest()
+            )
+            body_hash = str(item.get("body_hash") or hashlib.sha256(excerpt.encode()).hexdigest())
+            evidence_id = uuid.uuid4().hex
+            record = EvidenceRecord(
+                evidence_id=evidence_id,
+                task_id=str(values["task_id"]),
+                step_id=str(values["step_id"]),
+                source_kind=str(item.get("source_kind") or values["capability"]),
+                source_id=source_id,
+                canonical_url=str(url) if isinstance(url, str) else None,
+                title=str(item.get("title") or source_id)[:500],
+                retrieved_ns=time.time_ns(),
+                excerpt=excerpt[:12_000],
+                body_hash=body_hash,
+                relevance=(
+                    float(item["score"]) if isinstance(item.get("score"), (int, float)) else None
+                ),
+                provenance={"capability": values["capability"]},
+            )
+            ids.append(self.ledger.save_evidence(record.as_dict()))
+        return ids
 
     @staticmethod
     def _step_values(step: TaskStep | Mapping[str, Any]) -> dict[str, Any]:

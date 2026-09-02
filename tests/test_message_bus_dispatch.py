@@ -44,3 +44,24 @@ def test_restarted_journal_resets_cursor_even_when_empty():
     result = restarted.read(20, epoch=old["epoch"])
     assert result["reset"] and result["events"][0]["turn_id"] == "new"
     assert not restarted.read(1, epoch=result["epoch"])["reset"]
+
+
+def test_session_filter_does_not_report_other_sessions_as_a_gap():
+    journal = EventJournal(capacity=10)
+    journal.publish("native", "one", "completed")
+    journal.publish("local", "hidden", "completed")
+    journal.publish("native", "two", "completed")
+    result = journal.read(1, session_id="native")
+    assert not result["gap"]
+    assert [event["turn_id"] for event in result["events"]] == ["two"]
+
+
+def test_partial_transcription_is_live_only():
+    persisted = []
+    journal = EventJournal(sink=lambda epoch, event: persisted.append((epoch, event)))
+    event = journal.publish(
+        "native", "capture", "running", "transcription", text="partial", partial=True
+    )
+    assert event.data["partial"] is True
+    assert journal.read(0)["events"][0]["data"]["text"] == "partial"
+    assert persisted == []

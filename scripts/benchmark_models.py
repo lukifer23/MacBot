@@ -31,25 +31,16 @@ CASES = [
     ("Say hello.", None, None, "hello"),
     ("Explain what a microphone does in one sentence.", None, None, "sound"),
     ("Name the largest planet in our solar system.", None, None, "jupiter"),
-    ("Open Calculator.", "open_app", {"app": "Calculator"}, None),
-    ("Launch Notes.", "open_app", {"app": "Notes"}, None),
-    ("Open Finder.", "open_app", {"app": "Finder"}, None),
-    ("Launch Safari.", "open_app", {"app": "Safari"}, None),
-    ("Take a screenshot.", "screenshot", {}, None),
-    ("Save a screenshot of my screen.", "screenshot", {}, None),
-    ("Show current CPU, memory and disk usage.", "system_info", {}, None),
-    ("How much memory is this Mac using right now?", "system_info", {}, None),
     ("Search my local documents for the warranty.", "rag_search", None, None),
     ("Find the installation guide in my knowledge base.", "rag_search", None, None),
     ("Search the web for local speech recognition.", "web_search", None, None),
     ("Find apple pie recipes on the web.", "web_search", None, None),
     (
-        "Open https://example.org in the browser.",
-        "browse_website",
+        "Read https://example.org and summarize it.",
+        "web_fetch",
         {"url": "https://example.org"},
         None,
     ),
-    ("Check the weather in Chicago.", "weather", None, None),
 ]
 
 
@@ -74,15 +65,6 @@ HOLDOUT_CASES = [
         None,
         ("websites", "web", "internet"),
     ),
-    ("Please open the Calculator app for me.", "open_app", {"app": "Calculator"}, None),
-    ("Can you launch Notes on my Mac?", "open_app", {"app": "Notes"}, None),
-    ("Bring up Finder so I can look at my files.", "open_app", {"app": "Finder"}, None),
-    ("Start the Safari app.", "open_app", {"app": "Safari"}, None),
-    ("Please capture a screenshot now.", "screenshot", {}, None),
-    ("Save an image of my current desktop.", "screenshot", {}, None),
-    ("Check the current memory usage on this computer.", "system_info", {}, None),
-    ("Show this Mac's CPU usage right now.", "system_info", {}, None),
-    ("Check how full my disk is.", "system_info", {}, None),
     ("Look in my imported documents for the return policy.", "rag_search", None, None),
     (
         "Search the local knowledge base for battery replacement instructions.",
@@ -94,21 +76,13 @@ HOLDOUT_CASES = [
     ("Please search the internet for sourdough recipes.", "web_search", None, None),
     ("Look up beginner guitar lessons on the web.", "web_search", None, None),
     ("Search online for the latest Apple news.", "web_search", None, None),
+    ("Fetch https://example.com for evidence.", "web_fetch", {"url": "https://example.com"}, None),
     (
-        "Open https://example.com in my browser.",
-        "browse_website",
-        {"url": "https://example.com"},
-        None,
-    ),
-    (
-        "Visit https://www.wikipedia.org in Safari.",
-        "browse_website",
+        "Inspect https://www.wikipedia.org and summarize it.",
+        "web_fetch",
         {"url": "https://www.wikipedia.org"},
         None,
     ),
-    ("Check today's weather in Boston.", "weather", None, None),
-    ("What's the forecast in Seattle?", "weather", None, None),
-    ("Look up the weather for Austin, Texas.", "weather", None, None),
 ]
 
 

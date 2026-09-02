@@ -1,42 +1,59 @@
-"""A single tool registry. Side effects execute only through bound approvals."""
+"""The single bounded capability registry for the research-only release."""
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import re
-import secrets
+import socket
 import subprocess
-from datetime import datetime
-from pathlib import Path
+import time
+from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
-import psutil
 
 from .auth import AuthStore
 from .config import Settings
 
 SCHEMAS: dict[str, tuple[str, dict[str, str]]] = {
-    "local_time": ("Read the current date, time and UTC offset from this Mac's local clock", {}),
-    "system_info": ("Read CPU, memory and disk usage on this Mac", {}),
     "rag_search": ("Search documents in the local knowledge base", {"query": "string"}),
-    "open_app": ("Open one explicitly requested allowed application", {"app": "string"}),
     "web_search": (
         "Return structured external web results for an explicit search or current-information request",
         {"query": "string"},
     ),
-    "browse_website": (
-        "Open an explicitly requested public HTTP(S) website in the default browser",
+    "web_fetch": (
+        "Fetch bounded text evidence from one explicit public HTTP(S) search result",
         {"url": "string"},
     ),
-    "screenshot": ("Save an explicitly requested screenshot locally", {}),
-    "weather": (
-        "Return structured current weather for a specified location",
-        {"location": "string"},
-    ),
 }
-READ_ONLY = {"system_info", "rag_search", "local_time", "web_search", "weather"}
-REQUESTED_SIDE_EFFECTS = {"open_app", "browse_website", "screenshot"}
+READ_ONLY = {"rag_search", "web_search", "web_fetch"}
+TASK_RELEASE_CAPABILITIES = frozenset({"rag_search", "web_search", "web_fetch"})
+
+
+class _TextExtractor(HTMLParser):
+    """Small deterministic HTML text extractor; scripts and styles are never evidence."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hidden = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.hidden += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript", "svg"} and self.hidden:
+            self.hidden -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden and data.strip():
+            self.parts.append(data.strip())
+
+    def text(self) -> str:
+        return re.sub(r"\s+", " ", " ".join(self.parts)).strip()
 
 
 class Tools:
@@ -45,73 +62,26 @@ class Tools:
         self.client = httpx.Client(timeout=8, trust_env=False)
 
     def requested(self, text: str) -> dict[str, dict[str, str]]:
-        """Conservative request routing, never inferred from history/tool output.
-
-        Values bind desktop targets verbatim. Empty constraints permit generated
-        search queries, but only after an explicit search request. This is not an
-        unrestricted language classifier: ambiguous phrasing gets clarification.
-        """
+        """Route only explicit research requests; broader Mac actions are not capabilities."""
         text = text.strip().replace("’", "'")
         command = re.sub(
             r"^(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+))+", "", text, flags=re.I
         )
         selected: dict[str, dict[str, str]] = {}
-        if re.fullmatch(
-            r"(?:what(?:'s| is) (?:the )?(?:current |local )?(?:time|date)|what (?:time|day) is (?:it|now)|tell me (?:the )?(?:time|date))(?:\s+(?:now|today|here|on my mac))?[.!?]*",
-            command,
-            re.I,
-        ):
-            selected["local_time"] = {}
-        opening = re.match(
-            r"^(?:open|launch|start|bring up|visit)\s+(?:the\s+)?(.+)", command, re.I
-        )
-        if opening:
-            target = opening[1]
-            for app in self.settings.tools.allowed_apps:
-                if re.match(re.escape(app) + r"(?:\b|$)", target, re.I):
-                    selected["open_app"] = {"app": app}
-                    break
-            url = re.match(r"https?://[^\s<>\"']+", target, re.I)
-            if url:
-                selected["browse_website"] = {"url": url[0].rstrip(".,!?")}
-        if re.match(
-            r"^(?:take|capture|save)\s+(?:a\s+|an\s+)?(?:screenshot\b|image of (?:my |the )?(?:current )?(?:screen|desktop)\b)",
-            command,
-            re.I,
-        ):
-            selected["screenshot"] = {}
         searching = re.match(r"^(?:search|find|look up|look in|check)\b", command, re.I)
         if searching and re.search(r"\b(?:web|internet|online)\b", command, re.I):
             selected["web_search"] = {}
-        if (
-            re.search(r"\b(?:weather|forecast)\b", command, re.I)
-            and (searching or re.match(r"^what(?:'s| is)\b", command, re.I))
-            and re.search(r"\b(?:in|for|today|tomorrow|tonight|now)\b", command, re.I)
-        ):
-            selected.pop("web_search", None)
-            location = re.search(r"\b(?:in|for)\s+([^.!?]+)", command, re.I)
-            selected["weather"] = {
-                "location": location.group(1).strip() if location else "current location"
-            }
         if re.search(r"\b(?:documents|knowledge base|library)\b", command, re.I) and (
             searching or re.match(r"^(?:what|which|where|show|summarize)\b", command, re.I)
         ):
             selected["rag_search"] = {}
-        if (
-            re.match(r"^(?:show|check|how much|how full|what(?:'s| is))\b", command, re.I)
-            and re.search(r"\b(?:cpu|memory|disk|system status)\b", command, re.I)
-            and re.search(r"\b(?:usage|using|used|free|available|full|status)\b", command, re.I)
-        ):
-            selected["system_info"] = {}
+        fetch = re.search(r"https?://[^\s<>\"']+", command, re.I)
+        if fetch and re.match(r"^(?:fetch|read|extract|inspect|summarize)\b", command, re.I):
+            selected["web_fetch"] = {"url": fetch[0].rstrip(".,!?")}
         negative_targets = {
-            "local_time": r"(?:time|date|clock)",
-            "system_info": r"(?:cpu|memory|disk|system)",
             "rag_search": r"(?:documents|library|knowledge base)",
             "web_search": r"(?:web|internet|online|web search)",
-            "weather": r"(?:weather|forecast)",
-            "open_app": r"(?:open|launch|start|bring up)",
-            "browse_website": r"(?:open|visit|browse)",
-            "screenshot": r"(?:screenshot|capture(?: the)? screen)",
+            "web_fetch": r"(?:fetch|read|extract|inspect|summarize)",
         }
         for name, target in negative_targets.items():
             if re.search(
@@ -125,10 +95,10 @@ class Tools:
         }
 
     def validate_request(self, text: str, name: str, arguments: dict) -> None:
-        self.validate(name, arguments)
         requested = self.requested(text)
         if name not in requested or any(arguments.get(k) != v for k, v in requested[name].items()):
             raise PermissionError("Tool action does not match the current explicit request")
+        self.validate(name, arguments)
 
     def authorize_planned(
         self, text: str, source_span: str, name: str, arguments: dict[str, Any]
@@ -139,24 +109,14 @@ class Tools:
             raise PermissionError("Action is not grounded in the current request")
         evidence = source_span.casefold()
         required: dict[str, tuple[str, ...]] = {
-            "local_time": ("time", "date", "day", "clock"),
-            "system_info": ("cpu", "memory", "disk", "system"),
             "rag_search": ("document", "documents", "library", "knowledge"),
             "web_search": ("search", "web", "internet", "online", "latest", "current"),
-            "weather": ("weather", "forecast", "temperature", "rain"),
-            "open_app": ("open", "launch", "start", "bring up"),
-            "browse_website": ("open", "visit", "browse"),
-            "screenshot": ("screenshot", "capture", "screen"),
+            "web_fetch": ("fetch", "read", "extract", "inspect", "summarize"),
         }
         negative_targets = {
-            "local_time": r"(?:time|date|clock)",
-            "system_info": r"(?:cpu|memory|disk|system)",
             "rag_search": r"(?:(?:search|look in|check)\s+(?:my\s+)?(?:documents|library|knowledge base))",
             "web_search": r"(?:(?:search|look up|check)(?:ing)?\s+(?:the\s+)?(?:web|internet|online)|web search)",
-            "weather": r"(?:weather|forecast|temperature)",
-            "open_app": r"(?:open|launch|start|bring up)",
-            "browse_website": r"(?:open|visit|browse)",
-            "screenshot": r"(?:screenshot|capture(?: the)? screen)",
+            "web_fetch": r"(?:fetch|read|extract|inspect|summarize)",
         }
         if re.search(
             rf"\b(?:don't|do not|never|without)\b[^.!?]{{0,60}}{negative_targets[name]}",
@@ -166,10 +126,8 @@ class Tools:
             raise PermissionError("The current request explicitly negates this action")
         if not any(token in evidence for token in required[name]):
             raise PermissionError("Action evidence does not express the requested capability")
-        if name == "open_app" and arguments["app"].casefold() not in evidence:
-            raise PermissionError("Application target is not present in the request")
-        if name == "browse_website" and arguments["url"].casefold() not in text.casefold():
-            raise PermissionError("Website target is not present in the request")
+        if name == "web_fetch" and arguments["url"].casefold() not in text.casefold():
+            raise PermissionError("Evidence URL is not present in the request")
 
     def definitions(self, text: str | None = None, used: set[str] | None = None) -> list[dict]:
         requested = self.requested(text) if text is not None else None
@@ -194,10 +152,6 @@ class Tools:
         ]
         for definition in definitions:
             function = definition["function"]
-            if function["name"] == "open_app":
-                function["parameters"]["properties"]["app"]["enum"] = list(
-                    self.settings.tools.allowed_apps
-                )
             if requested is not None:
                 for key, value in requested[function["name"]].items():
                     function["parameters"]["properties"][key]["enum"] = [value]
@@ -217,12 +171,8 @@ class Tools:
             )
         if any(not isinstance(v, str) or len(v) > 2000 or "\x00" in v for v in arguments.values()):
             raise ValueError("Invalid tool argument value")
-        if name == "open_app" and arguments["app"] not in self.settings.tools.allowed_apps:
-            raise PermissionError("Application is not allowed")
-        if name == "browse_website":
-            u = urlsplit(arguments["url"])
-            if u.scheme not in {"http", "https"} or not u.hostname or u.username or u.password:
-                raise ValueError("A complete HTTP(S) URL without credentials is required")
+        if name == "web_fetch":
+            self._validate_public_url(arguments["url"])
         return dict(arguments)
 
     def read(self, name: str, arguments: dict) -> dict:
@@ -232,15 +182,6 @@ class Tools:
 
     def _execute(self, name: str, arguments: dict) -> dict:
         args = self.validate(name, arguments)
-        if name == "local_time":
-            now = datetime.now().astimezone()
-            return {"datetime": now.isoformat(), "timezone": now.tzname(), "source": "mac_clock"}
-        if name == "system_info":
-            return {
-                "cpu_percent": psutil.cpu_percent(),
-                "memory_percent": psutil.virtual_memory().percent,
-                "disk_percent": psutil.disk_usage("/").percent,
-            }
         if name == "rag_search":
             r = self.client.post(
                 self.settings.services.rag.url + "/api/search",
@@ -251,26 +192,9 @@ class Tools:
             return r.json()
         if name == "web_search":
             return self._web_search(args["query"])
-        if name == "weather":
-            return self._weather(args["location"])
-        if name == "screenshot":
-            directory = Path(self.settings.tools.screenshot_dir).expanduser().resolve()
-            directory.mkdir(parents=True, exist_ok=True)
-            path = directory / ("macbot-" + secrets.token_hex(8) + ".png")
-            subprocess.run(["screencapture", "-x", str(path)], check=True, timeout=15)
-            if not path.is_file() or path.stat().st_size == 0:
-                raise RuntimeError("Screenshot was not produced; check Screen Recording permission")
-            return {"status": "completed", "path": str(path)}
-        if name == "open_app":
-            subprocess.run(["open", "-a", args["app"]], check=True, timeout=10)
-            return {"status": "completed", "app": args["app"]}
-        url = args["url"]
-        subprocess.run(["open", str(url)], check=True, timeout=10)
-        return {
-            "status": "completed",
-            "opened_url": url,
-            "note": "Opened in the default browser.",
-        }
+        if name == "web_fetch":
+            return self._web_fetch(args["url"])
+        raise PermissionError("Capability is not available in the research release")
 
     @staticmethod
     def _keychain_secret(service: str) -> str | None:
@@ -319,44 +243,84 @@ class Tools:
             "results": results,
         }
 
-    def _weather(self, location: str) -> dict[str, Any]:
-        geocode = self.client.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": location, "count": 1, "language": "en", "format": "json"},
-        )
-        geocode.raise_for_status()
-        if len(geocode.content) > 1_000_000:
-            raise RuntimeError("Weather location response exceeded the configured limit")
-        matches = geocode.json().get("results") or []
-        if not matches:
-            return {"status": "empty", "provider": "open-meteo", "location": location}
-        place = matches[0]
-        forecast = self.client.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": place["latitude"],
-                "longitude": place["longitude"],
-                "current": "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
-                "temperature_unit": "fahrenheit",
-                "wind_speed_unit": "mph",
-                "timezone": "auto",
-            },
-        )
-        forecast.raise_for_status()
-        if len(forecast.content) > 1_000_000:
-            raise RuntimeError("Weather response exceeded the configured limit")
+    @staticmethod
+    def _validate_public_url(url: str) -> str:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+            or parsed.port not in {None, 80, 443}
+        ):
+            raise ValueError("A public HTTP(S) URL without credentials or fragments is required")
+        try:
+            addresses = {
+                ipaddress.ip_address(item[4][0])
+                for item in socket.getaddrinfo(
+                    parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+                )
+            }
+        except socket.gaierror as exc:
+            raise ValueError("Web source hostname could not be resolved") from exc
+        if not addresses or any(
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+            for address in addresses
+        ):
+            raise PermissionError("Web sources must resolve only to public addresses")
+        return url
+
+    def _web_fetch(self, url: str) -> dict[str, Any]:
+        current = self._validate_public_url(url)
+        response: httpx.Response | None = None
+        for _ in range(4):
+            response = self.client.get(
+                current,
+                follow_redirects=False,
+                headers={"Accept": "text/html,text/plain,application/json;q=0.8"},
+            )
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = response.headers.get("location")
+            if not location:
+                raise RuntimeError("Web source redirect omitted its destination")
+            current = self._validate_public_url(urljoin(current, location))
+        else:
+            raise RuntimeError("Web source exceeded the redirect limit")
+        assert response is not None
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type not in {"text/html", "text/plain", "application/json"}:
+            raise ValueError(f"Unsupported web evidence content type: {content_type or 'unknown'}")
+        body = response.content
+        if len(body) > 2_000_000:
+            raise RuntimeError("Web evidence exceeded the 2 MB limit")
+        decoded = response.text
+        if content_type == "text/html":
+            parser = _TextExtractor()
+            parser.feed(decoded)
+            text = parser.text()
+        else:
+            text = re.sub(r"\s+", " ", decoded).strip()
+        excerpt = text[:12_000]
         return {
-            "status": "completed",
-            "provider": "open-meteo",
-            "location": {
-                "name": place.get("name"),
-                "admin1": place.get("admin1"),
-                "country": place.get("country"),
-                "latitude": place.get("latitude"),
-                "longitude": place.get("longitude"),
+            "status": "completed" if excerpt else "empty",
+            "evidence": {
+                "source_kind": "web",
+                "source_id": current,
+                "url": current,
+                "title": "",
+                "retrieved_at": time.time_ns(),
+                "excerpt": excerpt,
+                "body_hash": hashlib.sha256(body).hexdigest(),
+                "content_type": content_type,
             },
-            "current": forecast.json().get("current", {}),
-            "units": forecast.json().get("current_units", {}),
         }
 
     def close(self):
