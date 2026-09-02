@@ -158,7 +158,10 @@ def test_closed_stream_time_wait_does_not_block_restart(tmp_path):
         },
     )
     try:
-        assert supervisor.start_service(service)["success"]
+        started = supervisor.start_service(service)
+        assert started["success"], _lifecycle_diagnostic(
+            supervisor, service, threading.current_thread()
+        )
     finally:
         supervisor.stop_all()
         supervisor.client.close()
