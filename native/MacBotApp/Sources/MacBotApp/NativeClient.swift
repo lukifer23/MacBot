@@ -105,51 +105,71 @@ actor NativeClient {
         }
     }
 
-    private func socketFailure(_ message: String) -> NativeClientError {
-        if errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT {
-            return .timeout("\(message) before its deadline")
-        }
-        return .socket(message)
-    }
-
     private func write(_ value: [String: Any], to descriptor: Int32) throws {
-        let payload = try JSONSerialization.data(withJSONObject: value)
-        guard payload.count <= 12 * 1024 * 1024 else { throw NativeClientError.protocolError("Request is too large") }
-        var size = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &size, count: 4)
-        frame.append(payload)
-        try frame.withUnsafeBytes { raw in
-            var sent = 0
-            while sent < raw.count {
-                let count = Darwin.send(descriptor, raw.baseAddress!.advanced(by: sent), raw.count - sent, 0)
-                guard count > 0 else { throw socketFailure("Local socket write failed") }
-                sent += count
-            }
-        }
+        try NativeFrame.write(JSONSerialization.data(withJSONObject: value), to: descriptor, limit: Self.limit)
     }
 
     private func read(from descriptor: Int32) throws -> [String: Any] {
-        let header = try readExact(4, from: descriptor)
-        let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        guard size > 0 && size <= 12 * 1024 * 1024 else { throw NativeClientError.protocolError("Invalid response size") }
-        let payload = try readExact(Int(size), from: descriptor)
+        let payload = try NativeFrame.read(from: descriptor, limit: Self.limit)
         guard let value = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
             throw NativeClientError.protocolError("Invalid response")
         }
         return value
     }
 
-    private func readExact(_ count: Int, from descriptor: Int32) throws -> Data {
+    private static let limit = 12 * 1024 * 1024
+}
+
+enum NativeFrame {
+    static func write(_ payload: Data, to socket: Int32, limit: Int) throws {
+        guard socket >= 0 else { throw NativeClientError.socket("Local socket is closed") }
+        guard !payload.isEmpty, payload.count <= limit else {
+            throw NativeClientError.protocolError("Invalid local frame size")
+        }
+        var length = UInt32(payload.count).bigEndian
+        try withUnsafeBytes(of: &length) { try writeAll($0, to: socket) }
+        try payload.withUnsafeBytes { try writeAll($0, to: socket) }
+    }
+
+    private static func writeAll(_ bytes: UnsafeRawBufferPointer, to socket: Int32) throws {
+        guard let base = bytes.baseAddress else { return }
+        var offset = 0
+        while offset < bytes.count {
+            let count = Darwin.send(socket, base.advanced(by: offset), bytes.count - offset, 0)
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw socketFailure("Local socket write failed") }
+            offset += count
+        }
+    }
+
+    static func read(from socket: Int32, limit: Int) throws -> Data {
+        let header = try readExact(4, from: socket)
+        let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard size > 0 && size <= limit else {
+            throw NativeClientError.protocolError("Invalid local frame size")
+        }
+        return try readExact(Int(size), from: socket)
+    }
+
+    private static func readExact(_ count: Int, from socket: Int32) throws -> Data {
         var data = Data(count: count)
         var offset = 0
         try data.withUnsafeMutableBytes { raw in
             while offset < count {
-                let received = Darwin.recv(descriptor, raw.baseAddress!.advanced(by: offset), count - offset, 0)
+                let received = Darwin.recv(socket, raw.baseAddress!.advanced(by: offset), count - offset, 0)
+                if received < 0 && errno == EINTR { continue }
                 guard received > 0 else { throw socketFailure("Local socket closed") }
                 offset += received
             }
         }
         return data
+    }
+
+    private static func socketFailure(_ message: String) -> NativeClientError {
+        if errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT {
+            return .timeout("\(message) before its deadline")
+        }
+        return .socket(message)
     }
 }
 

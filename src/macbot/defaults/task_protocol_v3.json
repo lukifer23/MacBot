@@ -5,7 +5,7 @@
     "authenticate", "sync", "status", "settings", "update_settings", "events",
     "chat", "task_create", "task_list", "task_command", "preview_voice", "listen",
     "interrupt", "clear", "documents", "document_import", "document_delete",
-    "document_search"
+    "document_search", "mac_action_plan", "transcribe_file"
   ],
   "reconciliation_fields": ["protocol_version", "epoch", "cursor", "messages", "tasks", "active_turn"],
   "error_fields": ["code", "message", "retryable", "failure_class"],
@@ -52,7 +52,7 @@
     "cancel"
   ],
   "legal_commands": {
-    "proposed": [],
+    "proposed": ["cancel"],
     "awaiting_authorization": ["authorize", "deny"],
     "queued": ["cancel"],
     "running": ["pause", "cancel"],

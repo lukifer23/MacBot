@@ -99,6 +99,9 @@ private struct ConversationView: View {
                 }
             }
             Divider()
+            if state.transcribingFile {
+                ProgressView("Transcribing audio file…").controlSize(.small).padding(8)
+            }
             if state.isDictating || !state.dictationText.isEmpty { dictationPreview }
             composer
         }
@@ -112,6 +115,9 @@ private struct ConversationView: View {
                     .disabled(!state.canConverse)
                     .keyboardShortcut("l", modifiers: .command)
                     .help("Focus the message or task composer")
+                Button("Transcribe audio file", systemImage: "waveform.badge.plus", action: state.chooseAudioToTranscribe)
+                    .disabled(!state.connected || state.transcribingFile)
+                    .help("Transcribe a recording into the dictation draft")
                 Button("Clear conversation", systemImage: "trash") { state.confirmClearConversation = true }
                     .disabled(state.messages.isEmpty || !state.canConverse || state.isClearingConversation)
                     .help("Delete this local conversation")
@@ -140,7 +146,9 @@ private struct ConversationView: View {
                 .frame(width: 40, height: 40).background(.quaternary, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(state.productState.isOperational ? state.phase.title : state.productState.title).font(.headline)
-                Text(state.heard.isEmpty ? state.connectionDetail : "Heard: \(state.heard)")
+                Text(state.partialTranscript.isEmpty
+                    ? (state.heard.isEmpty ? state.connectionDetail : "Heard: \(state.heard)")
+                    : "Live: \(state.partialTranscript)")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
@@ -196,12 +204,13 @@ private struct ConversationView: View {
                 ForEach(ComposerMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
             }
             .pickerStyle(.segmented)
+            .fixedSize(horizontal: true, vertical: false)
             .disabled(state.isSending)
             .accessibilityHint("Choose an immediate conversation or a durable task that requires authorization")
             .accessibilityIdentifier("composer.mode")
             Text(state.composerMode.guidance).font(.caption).foregroundStyle(.secondary)
             if state.isSending {
-                ProgressView(state.composerMode == .task ? "Planning the Task…" : "Sending…")
+                ProgressView(state.composerMode == .task ? "Submitting task…" : "Sending…")
                     .controlSize(.small)
                     .accessibilityIdentifier("composer.progress")
             }
@@ -225,24 +234,54 @@ private struct ConversationView: View {
                     .toggleStyle(.checkbox).font(.caption).disabled(!state.canConverse)
             }
         }
-        .padding(14).background(.regularMaterial).clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary) }
+        .frame(maxWidth: 860)
         .padding(18)
     }
 }
 
 private struct MessageBubble: View {
     let item: ChatItem
-    var body: some View {
-        HStack {
-            if item.role == .user { Spacer(minLength: 100) }
-            Text(item.text).textSelection(.enabled).padding(.horizontal, 16).padding(.vertical, 12)
-                .background(item.role == .user ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-                .foregroundStyle(.primary)
-            if item.role != .user { Spacer(minLength: 100) }
+
+    private var author: String {
+        switch item.role {
+        case .user: "You"
+        case .assistant: "MacBot"
+        case .system: "System"
         }
+    }
+
+    private var symbol: String {
+        switch item.role {
+        case .user: "person.crop.circle"
+        case .assistant: "waveform.circle"
+        case .system: "info.circle"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(item.role == .assistant ? Color.accentColor : .secondary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(author).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(item.text).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(
+            item.role == .user ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .frame(maxWidth: 860, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(item.role == .user ? "You" : item.role == .assistant ? "MacBot" : "System")
-        .accessibilityValue(item.text)
         .accessibilityIdentifier("message.\(item.id)")
     }
 }
@@ -554,6 +593,25 @@ private struct MacActionsView: View {
 
     var body: some View {
         Form {
+            Section("Ask MacBot to open an app") {
+                TextField("Open an installed app", text: $state.macActionRequest, prompt: Text("Open Calendar"))
+                    .onSubmit(state.planMacAction)
+                Button("Find app", systemImage: "sparkle.magnifyingglass", action: state.planMacAction)
+                    .disabled(!state.connected || state.macActionBusy || state.macActionRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if state.macActionBusy { ProgressView().controlSize(.small) }
+                if let target = state.macActionTarget {
+                    LabeledContent("Proposed app", value: target.name)
+                    LabeledContent("Bundle identifier", value: target.bundleID)
+                    Text(target.url.path).font(.caption).textSelection(.enabled)
+                    HStack {
+                        Button("Open app", action: state.approveMacAction).buttonStyle(.borderedProminent)
+                        Button("Dismiss", action: state.discardMacAction)
+                    }
+                }
+                if let receipt = state.macActionStatus {
+                    Text(receipt).textSelection(.enabled)
+                }
+            }
             Section("Applications") {
                 LabeledContent {
                     Button("Choose an app…", systemImage: "macwindow", action: state.chooseApplication)
@@ -614,6 +672,7 @@ private struct SettingsView: View {
         Form {
             Section("Models") {
                 LabeledContent("Language model", value: state.modelName)
+                LabeledContent("Configured profile", value: state.modelProfile)
                 Picker("Voice", selection: $state.selectedVoice) {
                     ForEach(state.availableVoices) { voice in
                         Text(voice.label + (voice.installed ? "" : " · not installed"))
@@ -648,6 +707,8 @@ private struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Conversation") {
+                Toggle("Live transcript preview", isOn: $state.liveTranscriptionPreview)
+                    .disabled(!state.canChangeSettings)
                 Stepper("Endpoint silence: \(state.endpointMilliseconds) ms", value: $state.endpointMilliseconds, in: 150...2000, step: 25)
                     .disabled(!state.canChangeSettings)
                 Picker("Context target", selection: $state.contextLength) {

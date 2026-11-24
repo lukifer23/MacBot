@@ -1,6 +1,6 @@
 # MacBot
 
-MacBot is a local AI assistant for Apple Silicon Macs. Talk to it, dictate into an editable draft, search your documents, or review and authorize a research task. The SwiftUI app runs local speech recognition, model inference, and voice playback through a MacBot-owned runtime.
+MacBot is a local AI assistant for Apple Silicon Macs. Talk to it, dictate or transcribe recordings into an editable draft, search your documents, and review research or app-opening proposals. The SwiftUI app runs local speech recognition, model inference, and voice playback through a MacBot-owned runtime.
 
 **Status:** Pre-release. The installed app, model quality, physical audio, accessibility, and soak tests have separate acceptance gates. See the [verification ledger](docs/VERIFICATION.md) for measured results and open checks.
 
@@ -9,7 +9,7 @@ MacBot is a local AI assistant for Apple Silicon Macs. Talk to it, dictate into 
 | Conversation | Type or talk, choose spoken replies, interrupt playback, and copy the latest transcript. Dictation creates an editable draft using speech recognition alone. |
 | Task Center | Review a research plan and its target scope, authorize or deny it, pause or stop work, and inspect recorded sources and step outcomes. |
 | Library | Import and search local PDF, DOCX, or text documents. |
-| Mac Actions | Open an app you choose or reveal a selected item or the MacBot data folder in Finder. |
+| Mac Actions | Ask the local model to find an app, review its exact target, and open it. Open a chosen app or reveal an item directly. |
 | Settings and Diagnostics | Manage voice and context settings, configure optional Brave Search, and inspect service and latency data. |
 
 ## Install on an Apple Silicon Mac
@@ -39,7 +39,12 @@ The installer activates a paired app and runtime and keeps a rollback generation
 | Document embeddings | MiniLM via ONNX Runtime |
 | Voice activity | Silero via ONNX Runtime |
 
-The release manifest selects an artifact for each role. The lab catalog includes Qwen3.5-4B Q4_K_M and Q5_K_M for a controlled comparison. Use [model screening](docs/MODEL_SCREENING.md) and the [model and runtime plan](docs/MODERNIZATION_2026-11.md) for the comparison protocol, provenance, and promotion gates.
+The release manifest selects an artifact for each role. `macbot model-profile`
+shows the configured profile and the available evaluation profiles. Profile
+changes verify the pinned artifacts first and take effect when services restart.
+Use `macbot model-profile release` to return to the release stack.
+`macbot doctor` reports installed runtime versions and the artifacts the selected
+profile requires. The lab catalog includes Qwen3.5-4B Q4_K_M and Q5_K_M for a controlled comparison. Use [model screening](docs/MODEL_SCREENING.md) and the [model and runtime plan](docs/MODERNIZATION_2026-11.md) for the comparison protocol, provenance, and promotion gates.
 
 ## Architecture and development
 

@@ -9,13 +9,14 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
 
 from .auth import AuthStore
-from .config import Settings, validate_release_selection
+from .config import Settings, validate_runtime_selection
 from .events import EventJournal
 from .history import HistoryStore, runtime_history_key
 from .inference import InferenceLane
@@ -56,6 +57,15 @@ class Turn:
     last_delta_emit_ns: int = 0
 
 
+@dataclass
+class CapturePreview:
+    epoch: int
+    capture_id: str
+    session_id: str
+    audio: queue.Queue[np.ndarray] = field(default_factory=lambda: queue.Queue(maxsize=2))
+    cancelled: threading.Event = field(default_factory=threading.Event)
+
+
 class NativeAudioState:
     """Queues and counters shared with Swift audio; no secondary helper transport."""
 
@@ -92,7 +102,7 @@ class Runtime:
         load_speech: bool = True,
         load_tts: bool | None = None,
     ):
-        validate_release_selection(settings)
+        validate_runtime_selection(settings)
         self.settings = settings
         self.active_models = settings.models.model_copy(deep=True)
         self.auth = AuthStore(settings.data_dir)
@@ -123,6 +133,7 @@ class Runtime:
         self.speech: queue.Queue[tuple[Turn, str | None] | None] = queue.Queue(maxsize=4)
         self.maintenance: queue.Queue[str | None] = queue.Queue(maxsize=1)
         self.final_stt_inference = InferenceLane()
+        self.capture_previews: queue.Queue[CapturePreview] = queue.Queue(maxsize=1)
         # Model-token budgeting bounds this complete-message history. Tool calls
         # and their results stay together; a message-count deque could orphan them.
         self.histories: dict[str, list[dict[str, Any]]] = {}
@@ -164,6 +175,10 @@ class Runtime:
                 (self._compaction_loop, "context-compaction-worker"),
             )
         ]
+        if settings.audio.live_transcription_preview and self.transcriber:
+            self.threads.append(
+                threading.Thread(target=self._preview_loop, name="stt-preview-worker", daemon=True)
+            )
         for thread in self.threads:
             thread.start()
 
@@ -939,6 +954,59 @@ class Runtime:
             except queue.Full:
                 pass
 
+    def _preview_active(self, preview: CapturePreview) -> bool:
+        return (
+            not preview.cancelled.is_set()
+            and not self.stopping.is_set()
+            and preview.epoch == self.capture_epoch
+        )
+
+    def _preview_chunks(self, preview: CapturePreview) -> Iterator[np.ndarray]:
+        while self._preview_active(preview):
+            try:
+                chunk = preview.audio.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if self._preview_active(preview):
+                yield chunk
+
+    def _preview_loop(self) -> None:
+        assert self.transcriber is not None
+        while not self.stopping.is_set():
+            try:
+                preview = self.capture_previews.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if not self._preview_active(preview):
+                    continue
+                previous = ""
+                for text in self.transcriber.preview(self._preview_chunks(preview)):
+                    if not self._preview_active(preview):
+                        break
+                    if text and text != previous:
+                        with self.lock:
+                            if self._preview_active(preview):
+                                self.events.publish(
+                                    preview.session_id,
+                                    preview.capture_id,
+                                    "running",
+                                    "partial_transcription",
+                                    text=text,
+                                )
+                        previous = text
+            except Exception as exc:
+                preview.cancelled.set()
+                self.events.publish(
+                    preview.session_id,
+                    preview.capture_id,
+                    "failed",
+                    "partial_transcription",
+                    message=f"Live transcript preview unavailable: {type(exc).__name__}",
+                )
+            finally:
+                self.capture_previews.task_done()
+
     def _capture_loop(self):
         pending = np.empty(0, dtype=np.float32)
         pre: deque[np.ndarray] = deque(maxlen=max(1, self.settings.audio.pre_roll_ms // 32))
@@ -948,6 +1016,8 @@ class Runtime:
         speech_end_ns = None
         capture_epoch = -1
         capture_id: str | None = None
+        preview: CapturePreview | None = None
+        previewed_frames = 0
         while not self.stopping.is_set():
             try:
                 chunk_epoch, chunk = self.audio.capture.get(timeout=0.1)
@@ -956,6 +1026,9 @@ class Runtime:
             if chunk_epoch != self.capture_epoch:
                 continue
             if capture_epoch != chunk_epoch:
+                if preview is not None:
+                    preview.cancelled.set()
+                    preview = None
                 capture_epoch = chunk_epoch
                 pending = np.empty(0, dtype=np.float32)
                 pre.clear()
@@ -1012,11 +1085,27 @@ class Runtime:
                     )
                     utterance = list(pre)
                     pre.clear()
+                    if self.settings.audio.live_transcription_preview and self.transcriber:
+                        preview = CapturePreview(capture_epoch, capture_id, self.capture_session)
+                        previewed_frames = 0
+                        try:
+                            self.capture_previews.put_nowait(preview)
+                        except queue.Full:
+                            preview = None
                     if self.capture_mode == "conversation":
                         self.interrupt()
                     self.last_activity = time.monotonic()
                 else:
                     utterance.append(frame)
+                if preview is not None and not preview.cancelled.is_set():
+                    if len(utterance) - previewed_frames >= 32:
+                        try:
+                            preview.audio.put_nowait(
+                                np.concatenate(utterance[previewed_frames : previewed_frames + 32])
+                            )
+                            previewed_frames += 32
+                        except queue.Full:
+                            preview.cancelled.set()
                 if (
                     quiet >= self.settings.audio.endpoint_ms
                     or len(utterance) * 512 >= self.settings.audio.max_utterance_sec * 16000
@@ -1024,6 +1113,9 @@ class Runtime:
                     audio = np.concatenate(utterance)[
                         : self.settings.audio.max_utterance_sec * 16000
                     ]
+                    if preview is not None:
+                        preview.cancelled.set()
+                        preview = None
                     utterance = []
                     active = False
                     self.capture_speech = False

@@ -197,3 +197,19 @@ def test_browser_data_url_and_invalid_audio():
     assert validate_chat_message("  hello <script>  ") == "hello <script>"
     with pytest.raises(ValueError):
         validate_chat_message("x" * 10001)
+
+
+def test_evaluation_profile_is_explicit_and_round_trips(tmp_path):
+    from macbot.config import model_profile_fields, validate_runtime_selection
+
+    settings = Settings(data_dir=tmp_path)
+    settings.models.profile = "qwen-4b-q5"
+    with pytest.raises(ValueError, match="selected evaluation profile"):
+        validate_runtime_selection(settings)
+    for key, value in model_profile_fields(settings.models.profile).items():
+        setattr(settings.models, key, value)
+    save(settings)
+    restored = load(settings.config_path, {})
+    assert restored.models.llm == "qwen3.5-4b-q5-k-m"
+    assert restored.models.profile == "qwen-4b-q5"
+    assert restored.models.tts_voice == "qwen-aiden-1.7b"

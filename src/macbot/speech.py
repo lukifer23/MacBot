@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import threading
 from collections import OrderedDict
+from collections.abc import Iterable, Iterator
+from itertools import chain
 from pathlib import Path
 
 import numpy as np
@@ -98,8 +100,24 @@ class Transcriber:
             mel = get_logmel(mx.array(audio), self.model.preprocessor_config)
             return self.model.generate(mel)[0].text.strip()
 
+    def preview(self, chunks: Iterable[np.ndarray]) -> Iterator[str]:
+        """Decode sequential chunks on the resident model's streaming context."""
+        import mlx.core as mx
+
+        source = iter(chunks)
+        first = next(source, None)
+        if first is None:
+            return
+        with self.lock, self.model.transcribe_stream() as stream:
+            for chunk in chain((first,), source):
+                stream.add_audio(mx.array(chunk))
+                yield stream.result.text.strip()
+
     def decode(self, content: bytes, suffix: str) -> np.ndarray:
-        # Decoder input is a private file, never an attacker-controlled URL or protocol.
+        formats = {".wav": "wav", ".mp3": "mp3", ".m4a": "mov", ".ogg": "ogg", ".webm": "matroska"}
+        if suffix not in formats:
+            raise ValueError("Unsupported audio container")
+        # Force a media demuxer to prevent playlist or document autodetection.
         with tempfile.TemporaryDirectory(prefix="macbot-audio-") as tmp:
             source = Path(tmp) / ("input" + suffix)
             output = Path(tmp) / "output.wav"
@@ -112,8 +130,12 @@ class Transcriber:
                     "error",
                     "-protocol_whitelist",
                     "file,pipe",
+                    "-f",
+                    formats[suffix],
                     "-i",
                     str(source),
+                    "-map",
+                    "0:a:0",
                     "-t",
                     str(self.settings.audio.max_utterance_sec + 1),
                     "-ac",

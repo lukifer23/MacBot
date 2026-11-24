@@ -70,7 +70,10 @@ multi-step work does not need to masquerade as a one-shot tool:
 The native composer sends immediate turns as
 `{"op":"chat","protocol_version":3,"message":"...","speak":true|false}` and durable work as
 `{"op":"task_create","protocol_version":3,"message":"..."}`. Task creation returns a persisted
-task record in `task`; it is not execution approval. On every service connection
+task record in `task`. The native app sends `background: true` to receive a
+durable `proposed` record immediately. It can cancel planning and observes
+authorization, failure, or cancellation via events. Callers that omit
+`background` receive the completed plan as before. On every service connection
 and event-epoch reset, the client reconciles with `sync`. `task_list` remains a
 bounded protocol-v3 command for focused diagnostics, not a competing hydration
 path.
@@ -124,12 +127,11 @@ capabilities are `rag_search`, `web_search`, and bounded `web_fetch`; fetched
 content is size/content/redirect constrained and recorded as evidence with a
 body hash. Material replans require renewed authorization.
 
-The released runtime emits one final `transcription`; it does not emit partial
-speech. If a future single-decoder streaming path emits
-`partial_transcription`, that event is classified as ephemeral and must never be
-written to encrypted history or the durable event journal. Final
-`transcription` and `user` presentation share one turn ID and render as one user
-message, not duplicates.
+The runtime emits one final `transcription` for voice conversation. The optional
+live preview emits replaceable `partial_transcription` events from the resident
+Parakeet model for the current capture epoch. These events expire with capture,
+stay out of history, and never dispatch a turn or authorize a tool. Final
+`transcription` and `user` presentation share one turn ID.
 
 
 Capture start uses the same `capture_id` in the native audio `ready` event and
@@ -138,3 +140,13 @@ that audio connection has announced echo cancellation for the matching ID.
 Playback tracks monotonically increasing generations. Scheduled playback and
 drain are acknowledged by the native player. A missing drain or a disconnected
 peer ends the wait with an audio error.
+
+
+`mac_action_plan` accepts a short `message` and an ordered `applications`
+list from the native app. It returns a candidate index or null. The native
+app resolves that index to the exact bundle and displays the path before the
+operator can approve an open. The Python runtime never executes the proposal.
+
+`transcribe_file` accepts a bounded audio data URL and returns `text`. It
+uses the resident STT model, applies the configured utterance limit, and
+does not append the file or its transcript to history.

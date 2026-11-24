@@ -25,7 +25,7 @@ from .intent import IntentRouter
 from .llm import LocalLLM
 from .research_context import fit_research_sources, research_sources
 from .task_protocol import legal_commands
-from .tasks import StepState, TaskPlan, TaskState, TaskStep
+from .tasks import Intent, StepState, TaskPlan, TaskState, TaskStep
 from .tools import SCHEMAS, TASK_RELEASE_CAPABILITIES, Tools
 from .validation import validate_chat_message
 
@@ -69,8 +69,14 @@ class TaskEngine:
         self.recovery = history.recover_inflight_steps()
         self.worker = threading.Thread(target=self._loop, name="task-worker", daemon=True)
         self.worker.start()
+        self.plans: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=4)
+        self.plan_cancellations: dict[str, threading.Event] = {}
+        self.plan_worker = threading.Thread(
+            target=self._plan_loop, name="task-planner", daemon=True
+        )
+        self.plan_worker.start()
 
-    def create(self, text: str, session_id: str) -> dict[str, Any]:
+    def create(self, text: str, session_id: str, *, background: bool = False) -> dict[str, Any]:
         text = validate_chat_message(text)
         created_ns = time.time_ns()
         task_id = uuid.uuid4().hex
@@ -92,29 +98,81 @@ class TaskEngine:
             "deadline_ns": created_ns + self.DEADLINE_SECONDS * 1_000_000_000,
             "planning_attempts": 1,
         }
-        self.history.create_task(envelope, [])
-        cancel = threading.Event()
+        with self.lock:
+            if self.stopping.is_set() or (background and self.plans.full()):
+                raise RuntimeError("Task planning queue is unavailable")
+            self.history.create_task(envelope, [])
+            cancel = self.plan_cancellations[task_id] = threading.Event()
+            if background:
+                self.plans.put_nowait(envelope)
+                proposal = self._owned(task_id, session_id)
+                self._publish_task(proposal, "planning")
+                return proposal
+        return self._plan(envelope, cancel)
+
+    def _plan_loop(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                envelope = self.plans.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                with self.lock:
+                    cancel = self.plan_cancellations.get(envelope["task_id"])
+                if cancel is not None:
+                    self._plan(envelope, cancel)
+            except Exception:
+                # The terminal state and its error are persisted by _plan.
+                pass
+            finally:
+                self.plans.task_done()
+
+    def _plan(self, envelope: dict[str, Any], cancel: threading.Event) -> dict[str, Any]:
+        task_id = envelope["task_id"]
+        session_id = envelope["session_id"]
         try:
-            intent = self.planner.route(text, cancel)
+            if cancel.is_set():
+                return envelope if self.stopping.is_set() else self._owned(task_id, session_id)
+            if time.time_ns() >= envelope["deadline_ns"]:
+                raise TimeoutError("Task planning deadline expired")
+            intent = self.planner.route(envelope["original_text"], cancel)
+            with self.lock:
+                if cancel.is_set():
+                    return envelope if self.stopping.is_set() else self._owned(task_id, session_id)
+                if time.time_ns() >= envelope["deadline_ns"]:
+                    raise TimeoutError("Task planning deadline expired")
+                if intent.mode != "act" or not intent.actions:
+                    raise ValueError(
+                        intent.clarification or "This request does not contain a bounded Task."
+                    )
+                if len(intent.actions) > self.MAX_STEPS:
+                    raise ValueError(f"Task exceeds the {self.MAX_STEPS}-step execution budget")
+                return self._attach_plan(envelope, intent)
         except Exception as exc:
-            failed = self.history.transition_task(
-                task_id, TaskState.FAILED, error=f"{type(exc).__name__}: {exc}"
-            )
-            self._publish_task(failed, "planning_failed", error=type(exc).__name__)
+            with self.lock:
+                if self.stopping.is_set():
+                    return envelope
+                task = self._owned(task_id, session_id)
+                if task["state"] != TaskState.PROPOSED.value:
+                    if cancel.is_set():
+                        return task
+                    raise
+                message = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, ValueError):
+                    message = str(exc)
+                failed = self.history.transition_task(task_id, TaskState.FAILED, error=message)
+                self._publish_task(failed, "planning_failed", message=message)
             raise
-        if intent.mode != "act" or not intent.actions:
-            explanation = intent.clarification or "This request does not contain a bounded Task."
-            failed = self.history.transition_task(task_id, TaskState.FAILED, error=explanation)
-            self._publish_task(failed, "planning_failed", message=explanation)
-            raise ValueError(explanation)
-        if len(intent.actions) > self.MAX_STEPS:
-            failed = self.history.transition_task(
-                task_id,
-                TaskState.FAILED,
-                error=f"Task exceeds the {self.MAX_STEPS}-step execution budget",
-            )
-            self._publish_task(failed, "planning_failed", reason="step_budget")
-            raise ValueError(f"Task exceeds the {self.MAX_STEPS}-step execution budget")
+        finally:
+            with self.lock:
+                self.plan_cancellations.pop(task_id, None)
+
+    def _attach_plan(self, envelope: dict[str, Any], intent: Intent) -> dict[str, Any]:
+        task_id = envelope["task_id"]
+        session_id = envelope["session_id"]
+        turn_id = envelope["turn_id"]
+        created_ns = envelope["created_ns"]
+        text = envelope["original_text"]
         task = TaskPlan.from_intent(session_id, turn_id, text, intent)
         task.task_id = task_id
         task.created_ns = created_ns
@@ -198,7 +256,15 @@ class TaskEngine:
         return task
 
     def cancel(self, task_id: str, session_id: str) -> dict[str, Any]:
-        task = self._owned(task_id, session_id)
+        with self.lock:
+            task = self._owned(task_id, session_id)
+            if task["state"] == TaskState.PROPOSED.value:
+                cancelled = self.history.transition_task(task_id, TaskState.CANCELLED)
+                pending = self.plan_cancellations.pop(task_id, None)
+                if pending is not None:
+                    pending.set()
+                self._publish_task(cancelled, "cancelled")
+                return cancelled
         if task["state"] in {
             TaskState.COMPLETED.value,
             TaskState.PARTIAL.value,
@@ -254,6 +320,10 @@ class TaskEngine:
 
     def close(self) -> None:
         self.stopping.set()
+        with self.lock:
+            for pending in self.plan_cancellations.values():
+                pending.set()
+        self.plan_worker.join(timeout=3)
         try:
             self.queue.put_nowait(None)
         except queue.Full:

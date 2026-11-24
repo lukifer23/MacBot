@@ -52,9 +52,14 @@ Conversation toolbar to read earlier messages while new text arrives.
 Choose **Dictate** to transcribe into an editable draft. After **Stop dictation**,
 you can copy the draft or move it into the composer. This path uses local
 speech recognition and keeps its draft in memory until you send it.
+Use **Transcribe audio file** for a WAV, MP3, M4A, Ogg, or WebM recording up to
+8 MiB and the configured utterance duration. **Live transcript preview** in
+Settings enables provisional microphone text after restart.
 
-Open **Mac Actions** to choose an app, reveal a selected file or folder in
-Finder, or open the location of MacBot’s data folder.
+Open **Mac Actions** and type a request such as “Open Calendar.” Review the
+proposed app, bundle ID, and path, then choose **Open app**. The result shows
+the running process ID or the system error. You can also choose an app directly
+or reveal a selected item in Finder.
 
 Use Task for durable bounded research. Submission first creates a persisted
 plan and authority manifest. Review its steps, targets, sources, deadline, and

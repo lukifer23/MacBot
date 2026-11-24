@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import tempfile
 import threading
 import uuid
@@ -16,11 +17,12 @@ from typing import Any
 
 import numpy as np
 
-from .config import Settings
+from .config import MODEL_PROFILES, Settings, model_profile_fields, validate_runtime_selection
 from .config import save as save_settings
 from .provision import model_dir, voice_model, voices
 from .runtime import Runtime
 from .task_protocol import PROTOCOL_OPERATIONS, TASK_PROTOCOL_VERSION, require_task_protocol
+from .validation import decode_audio
 
 MAX_FRAME = 12 * 1024 * 1024
 
@@ -378,8 +380,14 @@ class NativeIPCServer:
                 }
             return {"status": status}
         if op == "settings":
-            available_voices = []
-            for voice in voices():
+            available_voices: list[dict[str, Any]] = []
+            for profile in MODEL_PROFILES:
+                fields = model_profile_fields(profile)
+                if fields["llm"] != self.settings.models.llm:
+                    continue
+                voice = fields["tts_voice"]
+                if any(existing["id"] == voice for existing in available_voices):
+                    continue
                 try:
                     model_dir(self.settings, voice_model(voice))
                     installed = True
@@ -391,8 +399,10 @@ class NativeIPCServer:
                     "diagnostics_enabled": self.settings.services.diagnostics_enabled,
                     "retention_days": self.settings.privacy.retention_days,
                     "endpoint_ms": self.settings.audio.endpoint_ms,
+                    "live_transcription_preview": self.settings.audio.live_transcription_preview,
                     "context_length": self.settings.models.context_length,
                     "tts_voice": self.settings.models.tts_voice,
+                    "model_profile": self.settings.models.profile,
                     "voices": available_voices,
                 }
             }
@@ -402,6 +412,7 @@ class NativeIPCServer:
                 "diagnostics_enabled",
                 "retention_days",
                 "endpoint_ms",
+                "live_transcription_preview",
                 "context_length",
                 "tts_voice",
             }:
@@ -422,17 +433,28 @@ class NativeIPCServer:
                     if type(value) is not int:
                         raise ValueError(f"{key} must be an integer")
                     setattr(target, key, value)
+            if "live_transcription_preview" in values:
+                preview = values["live_transcription_preview"]
+                if not isinstance(preview, bool):
+                    raise ValueError("Live transcription preview must be a boolean")
+                candidate.audio.live_transcription_preview = preview
             if "tts_voice" in values:
                 voice = values["tts_voice"]
                 if not isinstance(voice, str) or voice not in voices():
                     raise ValueError("TTS voice is not registered")
                 model_dir(self.settings, voice_model(voice))
-                candidate.models.tts_voice = voice
+                if voice != candidate.models.tts_voice:
+                    for profile in MODEL_PROFILES:
+                        fields = model_profile_fields(profile)
+                        if fields["llm"] == candidate.models.llm and fields["tts_voice"] == voice:
+                            candidate.models.profile = profile
+                            candidate.models.tts_voice = voice
+                            break
+                    else:
+                        raise ValueError("This voice is unavailable with the current model profile")
+            validate_runtime_selection(candidate)
             save_settings(candidate)
-            self.settings.services = candidate.services
-            self.settings.privacy = candidate.privacy
-            self.settings.audio = candidate.audio
-            self.settings.models = candidate.models
+            self.settings = candidate
             return {"state": "saved", "restart_required": True}
         if op == "events":
             after = request.get("after", 0)
@@ -454,6 +476,39 @@ class NativeIPCServer:
                 session_id="native",
             )
             return {"state": "accepted", "turn_id": turn.id}
+        if op == "transcribe_file":
+            if self.runtime.transcriber is None:
+                raise RuntimeError("Speech model is not loaded")
+            content, audio_suffix = decode_audio(request.get("content"))
+            cancel = self.stopping
+            try:
+                audio = self.runtime.transcriber.decode(content, audio_suffix)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+                raise ValueError("The recording could not be decoded") from exc
+            lease = self.runtime.final_stt_inference.acquire(
+                request_id=f"file-transcription:{uuid.uuid4()}",
+                kind="background",
+                cancel=cancel,
+            )
+            if lease is None:
+                raise RuntimeError("Transcription was interrupted")
+            with lease:
+                return {"text": self.runtime.transcriber.transcribe(audio)}
+        if op == "mac_action_plan":
+            message = request.get("message")
+            candidates = request.get("applications")
+            if not isinstance(message, str) or not 1 <= len(message.strip()) <= 400:
+                raise ValueError("Mac action request must contain 1 to 400 characters")
+            if (
+                not isinstance(candidates, list)
+                or not 1 <= len(candidates) <= 100
+                or any(
+                    not isinstance(name, str) or not 1 <= len(name) <= 120 or "\x00" in name
+                    for name in candidates
+                )
+            ):
+                raise ValueError("Invalid native application candidate list")
+            return {"candidate": self.runtime.intent.propose_mac_open(message, candidates)}
         if op == "task_create":
             require_task_protocol(request)
             if not self.runtime.task_engine:
@@ -461,10 +516,15 @@ class NativeIPCServer:
             message = request.get("message")
             if not isinstance(message, str):
                 raise ValueError("Task message must be text")
-            task = self.runtime.task_engine.create(message, "native")
+            background = request.get("background", False)
+            if not isinstance(background, bool):
+                raise ValueError("background must be a boolean")
+            task = self.runtime.task_engine.create(message, "native", background=background)
             return {
                 "protocol_version": TASK_PROTOCOL_VERSION,
-                "task": self.runtime.task_engine.snapshot(task, event="proposed"),
+                "task": self.runtime.task_engine.snapshot(
+                    task, event="planning" if background else "proposed"
+                ),
             }
         if op == "task_list":
             require_task_protocol(request)

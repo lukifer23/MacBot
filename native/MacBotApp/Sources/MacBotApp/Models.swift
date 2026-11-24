@@ -111,7 +111,7 @@ enum TaskState: String, Equatable, CaseIterable, Decodable {
 
     var title: String {
         switch self {
-        case .proposed: "Proposed"
+        case .proposed: "Planning"
         case .awaitingAuthorization: "Needs authorization"
         case .queued: "Queued"
         case .running: "Running"
