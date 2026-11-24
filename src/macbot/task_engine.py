@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from functools import partial
 from typing import Any
 
@@ -446,8 +447,7 @@ class TaskEngine:
                         self._publish_task(blocked, "blocked", reason="unknown_effect")
                         return
                     break
-        current = self.history.load_task(task_id)
-        if not current:
+        if self.history.load_task(task_id) is None:
             return
         if self._finish_pause(task_id):
             return
@@ -749,7 +749,7 @@ class TaskEngine:
         }
 
     @staticmethod
-    def _observations(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _observations(steps: Sequence[dict[str, Any]]) -> Sequence[dict[str, Any]]:
         return [
             {
                 "tool": step["capability"],
@@ -761,7 +761,9 @@ class TaskEngine:
         ]
 
     @staticmethod
-    def _cancelled_result(state: TaskState, observations: list[dict[str, Any]]) -> dict[str, Any]:
+    def _cancelled_result(
+        state: TaskState, observations: Sequence[dict[str, Any]]
+    ) -> dict[str, Any]:
         return {
             "state": state.value,
             "summary": "Task stopped. Completed and unfinished steps are listed below.",

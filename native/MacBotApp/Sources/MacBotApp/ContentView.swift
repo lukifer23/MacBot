@@ -93,6 +93,7 @@ private struct ConversationView: View {
                 }
             }
             Divider()
+            if state.isDictating || !state.dictationText.isEmpty { dictationPreview }
             composer
         }
         .navigationTitle("Conversation")
@@ -149,9 +150,35 @@ private struct ConversationView: View {
                 Label(state.listening ? "Stop hands-free" : "Start hands-free", systemImage: state.listening ? "stop.circle.fill" : "waveform.circle.fill")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!state.canListen || state.isChangingListening)
+            .disabled(!state.canListen || state.isChangingListening || state.isDictating)
             .accessibilityIdentifier("conversation.hands-free")
+            Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
+                .buttonStyle(.bordered)
+                .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
+                .accessibilityIdentifier("conversation.dictation")
         }.padding(20).background(.bar)
+    }
+
+    private var dictationPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Dictation draft").font(.headline)
+                Spacer()
+                Button("Copy", action: state.copyDictation).disabled(state.dictationText.isEmpty)
+                Button("Clear") { state.dictationText = "" }.disabled(state.dictationText.isEmpty)
+                Button("Use in composer") {
+                    state.useDictationInComposer()
+                    composerFocused = true
+                }
+                .disabled(state.isDictating || state.dictationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            TextEditor(text: $state.dictationText)
+                .frame(height: 78)
+                .accessibilityLabel("Dictation draft")
+                .accessibilityIdentifier("dictation.draft")
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
     }
 
     private var composer: some View {
