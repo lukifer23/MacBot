@@ -8,6 +8,7 @@ from macbot.auth import AuthStore
 from macbot.config import Settings, prepare
 from macbot.events import EventJournal
 from macbot.history import HistoryStore
+from macbot.research_context import research_sources
 from macbot.task_engine import TaskEngine
 from macbot.tasks import Intent, PlannedAction
 from macbot.tools import Tools
@@ -63,6 +64,29 @@ class ReplanningPlanner:
                 "act", (PlannedAction("web_search", {"query": "external"}, text, "read"),)
             )
         return Intent("clarify", clarification="Evidence is sufficient.")
+
+
+def test_recorded_sources_filter_urls_deduplicate_results_and_bound_excerpts():
+    web = {"title": "Official source", "url": "https://example.org/report", "snippet": "x" * 1000}
+    local = {
+        "id": "passage-2",
+        "content": "Local evidence",
+        "provenance": {"title": "Operator guide"},
+    }
+    observations = [
+        {
+            "tool": "web_search",
+            "state": "succeeded",
+            "result": {"results": [web, web, {"url": "file:///private/report"}]},
+        },
+        {"tool": "rag_search", "state": "succeeded", "result": {"results": [local]}},
+    ]
+    sources = research_sources(observations)
+    assert [source["id"] for source in sources] == ["S1", "S2"]
+    assert sources[0]["url"] == "https://example.org/report"
+    assert len(sources[0]["excerpt"]) == 480
+    assert sources[1]["title"] == "Operator guide"
+    assert sources[1]["url"] is None
 
 
 def wait_for_terminal(engine, task_id, timeout=3):

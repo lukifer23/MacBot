@@ -280,6 +280,28 @@ private struct TaskResultCard: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(item.detail).textSelection(.enabled)
+            if !item.sources.isEmpty {
+                GroupBox("Recorded sources") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(item.sources) { source in
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let url = source.url {
+                                    Link("[\(source.id)] \(source.title)", destination: url)
+                                } else {
+                                    Text("[\(source.id)] \(source.title)").fontWeight(.medium)
+                                }
+                                if !source.excerpt.isEmpty {
+                                    Text(source.excerpt)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
             if !item.authority.isEmpty { authority }
             if !item.steps.isEmpty { steps }
             if !item.availableCommands.isEmpty {
