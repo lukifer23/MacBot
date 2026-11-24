@@ -104,7 +104,6 @@ class Tools:
         self, text: str, source_span: str, name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
         """Independently bind a semantic plan to exact current-message evidence."""
-        arguments = self.validate(name, arguments)
         if not source_span or source_span not in text:
             raise PermissionError("Action is not grounded in the current request")
         evidence = source_span.casefold()
@@ -129,9 +128,13 @@ class Tools:
         requested = self.requested(source_span)
         if requested and name not in requested:
             raise PermissionError("The action uses a different source than the request specifies")
-        if name == "web_fetch" and arguments["url"].casefold() not in text.casefold():
-            raise PermissionError("Evidence URL is not present in the request")
-        return arguments
+        if name == "web_fetch":
+            url = arguments.get("url")
+            if not isinstance(url, str) or not url or url not in source_span:
+                raise PermissionError("The proposed URL must appear in the quoted request")
+            if requested.get("web_fetch", {}).get("url", url) != url:
+                raise PermissionError("The proposed URL must match the requested URL exactly")
+        return self.validate(name, arguments)
 
     def definitions(self, text: str | None = None, used: set[str] | None = None) -> list[dict]:
         requested = self.requested(text) if text is not None else None
