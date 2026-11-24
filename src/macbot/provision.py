@@ -13,12 +13,21 @@ import tempfile
 import threading
 import time
 from importlib.resources import files
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .config import Settings, atomic_write, release_model_manifest
+from .config import (
+    LLAMA_BUILDS,
+    RELEASE_LLAMA_BUILD,
+    Settings,
+    atomic_write,
+    model_profile_fields,
+    release_model_manifest,
+    validate_runtime_selection,
+)
 
 QWEN_TTS_VOICES = {
     "qwen-aiden-0.6b": ("qwen3-tts-0.6b", "Aiden"),
@@ -358,12 +367,63 @@ def verify(settings: Settings, name: str) -> dict[str, Any]:
     return {"model": name, "revision": item["revision"], "verified": True}
 
 
-def install_binaries(settings: Settings, repo: Path) -> None:
-    out = settings.data_dir / "bin"
+def llama_binary_directory(settings: Settings, build: str) -> Path:
+    if build not in LLAMA_BUILDS:
+        raise ValueError(f"Unknown llama.cpp build: {build}")
+    root = settings.data_dir / "bin"
+    return root if build == RELEASE_LLAMA_BUILD else root / "llama-builds" / build
+
+
+def require_llama_server(settings: Settings) -> Path:
+    build = settings.models.llama_build
+    out = llama_binary_directory(settings, build)
+    server = out / "llama-server"
+    if build == RELEASE_LLAMA_BUILD:
+        return server
+    try:
+        identity = json.loads((out / "versions.json").read_text())["llama.cpp"]
+        if (
+            identity["release"] != build
+            or identity["revision"] != LLAMA_BUILDS[build]
+            or sha256(server) != identity["binaries"]["llama-server"]
+        ):
+            raise ValueError("llama.cpp build does not match its provisioned identity")
+    except (KeyError, TypeError, OSError, ValueError) as exc:
+        raise ValueError(
+            f"Provision verified llama.cpp {build} with macbot build-inference --build {build}"
+        ) from exc
+    return server
+
+
+def configure_model_profile(settings: Settings, profile: str) -> None:
+    for role, value in model_profile_fields(profile).items():
+        setattr(settings.models, role, value)
+    settings.models.profile = profile
+    validate_runtime_selection(settings)
+    if settings.models.llm_backend == "mlx":
+        if find_spec("mlx_lm") is None:
+            raise RuntimeError(
+                "Install the optional MLX runtime using uv sync --frozen --extra mlx"
+            )
+    elif not require_llama_server(settings).is_file():
+        raise FileNotFoundError(
+            "Build the selected llama.cpp runtime before activating this profile"
+        )
+    for artifact in {*release_artifacts().values()} - {
+        release_artifacts()["llm"],
+        release_artifacts()["tts"],
+    } | {settings.models.llm, voice_model(settings.models.tts_voice)}:
+        model_dir(settings, artifact)
+
+
+def install_binaries(settings: Settings, source: Path, build: str) -> None:
+    out = llama_binary_directory(settings, build)
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
-    component = "llama.cpp"
-    source = repo / "models" / component / "build" / "bin"
-    for name in ["llama-server", "llama-bench", "llama-quantize"]:
-        if not (source / name).is_file():
-            raise FileNotFoundError(f"Build {component} before installing binaries")
-        shutil.copy2(source / name, out / name)
+    for name in ("llama-server", "llama-bench", "llama-quantize"):
+        path = source / name
+        if not path.is_file():
+            raise FileNotFoundError(f"Build llama.cpp {build} before installing binaries")
+        with tempfile.TemporaryDirectory(dir=out) as stage:
+            target = Path(stage) / name
+            shutil.copy2(path, target)
+            os.replace(target, out / name)

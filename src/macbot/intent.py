@@ -57,7 +57,7 @@ class IntentRouter:
         self.llm = llm
         self.tools = tools
 
-    def route(self, text: str, cancel: threading.Event) -> Intent:
+    def route(self, text: str, cancel: threading.Event, *, request_id: str | None = None) -> Intent:
         prompt = (
             "Plan only the explicit bounded research request in the current user message. Return JSON "
             "only. Use act with grounded rag_search and web_search steps. Use clarify with no actions when "
@@ -89,6 +89,7 @@ class IntentRouter:
             [],
             cancel,
             schema=SCHEMA,
+            request_id=request_id,
             request_kind="task",
         )
         body = "".join(str(chunk.get("content") or "") for chunk in chunks)

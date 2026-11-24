@@ -213,3 +213,23 @@ def test_evaluation_profile_is_explicit_and_round_trips(tmp_path):
     assert restored.models.llm == "qwen3.5-4b-q5-k-m"
     assert restored.models.profile == "qwen-4b-q5"
     assert restored.models.tts_voice == "qwen-aiden-1.7b"
+
+
+def test_lfm3_profile_has_an_isolated_binary_and_pinned_artifact(tmp_path):
+    from macbot.config import model_profile_fields, validate_runtime_selection
+
+    settings = Settings(data_dir=tmp_path)
+    for key, value in model_profile_fields("lfm3-1.7b-q4").items():
+        setattr(settings.models, key, value)
+    settings.models.profile = "lfm3-1.7b-q4"
+    validate_runtime_selection(settings)
+    assert settings.models.llm == "lfm3-1.7b-q4-k-m"
+    assert provision.llama_binary_directory(settings, settings.models.llama_build) == (
+        tmp_path / "bin/llama-builds/b11960"
+    )
+    with pytest.raises(ValueError, match="Provision verified llama.cpp b11960"):
+        provision.require_llama_server(settings)
+    assert provision.llama_binary_directory(settings, "b10509") == tmp_path / "bin"
+    artifact = catalog()[settings.models.llm]
+    assert artifact["files"][0]["size"] == 1_099_627_808
+    assert artifact["revision"] in artifact["files"][0]["url"]

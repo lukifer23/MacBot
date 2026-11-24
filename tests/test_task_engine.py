@@ -17,7 +17,7 @@ from macbot.tools import Tools
 
 
 class BoundedPlanner:
-    def route(self, text, cancel):
+    def route(self, text, cancel, *, request_id=None):
         assert text == "Check this Mac"
         return Intent(
             "act",
@@ -29,12 +29,15 @@ class BoundedPlanner:
 
 
 class ResultSummarizer:
+    def cancel(self, request_id):
+        return False
+
     def stream(self, messages, tools, cancel, schema=None, **_request):
         yield {"content": "The requested local checks completed with recorded results."}
 
 
 class FailingPlanner:
-    def route(self, text, cancel):
+    def route(self, text, cancel, *, request_id=None):
         raise RuntimeError("planner unavailable")
 
 
@@ -72,7 +75,7 @@ class ReplanningPlanner:
     def __init__(self):
         self.replans = 0
 
-    def route(self, text, cancel):
+    def route(self, text, cancel, *, request_id=None):
         return Intent("act", (PlannedAction("rag_search", {"query": "local"}, text, "read"),))
 
     def replan(self, text, observations, cancel):
@@ -431,7 +434,7 @@ def test_background_plan_can_be_stopped_before_it_attaches(tmp_path):
     entered, released = threading.Event(), threading.Event()
 
     class WaitingPlanner(BoundedPlanner):
-        def route(self, text, cancel):
+        def route(self, text, cancel, *, request_id=None):
             entered.set()
             if not released.wait(2):
                 raise RuntimeError("Test did not release the planner")

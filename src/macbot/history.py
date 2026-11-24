@@ -295,6 +295,28 @@ class HistoryStore:
         results.sort(key=lambda item: item["score"], reverse=True)
         return results[:limit]
 
+    def recent_summaries(self, session_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            records = self.db.execute(
+                "SELECT id,source_ids,nonce,ciphertext FROM summaries WHERE session_id=? "
+                "ORDER BY created_ns DESC, id DESC LIMIT 25",
+                (session_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row_id,
+                "content": self._open("summaries", row_id, nonce, ciphertext)["content"],
+                "source_turn_ids": json.loads(source_ids),
+            }
+            for row_id, source_ids, nonce, ciphertext in records
+        ]
+
+    def clear_summaries(self, session_id: str) -> int:
+        with self.lock, self.db:
+            return self.db.execute(
+                "DELETE FROM summaries WHERE session_id=?", (session_id,)
+            ).rowcount
+
     def has_summaries(self, session_id: str) -> bool:
         with self.lock:
             return (

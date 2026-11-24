@@ -57,13 +57,14 @@ private struct ConversationView: View {
     @AppStorage("conversation.followLatest") private var followLatest = true
 
     var body: some View {
+        let timeline = state.timeline
         VStack(spacing: 0) {
             statusHeader
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 14) {
-                        if state.messages.isEmpty && state.tasks.isEmpty {
+                        if timeline.isEmpty {
                             ContentUnavailableView(
                                 state.canConverse ? "Ready when you are" : state.productState.title,
                                 systemImage: state.productState.symbol,
@@ -72,7 +73,7 @@ private struct ConversationView: View {
                                     : state.connectionDetail)
                             ).padding(.top, 90)
                         }
-                        ForEach(state.timeline) { item in
+                        ForEach(timeline) { item in
                             switch item {
                             case .message(let message): MessageBubble(item: message)
                             case .task(let task): TaskResultCard(item: task, compact: true)
@@ -80,20 +81,20 @@ private struct ConversationView: View {
                         }
                     }.padding(24)
                 }
-                .onChange(of: state.timeline.last?.id, initial: true) {
-                    if followLatest, let id = state.timeline.last?.id {
+                .onChange(of: timeline.last?.id, initial: true) {
+                    if followLatest, let id = timeline.last?.id {
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                             proxy.scrollTo(id, anchor: .bottom)
                         }
                     }
                 }
                 .onChange(of: followLatest) {
-                    if followLatest, let id = state.timeline.last?.id {
+                    if followLatest, let id = timeline.last?.id {
                         proxy.scrollTo(id, anchor: .bottom)
                     }
                 }
                 .onChange(of: state.messages.last?.text) {
-                    if followLatest, let id = state.timeline.last?.id {
+                    if followLatest, let id = timeline.last?.id {
                         proxy.scrollTo(id, anchor: .bottom)
                     }
                 }
@@ -103,6 +104,11 @@ private struct ConversationView: View {
                 ProgressView("Transcribing audio file…").controlSize(.small).padding(8)
             }
             if state.isDictating || !state.dictationText.isEmpty { dictationPreview }
+            if state.macActionBusy || state.macActionTarget != nil || state.composerMode == .macAction {
+                MacActionReview()
+                    .frame(maxWidth: 825)
+                    .padding(.horizontal, 18)
+            }
             composer
         }
         .navigationTitle("Conversation")
@@ -115,17 +121,10 @@ private struct ConversationView: View {
                     .disabled(!state.canConverse)
                     .keyboardShortcut("l", modifiers: .command)
                     .help("Focus the message or task composer")
-                Button("Transcribe audio file", systemImage: "waveform.badge.plus", action: state.chooseAudioToTranscribe)
-                    .disabled(!state.connected || state.transcribingFile)
-                    .help("Transcribe a recording into the dictation draft")
                 Button("Clear conversation", systemImage: "trash") { state.confirmClearConversation = true }
                     .disabled(state.messages.isEmpty || !state.canConverse || state.isClearingConversation)
                     .help("Delete this local conversation")
                     .accessibilityIdentifier("conversation.clear")
-                Button("Stop response", systemImage: "stop.fill", action: state.interrupt)
-                    .disabled(!state.canInterrupt || state.isInterrupting)
-                    .help("Stop the current response and playback")
-                    .accessibilityIdentifier("conversation.stop")
             }
         }
         .confirmationDialog(
@@ -152,28 +151,46 @@ private struct ConversationView: View {
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
-            if !state.heard.isEmpty {
-                Button("Copy transcript", systemImage: "document.on.document", action: state.copyTranscript)
-                    .labelStyle(.iconOnly)
-                    .help("Copy the latest transcription")
+        }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
+    }
+
+    private var inputControls: some View {
+        HStack {
+            Menu {
+                Button(action: state.toggleListening) {
+                    Label(state.listening && !state.isDictating ? "Stop hands-free" : "Start hands-free", systemImage: "waveform")
+                }
+                .disabled(!state.canListen || state.isChangingListening || state.isDictating)
+                Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
+                    .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
+                Button(state.muted ? "Unmute" : "Mute", systemImage: state.muted ? "mic.slash.fill" : "mic.fill", action: state.toggleMuted)
+                    .disabled(!state.listening || state.isChangingListening)
+                Button("Copy latest transcript", systemImage: "document.on.document", action: state.copyTranscript)
+                    .disabled(state.heard.isEmpty)
+            } label: {
+                Label(state.listening ? (state.muted ? "Muted" : "Microphone on") : "Microphone", systemImage: state.muted ? "mic.slash" : "mic")
             }
-            Button(action: state.toggleMuted) {
-                Label(state.muted ? "Unmute" : "Mute", systemImage: state.muted ? "mic.slash.fill" : "mic.fill")
+            Button("Audio file…", systemImage: "paperclip", action: state.chooseAudioToTranscribe)
+                .disabled(!state.connected || state.transcribingFile)
+            Spacer()
+            if state.composerMode == .conversation {
+                Toggle("Speak replies", isOn: $state.speakTypedReplies).toggleStyle(.checkbox)
+                    .disabled(!state.canConverse)
             }
-            .buttonStyle(.bordered)
-            .disabled(!state.listening || state.isChangingListening)
-            .accessibilityIdentifier("conversation.mute")
-            Button(action: state.toggleListening) {
-                Label(state.listening ? "Stop hands-free" : "Start hands-free", systemImage: state.listening ? "stop.circle.fill" : "waveform.circle.fill")
+            Button("Stop", systemImage: "stop.fill") {
+                if state.canInterrupt {
+                    state.interrupt()
+                } else if state.isDictating {
+                    state.toggleDictation()
+                } else if state.listening {
+                    state.toggleListening()
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!state.canListen || state.isChangingListening || state.isDictating)
-            .accessibilityIdentifier("conversation.hands-free")
-            Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
-                .buttonStyle(.bordered)
-                .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
-                .accessibilityIdentifier("conversation.dictation")
-        }.padding(20).background(.bar)
+            .disabled(!(state.canInterrupt || state.listening) || state.isInterrupting || state.isChangingListening)
+            .help("Stop the response or turn off the microphone")
+            .accessibilityIdentifier("conversation.stop")
+        }
+        .font(.callout)
     }
 
     private var dictationPreview: some View {
@@ -221,18 +238,17 @@ private struct ConversationView: View {
                     .onSubmit { if !NSEvent.modifierFlags.contains(.shift) { state.send() } }
                     .accessibilityIdentifier("composer.input")
                 Button(action: state.send) {
-                    Label(state.composerMode.actionLabel, systemImage: state.composerMode == .task ? "checklist" : "arrow.up")
+                    Label(state.composerMode.actionLabel, systemImage: state.composerMode.symbol)
                         .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.canConverse || state.isSending)
+                .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !state.canConverse || state.isSending
+                    || (state.composerMode == .macAction && (state.macActionBusy || state.draft.count > 400)))
                 .keyboardShortcut(.return, modifiers: .command)
                 .accessibilityIdentifier("composer.send")
             }
-            if state.composerMode == .conversation {
-                Toggle("Speak typed replies", isOn: $state.speakTypedReplies)
-                    .toggleStyle(.checkbox).font(.caption).disabled(!state.canConverse)
-            }
+            inputControls
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -367,6 +383,15 @@ private struct TaskResultCard: View {
         .padding(.top, 8)
     }
 
+    private func dependencyLabels(_ step: TaskStepItem) -> [String] {
+        step.dependsOn.map { dependency in
+            if let previous = item.steps.first(where: { $0.id == dependency }) {
+                return "Step \(previous.ordinal + 1)"
+            }
+            return dependency
+        }
+    }
+
     private func taskButton(_ command: TaskCommand) -> some View {
         Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
             .disabled(state.taskCommandsInFlight.contains(item.id))
@@ -415,7 +440,7 @@ private struct TaskResultCard: View {
                         Text("Authority: \(display(step.safetyClass))")
                             .font(.caption).foregroundStyle(.secondary)
                         if !step.dependsOn.isEmpty {
-                            Text("Depends on: \(step.dependsOn.joined(separator: ", "))")
+                            Text("Depends on: \(dependencyLabels(step).joined(separator: ", "))")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if step.attempts > 0 {
@@ -475,6 +500,11 @@ private struct TaskCenterView: View {
                 )
             } else {
                 List {
+                    if !state.tasksNeedingApproval.isEmpty {
+                        Section("Needs your approval") {
+                            ForEach(state.tasksNeedingApproval) { TaskResultCard(item: $0) }
+                        }
+                    }
                     if !state.activeTasks.isEmpty {
                         Section("In progress") { ForEach(state.activeTasks) { TaskResultCard(item: $0) } }
                     }
@@ -588,6 +618,31 @@ private struct LibraryView: View {
     }
 }
 
+private struct MacActionReview: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if state.macActionBusy { ProgressView("Working on Mac action…").controlSize(.small) }
+            if let target = state.macActionTarget {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        LabeledContent("Bundle", value: target.bundleID)
+                        Text(target.url.path).font(.caption.monospaced()).textSelection(.enabled)
+                        HStack {
+                            Button("Open app", action: state.approveMacAction).buttonStyle(.borderedProminent)
+                            Button("Dismiss", action: state.discardMacAction)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Label("Open \(target.name)?", systemImage: "macwindow")
+                }
+            }
+            if let receipt = state.macActionStatus { Text(receipt).textSelection(.enabled) }
+        }
+    }
+}
+
 private struct MacActionsView: View {
     @EnvironmentObject private var state: AppState
 
@@ -598,19 +653,7 @@ private struct MacActionsView: View {
                     .onSubmit(state.planMacAction)
                 Button("Find app", systemImage: "sparkle.magnifyingglass", action: state.planMacAction)
                     .disabled(!state.connected || state.macActionBusy || state.macActionRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if state.macActionBusy { ProgressView().controlSize(.small) }
-                if let target = state.macActionTarget {
-                    LabeledContent("Proposed app", value: target.name)
-                    LabeledContent("Bundle identifier", value: target.bundleID)
-                    Text(target.url.path).font(.caption).textSelection(.enabled)
-                    HStack {
-                        Button("Open app", action: state.approveMacAction).buttonStyle(.borderedProminent)
-                        Button("Dismiss", action: state.discardMacAction)
-                    }
-                }
-                if let receipt = state.macActionStatus {
-                    Text(receipt).textSelection(.enabled)
-                }
+                MacActionReview()
             }
             Section("Applications") {
                 LabeledContent {
@@ -672,7 +715,28 @@ private struct SettingsView: View {
         Form {
             Section("Models") {
                 LabeledContent("Language model", value: state.modelName)
-                LabeledContent("Configured profile", value: state.modelProfile)
+                LabeledContent("Active profile", value: state.activeModelProfile)
+                if state.modelProfile != state.activeModelProfile {
+                    LabeledContent("After restart", value: state.modelProfile)
+                }
+                if !state.modelProfiles.isEmpty {
+                    Picker("Model profile", selection: $state.candidateProfile) {
+                        ForEach(state.modelProfiles) { profile in
+                            Text(profile.id + (profile.installed ? "" : " · not provisioned"))
+                                .tag(profile.id)
+                        }
+                    }.disabled(!state.canChangeSettings || state.isSavingSettings)
+                    if let profile = state.modelProfiles.first(where: { $0.id == state.candidateProfile }) {
+                        LabeledContent("Model and runtime", value: "\(profile.model) · \(profile.runtime)")
+                        LabeledContent("Language model files", value: ByteCountFormatter.string(fromByteCount: profile.modelBytes, countStyle: .file))
+                        if !profile.installed {
+                            Text("Provision the model and runtime before choosing this profile.").font(.callout)
+                        }
+                        Button("Save profile for restart", action: state.saveModelProfile)
+                            .disabled(!profile.installed || profile.id == state.modelProfile
+                                || state.settingsHaveChanges || !state.canChangeSettings || state.isSavingSettings)
+                    }
+                }
                 Picker("Voice", selection: $state.selectedVoice) {
                     ForEach(state.availableVoices) { voice in
                         Text(voice.label + (voice.installed ? "" : " · not installed"))
@@ -686,7 +750,11 @@ private struct SettingsView: View {
                 Text("Only installed voices can be selected. A saved voice becomes active after local services restart.")
                     .foregroundStyle(.secondary)
             }
-            Section("Privacy") {
+            Section("Memory and privacy") {
+                Toggle("Use conversation summaries as memory", isOn: $state.semanticMemoryEnabled)
+                    .disabled(!state.canChangeSettings)
+                Button("Review saved summaries…", action: state.reviewMemories)
+                    .disabled(!state.connected || !state.historyAvailable || state.memoryBusy)
                 LabeledContent("Conversation history", value: state.historyAvailable ? "Encrypted on this Mac" : "Unavailable")
                 Text("Conversation content is retained for the selected period. Raw microphone audio is never retained.")
                     .foregroundStyle(.secondary)
@@ -730,6 +798,38 @@ private struct SettingsView: View {
         }
         .formStyle(.grouped).navigationTitle("Settings")
         .task { await state.refreshSettings() }
+        .sheet(isPresented: $state.memorySheet) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Conversation memory").font(.title2)
+                if state.memoryBusy {
+                    ProgressView()
+                } else if state.memories.isEmpty {
+                    ContentUnavailableView("No saved summaries", systemImage: "brain")
+                } else {
+                    List(state.memories) { memory in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(memory.content).textSelection(.enabled)
+                            Text("From \(memory.sourceCount) conversation turns")
+                                .foregroundStyle(.secondary).font(.caption)
+                        }.padding(.vertical, 4)
+                    }
+                }
+                HStack {
+                    Button("Clear summaries…", role: .destructive) { state.confirmClearMemory = true }
+                        .disabled(state.memoryBusy || state.memories.isEmpty)
+                    Spacer()
+                    Button("Done") { state.memorySheet = false }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(minWidth: 520, minHeight: 320)
+            .confirmationDialog("Clear conversation summaries?", isPresented: $state.confirmClearMemory) {
+                Button("Clear summaries", role: .destructive, action: state.clearMemories)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The transcript and research records are preserved. If memory is enabled, MacBot can create new summaries from the transcript.")
+            }
+        }
         .confirmationDialog("Remove the Brave Search credential?", isPresented: $state.confirmCredentialRemoval, titleVisibility: .visible) {
             Button("Remove credential", role: .destructive, action: state.deleteSearchCredential)
             Button("Cancel", role: .cancel) {}

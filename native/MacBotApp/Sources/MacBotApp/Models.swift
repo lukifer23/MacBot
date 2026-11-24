@@ -74,14 +74,16 @@ struct ChatItem: Identifiable, Equatable {
 
 enum ComposerMode: String, CaseIterable, Identifiable {
     case conversation = "Conversation"
-    case task = "Task"
+    case task = "Research"
+    case macAction = "Mac action"
 
     var id: String { rawValue }
 
     var placeholder: String {
         switch self {
         case .conversation: "Ask MacBot anything…"
-        case .task: "Describe a bounded task for MacBot…"
+        case .task: "What should MacBot research?"
+        case .macAction: "Which app should MacBot open?"
         }
     }
 
@@ -89,13 +91,23 @@ enum ComposerMode: String, CaseIterable, Identifiable {
         switch self {
         case .conversation: "Send message"
         case .task: "Create task"
+        case .macAction: "Find app"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .conversation: "arrow.up"
+        case .task: "checklist"
+        case .macAction: "macwindow"
         }
     }
 
     var guidance: String {
         switch self {
         case .conversation: "Get an answer now. MacBot may use explicitly requested tools during this turn."
-        case .task: "Create a durable plan, review its scope, then authorize or deny execution in Task Center."
+        case .task: "Review and authorize the research plan here or in Task Center."
+        case .macAction: "Review the exact app before opening it."
         }
     }
 }
@@ -423,6 +435,20 @@ struct ServiceMetric: Identifiable {
     let id: String
     let label: String
     let value: String
+}
+
+struct MemorySummary: Identifiable {
+    let id: String
+    let content: String
+    let sourceCount: Int
+}
+
+struct ModelProfileOption: Identifiable {
+    let id: String
+    let model: String
+    let runtime: String
+    let installed: Bool
+    let modelBytes: Int64
 }
 
 struct VoiceOption: Identifiable, Equatable {

@@ -56,12 +56,12 @@ Use **Transcribe audio file** for a WAV, MP3, M4A, Ogg, or WebM recording up to
 8 MiB and the configured utterance duration. **Live transcript preview** in
 Settings enables provisional microphone text after restart.
 
-Open **Mac Actions** and type a request such as “Open Calendar.” Review the
+Choose **Mac action** in the Conversation composer and type a request such as “Open Calendar.” Review the
 proposed app, bundle ID, and path, then choose **Open app**. The result shows
 the running process ID or the system error. You can also choose an app directly
 or reveal a selected item in Finder.
 
-Use Task for durable bounded research. Submission first creates a persisted
+Use **Research** in the Conversation composer for durable bounded research. Submission first creates a persisted
 plan and authority manifest. Review its steps, targets, sources, deadline, and
 capabilities before choosing Authorize or Deny. Authorized Tasks can use only
 local document search, configured web search, and bounded web fetch.
@@ -108,3 +108,9 @@ from owning model residency concurrently; do not work around a lease conflict.
 For actionable failures, see [Troubleshooting](TROUBLESHOOTING.md). For release
 claims, use the exact gates and evidence boundaries in
 [Verification](VERIFICATION.md).
+
+
+In **Settings → Memory and privacy**, review or clear saved conversation
+summaries independently of messages and research records. Disable the memory
+setting and restart services to stop generating and retrieving summaries.
+Recent transcript messages remain available as normal conversation context.

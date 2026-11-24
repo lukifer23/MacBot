@@ -135,7 +135,9 @@ class TaskEngine:
                 return envelope if self.stopping.is_set() else self._owned(task_id, session_id)
             if time.time_ns() >= envelope["deadline_ns"]:
                 raise TimeoutError("Task planning deadline expired")
-            intent = self.planner.route(envelope["original_text"], cancel)
+            intent = self.planner.route(
+                envelope["original_text"], cancel, request_id=f"{task_id}:plan"
+            )
             with self.lock:
                 if cancel.is_set():
                     return envelope if self.stopping.is_set() else self._owned(task_id, session_id)
@@ -263,6 +265,7 @@ class TaskEngine:
                 pending = self.plan_cancellations.pop(task_id, None)
                 if pending is not None:
                     pending.set()
+                    self.llm.cancel(f"{task_id}:plan")
                 self._publish_task(cancelled, "cancelled")
                 return cancelled
         if task["state"] in {
@@ -321,8 +324,9 @@ class TaskEngine:
     def close(self) -> None:
         self.stopping.set()
         with self.lock:
-            for pending in self.plan_cancellations.values():
+            for task_id, pending in self.plan_cancellations.items():
                 pending.set()
+                self.llm.cancel(f"{task_id}:plan")
         self.plan_worker.join(timeout=3)
         try:
             self.queue.put_nowait(None)

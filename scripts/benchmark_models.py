@@ -21,11 +21,11 @@ from pathlib import Path
 
 import psutil
 
-from macbot.config import Settings, load, prepare
+from macbot.config import LLAMA_BUILDS, RELEASE_LLAMA_BUILD, Settings, load, prepare
 from macbot.intent import SCHEMA, IntentRouter
 from macbot.llm import LocalLLM
 from macbot.orchestrator import MacBotOrchestrator
-from macbot.provision import catalog, sha256, verify
+from macbot.provision import catalog, llama_binary_directory, sha256, verify
 from macbot.tools import Tools
 
 CASES = [
@@ -131,7 +131,14 @@ def percentile(values, p=0.95):
     return sorted(values)[math.ceil(len(values) * p) - 1]
 
 
-def run(name, backend, destination, case_set="core", context_length=None):
+def run(
+    name,
+    backend,
+    destination,
+    case_set="core",
+    context_length=None,
+    llama_build=RELEASE_LLAMA_BUILD,
+):
     cases = {"core": CASES, "holdout": HOLDOUT_CASES, "task": TASK_CASES}[case_set]
     summary_path = destination.with_suffix(".summary.json")
     if destination == summary_path or destination.exists() or summary_path.exists():
@@ -150,6 +157,7 @@ def run(name, backend, destination, case_set="core", context_length=None):
             port = sock.getsockname()[1]
         s.models.llm = name
         s.models.llm_backend = backend
+        s.models.llama_build = llama_build
         s.models.llm_url = f"http://127.0.0.1:{port}"
         s.models.temperature = 0
         s.models.max_tokens = 128
@@ -283,7 +291,11 @@ def run(name, backend, destination, case_set="core", context_length=None):
                         ("macbot", "httpx", "mlx-lm") if backend == "mlx" else ("macbot", "httpx")
                     )
                 },
-                "binary_sha256": sha256(root / "bin/llama-server") if backend == "llama" else None,
+                "binary_sha256": sha256(
+                    llama_binary_directory(config, llama_build) / "llama-server"
+                )
+                if backend == "llama"
+                else None,
                 "system_prompt_sha256": hashlib.sha256(s.system_prompt.encode()).hexdigest(),
                 "tool_schema_sha256": hashlib.sha256(
                     json.dumps(
@@ -330,7 +342,8 @@ if __name__ == "__main__":
     parser.add_argument("--case-set", choices=["core", "holdout", "task"], default="core")
     parser.add_argument("--backend", choices=["llama", "mlx"], default="llama")
     parser.add_argument("--context-length", type=int, metavar="TOKENS")
+    parser.add_argument("--llama-build", choices=LLAMA_BUILDS, default=RELEASE_LLAMA_BUILD)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    run(args.model, args.backend, args.output, args.case_set, args.context_length)
+    run(args.model, args.backend, args.output, args.case_set, args.context_length, args.llama_build)
