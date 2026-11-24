@@ -96,6 +96,8 @@ def test_source_linked_summary_hides_compacted_messages_and_retrieves_by_vector(
         model_version="test-model",
     )
     assert [item["_turn_id"] for item in store.load_messages("session")] == ["turn-two"]
+    restored = store.load_messages("session", include_compacted=True)
+    assert [item["_turn_id"] for item in restored] == ["turn-one", "turn-two"]
     results = store.search_summaries("session", vector)
     assert results[0]["source_turn_ids"] == ["turn-one"]
     assert results[0]["score"] == 1

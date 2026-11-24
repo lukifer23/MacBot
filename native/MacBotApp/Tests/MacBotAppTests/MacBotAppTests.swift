@@ -181,3 +181,12 @@ func taskSnapshotRejectsUnknownProtocolState() {
         ], sequence: 1)
     }
 }
+
+
+@MainActor @Test
+func reconnectMergesUTF8TextWithoutAppendingReplayedChunks() {
+    let prefixBytes = "Answer: 🦜".utf8.count
+    #expect(AppState.unseenDelta("🦜 hello", offset: 8, after: prefixBytes) == " hello")
+    #expect(AppState.unseenDelta("Answer: ", offset: 0, after: prefixBytes) == "")
+    #expect(AppState.unseenDelta(" world", offset: prefixBytes, after: prefixBytes) == " world")
+}

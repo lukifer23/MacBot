@@ -5,6 +5,7 @@ import socket
 import struct
 import threading
 import time
+import uuid
 
 import numpy as np
 
@@ -28,9 +29,17 @@ def test_native_ipc_authentication_and_bounded_status(tmp_path):
             client.connect(str(server.path))
             write_frame(client, {"op": "authenticate", "token": token, "protocol_version": 3})
             assert read_frame(client)["ok"]
-            write_frame(client, {"op": "status", "protocol_version": 3})
+            request_id = str(uuid.uuid4())
+            write_frame(client, {"op": "status", "protocol_version": 3, "request_id": request_id})
             response = read_frame(client)
             assert response["ok"] and response["status"]["phase"] == "idle"
+            assert response["request_id"] == request_id
+            write_frame(
+                client, {"op": "unsupported", "protocol_version": 3, "request_id": request_id}
+            )
+            denied = read_frame(client)
+            assert denied["request_id"] == request_id
+            assert denied["failure"]["failure_class"] == "invalid_request"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as audio:
             audio.connect(str(server.audio_path))
             write_frame(audio, {"op": "authenticate", "token": token, "protocol_version": 3})
@@ -53,6 +62,7 @@ def test_native_ipc_authentication_and_bounded_status(tmp_path):
             audio.sendall(struct.pack(">I", len(drained)) + drained)
             assert done.wait(1)
             runtime.last_interrupt_requested_ns = time.monotonic_ns()
+            runtime.last_interrupt_generation = 8
             stopped = bytes([1]) + json.dumps({"event": "stopped", "generation": 8}).encode()
             audio.sendall(struct.pack(">I", len(stopped)) + stopped)
             deadline = time.monotonic() + 1

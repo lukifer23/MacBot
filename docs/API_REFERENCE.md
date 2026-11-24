@@ -38,10 +38,13 @@ mutation.
 
 Every native connection starts with an authenticated hello for protocol v3.
 At startup, reconnect, event-gap detection, or epoch change, the client sends
-`{"op":"sync","protocol_version":3}`. The atomic response contains
-`protocol_version`, `epoch`, `cursor`, canonical durable `messages`, canonical
-`tasks`, and the optional `active_turn`. The client replaces its rehydrated
-state from this snapshot before resuming event replay.
+`{"op":"sync","protocol_version":3}`. The response contains
+`protocol_version`, `epoch`, `cursor`, durable `messages`, `tasks`, and the
+optional `active_turn`, including streamed assistant text. The server reads the
+journal cursor before collecting the snapshot, allowing events committed during
+collection to replay. Message identity uses the role and turn ID. Delta offsets
+are byte offsets in UTF-8 and let the client apply overlapping replay safely.
+Compacted messages remain readable as conversation history.
 
 The native client continues to accept existing `action`, `tool`, and
 `tool_result` journal events. It also accepts a typed `task` event so durable or
@@ -88,7 +91,10 @@ commands. Missing or incompatible Task protocol versions fail closed.
 
 Errors distinguish invalid input (400), missing authentication (401), denied origin/CSRF/authorization (403), missing record (404), and unavailable downstream services (503). Native commands are authenticated by the private socket token and bound to the single native session.
 
-Every native operation includes `protocol_version: 3`. Supported operations are
+Every native operation includes `protocol_version: 3`. The native app also sends
+a per-request UUID in `request_id`. The server echoes a valid ID in success and
+error frames. This identifies a response and provides no retry or idempotency
+guarantee. Supported operations are
 `sync`, `status`, `settings`, `update_settings`, `events`, `chat`,
 `task_create`, `task_list`, `task_command`, `preview_voice`, `listen`,
 `interrupt`, `clear`, `documents`, `document_import`, `document_delete`, and
@@ -124,3 +130,11 @@ speech. If a future single-decoder streaming path emits
 written to encrypted history or the durable event journal. Final
 `transcription` and `user` presentation share one turn ID and render as one user
 message, not duplicates.
+
+
+Capture start uses the same `capture_id` in the native audio `ready` event and
+the control socket's `listen` request. The runtime enables capture only after
+that audio connection has announced echo cancellation for the matching ID.
+Playback tracks monotonically increasing generations. Scheduled playback and
+drain are acknowledged by the native player. A missing drain or a disconnected
+peer ends the wait with an audio error.

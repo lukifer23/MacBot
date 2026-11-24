@@ -23,7 +23,7 @@ from .events import EventJournal
 from .history import HistoryStore
 from .intent import IntentRouter
 from .llm import LocalLLM
-from .research_context import research_sources
+from .research_context import fit_research_sources, research_sources
 from .task_protocol import legal_commands
 from .tasks import StepState, TaskPlan, TaskState, TaskStep
 from .tools import SCHEMAS, TASK_RELEASE_CAPABILITIES, Tools
@@ -35,6 +35,7 @@ class TaskEngine:
     MAX_REPLANS = 2
     DEADLINE_SECONDS = 600
     RETRY_DELAY_SECONDS = 0.25
+    NO_EVIDENCE = frozenset({"empty", "no_answer", "not_configured"})
 
     def __init__(
         self,
@@ -357,18 +358,21 @@ class TaskEngine:
                 failures += 1
                 continue
             completed = {
-                item["step_id"]: item["state"] for item in self.history.load_steps(task_id)
+                item["step_id"]
+                for item in self.history.load_steps(task_id)
+                if item["state"] == StepState.SUCCEEDED.value
+                and (item.get("result") or {}).get("status") not in self.NO_EVIDENCE
             }
             unmet = [
                 dependency
                 for dependency in step.get("depends_on", [])
-                if completed.get(dependency) != StepState.SUCCEEDED.value
+                if dependency not in completed
             ]
             if unmet:
                 self.history.transition_step(
                     step["step_id"],
                     StepState.SKIPPED,
-                    error="Dependency did not succeed",
+                    error="Dependency did not produce usable evidence",
                     details={"unmet_dependencies": unmet},
                 )
                 failures += 1
@@ -479,11 +483,7 @@ class TaskEngine:
             return True
         for step in self.history.load_steps(task_id):
             result = step.get("result")
-            if isinstance(result, dict) and result.get("status") in {
-                "empty",
-                "no_answer",
-                "not_configured",
-            }:
+            if isinstance(result, dict) and result.get("status") in self.NO_EVIDENCE:
                 return True
         return False
 
@@ -495,6 +495,7 @@ class TaskEngine:
         cancel = self.cancelled.setdefault(task_id, threading.Event())
         if cancel.is_set() or time.time_ns() >= int(task["deadline_ns"]):
             return False
+        recorded_steps = self.history.load_steps(task_id)
         observations = [
             {
                 "capability": step["capability"],
@@ -504,33 +505,33 @@ class TaskEngine:
                 "error": step.get("error"),
                 "failure_class": step.get("failure_class"),
             }
-            for step in self.history.load_steps(task_id)
+            for step in recorded_steps
         ]
         intent = replan(str(task["original_text"]), observations, cancel)
         if cancel.is_set() or intent.mode != "act" or not intent.actions:
             return False
-        start = len(observations)
-        existing = {step["idempotency_key"] for step in self.history.load_steps(task_id)}
-        candidates = {
-            action.idempotency_key: action
-            for action in intent.actions
-            if action.idempotency_key not in existing
-        }
-        if not candidates or len(candidates) > int(task["step_budget"]) - start:
+        start = len(recorded_steps)
+        step_by_key = {step["idempotency_key"]: step["step_id"] for step in recorded_steps}
+        action_step_ids: list[str] = []
+        steps: list[TaskStep] = []
+        for action in intent.actions:
+            if action.idempotency_key not in step_by_key:
+                step = TaskStep(
+                    task_id=task_id,
+                    session_id=str(task["session_id"]),
+                    turn_id=str(task["turn_id"]),
+                    ordinal=start + len(steps),
+                    capability=action.name,
+                    arguments=dict(action.arguments),
+                    safety_class=action.safety_class,
+                    idempotency_key=action.idempotency_key,
+                    depends_on=tuple(action_step_ids[index] for index in action.depends_on),
+                )
+                steps.append(step)
+                step_by_key[action.idempotency_key] = step.step_id
+            action_step_ids.append(step_by_key[action.idempotency_key])
+        if not steps or len(steps) > int(task["step_budget"]) - start:
             return False
-        steps = [
-            TaskStep(
-                task_id=task_id,
-                session_id=str(task["session_id"]),
-                turn_id=str(task["turn_id"]),
-                ordinal=start + index,
-                capability=action.name,
-                arguments=dict(action.arguments),
-                safety_class=action.safety_class,
-                idempotency_key=action.idempotency_key,
-            )
-            for index, action in enumerate(candidates.values())
-        ]
         proposed_manifest = self._authority_manifest(steps)
         previous_manifest = task.get("capability_manifest") or {}
         authority_diff = self._authority_diff(previous_manifest, proposed_manifest)
@@ -546,7 +547,6 @@ class TaskEngine:
             "replan_authorization_required" if material else "replanned_within_authority",
             authority=replanned["capability_manifest"],
             authority_diff=authority_diff,
-            observations=observations,
         )
         if not material:
             try:
@@ -789,9 +789,7 @@ class TaskEngine:
             }
             for item in observations
         ]
-        if outcomes and all(
-            item["outcome"] in {"empty", "no_answer", "not_configured"} for item in outcomes
-        ):
+        if not sources:
             return {
                 "state": state.value,
                 "summary": "The completed searches returned no usable evidence for this request.",
@@ -800,15 +798,10 @@ class TaskEngine:
             }
         character_budget = min(12_000, self.tools.settings.models.context_length * 2)
         question = str(task["original_text"])[: min(2000, character_budget // 4)]
-        selected = []
-        remaining = character_budget - len(question) - len(json.dumps(outcomes))
-        for source in sources:
-            # URLs remain in the structured result. The model refers to source IDs.
-            entry = {key: value for key, value in source.items() if key != "url"}
-            remaining -= len(json.dumps(entry, ensure_ascii=False))
-            if remaining < 0:
-                break
-            selected.append(entry)
+        prompt_data = {"question": question, "outcomes": outcomes, "sources": []}
+        selected = fit_research_sources(
+            sources, character_budget + 2 - len(json.dumps(prompt_data, ensure_ascii=False))
+        )
         prompt = [
             {
                 "role": "system",

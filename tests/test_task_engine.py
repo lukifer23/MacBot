@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -8,9 +9,10 @@ from macbot.auth import AuthStore
 from macbot.config import Settings, prepare
 from macbot.events import EventJournal
 from macbot.history import HistoryStore
-from macbot.research_context import research_sources
+from macbot.intent import IntentRouter
+from macbot.research_context import replan_context, research_sources
 from macbot.task_engine import TaskEngine
-from macbot.tasks import Intent, PlannedAction
+from macbot.tasks import Intent, PlannedAction, TaskPlan
 from macbot.tools import Tools
 
 
@@ -34,6 +36,22 @@ class ResultSummarizer:
 class FailingPlanner:
     def route(self, text, cancel):
         raise RuntimeError("planner unavailable")
+
+
+def recorded_search(name, arguments):
+    return {
+        "status": "completed",
+        "source": name,
+        "results": [
+            {
+                "id": "local-1",
+                "provenance": {"title": "MacBot notes"},
+                "content": "MacBot is running locally.",
+                "url": "https://example.org/macbot",
+                "snippet": "Documentation for MacBot.",
+            }
+        ],
+    }
 
 
 class BlockingSummarizer:
@@ -202,7 +220,7 @@ def test_cancel_during_final_synthesis_resolves_partial_and_worker_survives(tmp_
     prepare(settings)
     auth = AuthStore(tmp_path)
     tools = Tools(settings, auth)
-    tools._execute = lambda name, arguments: {"status": "completed", "source": name}
+    tools._execute = recorded_search
     history = HistoryStore(settings, os.urandom(32))
     events = EventJournal(sink=history.save_event)
     summarizer = BlockingSummarizer()
@@ -234,7 +252,7 @@ def test_pause_during_final_synthesis_releases_lane_before_next_command(tmp_path
     prepare(settings)
     auth = AuthStore(tmp_path)
     tools = Tools(settings, auth)
-    tools._execute = lambda name, arguments: {"status": "completed", "source": name}
+    tools._execute = recorded_search
     history = HistoryStore(settings, os.urandom(32))
     events = EventJournal(sink=history.save_event)
     summarizer = BlockingSummarizer()
@@ -350,3 +368,60 @@ def test_observation_driven_replan_requires_fresh_authorization(tmp_path):
         history.close()
         tools.close()
         auth.close()
+
+
+def test_planner_dependencies_are_resolved_to_durable_step_ids(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    prepare(settings)
+    auth = AuthStore(tmp_path)
+    tools = Tools(settings, auth)
+    try:
+        router = IntentRouter(ResultSummarizer(), tools)
+        request = "Search my documents for MacBot, then search the web for MacBot."
+        actions = [
+            {
+                "name": "rag_search",
+                "arguments": {"query": "MacBot"},
+                "source_span": "Search my documents for MacBot",
+                "depends_on": [],
+            },
+            {
+                "name": "web_search",
+                "arguments": {"query": "MacBot"},
+                "source_span": "search the web for MacBot",
+                "depends_on": [0],
+            },
+        ]
+        payload = {"mode": "act", "actions": actions, "clarification": ""}
+        intent = router.parse(json.dumps(payload), request)
+        steps = TaskPlan.from_intent("native", "test-turn", request, intent).durable_steps()
+        assert steps[0].depends_on == ()
+        assert steps[1].depends_on == (steps[0].step_id,)
+        for invalid in ([1], [True], [-1], [0, 0]):
+            actions[1]["depends_on"] = invalid
+            with pytest.raises(ValueError, match="distinct earlier actions"):
+                router.parse(json.dumps(payload), request)
+    finally:
+        tools.close()
+        auth.close()
+
+
+def test_replan_keeps_bounded_evidence_and_omits_raw_tool_output():
+    result = recorded_search("web_search", {"query": "MacBot"})
+    result["raw_provider_body"] = "private provider payload" * 100
+    payload = replan_context(
+        [
+            {
+                "capability": "web_search",
+                "state": "succeeded",
+                "result": result,
+                "arguments": {"query": "MacBot"},
+            }
+        ],
+        500,
+    )
+    assert len(payload) <= 500
+    assert "private provider payload" not in payload
+    parsed = json.loads(payload)
+    assert parsed["outcomes"][0]["attempted_arguments"] == {"query": "MacBot"}
+    assert parsed["sources"][0]["excerpt"] == "Documentation for MacBot."

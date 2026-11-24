@@ -54,6 +54,7 @@ private struct ConversationView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var composerFocused: Bool
+    @AppStorage("conversation.followLatest") private var followLatest = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,15 +80,20 @@ private struct ConversationView: View {
                         }
                     }.padding(24)
                 }
-                .onChange(of: state.messages.count + state.tasks.count) {
-                    if let id = state.timeline.last?.id {
+                .onChange(of: state.timeline.last?.id, initial: true) {
+                    if followLatest, let id = state.timeline.last?.id {
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                             proxy.scrollTo(id, anchor: .bottom)
                         }
                     }
                 }
+                .onChange(of: followLatest) {
+                    if followLatest, let id = state.timeline.last?.id {
+                        proxy.scrollTo(id, anchor: .bottom)
+                    }
+                }
                 .onChange(of: state.messages.last?.text) {
-                    if let id = state.timeline.last?.id {
+                    if followLatest, let id = state.timeline.last?.id {
                         proxy.scrollTo(id, anchor: .bottom)
                     }
                 }
@@ -99,6 +105,9 @@ private struct ConversationView: View {
         .navigationTitle("Conversation")
         .toolbar {
             ToolbarItemGroup {
+                Toggle("Follow latest", systemImage: "arrow.down.to.line", isOn: $followLatest)
+                    .toggleStyle(.button)
+                    .help("Keep the latest conversation entry in view")
                 Button("Focus composer", systemImage: "square.and.pencil") { composerFocused = true }
                     .disabled(!state.canConverse)
                     .keyboardShortcut("l", modifiers: .command)
@@ -550,6 +559,13 @@ private struct MacActionsView: View {
                     Button("Choose an app…", systemImage: "macwindow", action: state.chooseApplication)
                 } label: {
                     Text("Open an installed Mac app")
+                }
+            }
+            Section("Finder") {
+                LabeledContent {
+                    Button("Choose an item…", systemImage: "doc", action: state.chooseItemToReveal)
+                } label: {
+                    Text("Reveal a local file or folder")
                 }
                 LabeledContent {
                     Button("Show in Finder", systemImage: "folder", action: state.revealDataFolder)

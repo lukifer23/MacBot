@@ -116,3 +116,27 @@ uv run --frozen python scripts/benchmark_models.py qwen3.5-4b-q5-k-m \
 The optional MLX language path requires `uv run --frozen --extra mlx`.
 The default install runs llama.cpp for its language model and still uses MLX
 where the selected speech engines require it.
+
+
+## Production Task planner comparison
+
+Run the `task` case set on the same context, runtime, and quantizations used for
+the text holdout. It calls the production planner and parser, records the
+resulting capability names, arguments, source spans, and dependencies, and
+scores actionable plans and clarification separately from ordinary text.
+The run measures time to a validated decision and does not send tool calls.
+
+```sh
+uv run --frozen python scripts/benchmark_models.py qwen3.5-2b-official \
+  --case-set task --context-length 8192 --output reports/qwen35-2b-task-8k.jsonl
+```
+
+For streaming recognition, screen Parakeet EOU (120M) for endpoint latency and
+the English Parakeet Unified 0.6B Core ML build for partial accuracy. Keep
+multilingual Parakeet TDT v3 in the comparison and score language coverage by
+artifact. FluidAudio's Core ML benchmark uses an M5 Pro and macOS 26. Measure
+ANE placement, macOS 14 compatibility, and contention on the target Mac before
+promoting an artifact. Include Kokoro Core ML and Qwen3-TTS Aiden 0.6B in the
+existing blinded listening set. [FluidAudio models](https://github.com/FluidInference/FluidAudio)
+· [FluidAudio measurements](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Benchmarks.md)
+· [Parakeet Unified](https://huggingface.co/nvidia/parakeet-unified-en-0.6b)

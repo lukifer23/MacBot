@@ -9,7 +9,7 @@ MacBot is a local AI assistant for Apple Silicon Macs. Talk to it, dictate into 
 | Conversation | Type or talk, choose spoken replies, interrupt playback, and copy the latest transcript. Dictation creates an editable draft using speech recognition alone. |
 | Task Center | Review a research plan and its target scope, authorize or deny it, pause or stop work, and inspect recorded sources and step outcomes. |
 | Library | Import and search local PDF, DOCX, or text documents. |
-| Mac Actions | Open an app you choose or show the MacBot data folder in Finder. |
+| Mac Actions | Open an app you choose or reveal a selected item or the MacBot data folder in Finder. |
 | Settings and Diagnostics | Manage voice and context settings, configure optional Brave Search, and inspect service and latency data. |
 
 ## Install on an Apple Silicon Mac

@@ -1,8 +1,50 @@
 """Compact recorded research evidence for synthesis and source inspection."""
 
+import json
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
+
+
+def fit_research_sources(
+    sources: Sequence[dict[str, Any]], character_budget: int
+) -> list[dict[str, Any]]:
+    """Fit a serialized prefix while leaving URLs in the recorded result."""
+    selected: list[dict[str, Any]] = []
+    remaining = character_budget - 2
+    for source in sources:
+        entry = {key: value for key, value in source.items() if key != "url"}
+        size = len(json.dumps(entry, ensure_ascii=False)) + (2 if selected else 0)
+        if size <= remaining:
+            selected.append(entry)
+            remaining -= size
+    return selected
+
+
+def replan_context(observations: Sequence[dict[str, Any]], character_budget: int) -> str:
+    steps = [{"tool": item["capability"], **item} for item in observations]
+    outcomes = [
+        {
+            "tool": item["tool"],
+            "state": item["state"],
+            "outcome": (item.get("result") or {}).get("status"),
+            "failure_class": item.get("failure_class"),
+            "attempted_arguments": {
+                key: str(value)[:128] for key, value in item["arguments"].items()
+            },
+        }
+        for item in steps
+    ]
+    payload: dict[str, Any] = {"outcomes": [], "sources": []}
+    for outcome in outcomes:
+        candidate = {**payload, "outcomes": [*payload["outcomes"], outcome]}
+        if len(json.dumps(candidate, ensure_ascii=False)) > character_budget * 2 // 3:
+            break
+        payload = candidate
+    payload["sources"] = fit_research_sources(
+        research_sources(steps), character_budget + 2 - len(json.dumps(payload, ensure_ascii=False))
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def research_sources(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
