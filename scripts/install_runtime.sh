@@ -61,9 +61,8 @@ PY
   exit 1
 fi
 
-"$stage/bin/macbot" --help >/dev/null
-
 chmod -R go-rwx "$stage"
+"$stage/bin/python" -c 'import importlib.metadata as m; [m.version(p) for p in ("macbot", "mlx-lm", "mlx-audio", "parakeet-mlx", "onnxruntime")]'
 "$stage/bin/macbot" --help >/dev/null
 
 if $stage_only; then

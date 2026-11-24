@@ -232,7 +232,7 @@ final class AudioController: @unchecked Sendable {
     private func readPlayback(from socket: Int32) {
         while true {
             do {
-                let frame = try readFrame(limit: 2 * 1024 * 1024, from: socket)
+                let frame = try NativeFrame.read(from: socket, limit: 2 * 1024 * 1024)
                 playbackQueue.sync {
                     guard running, let kind = frame.first else { return }
                     if kind == 3 { schedulePCM(frame.dropFirst()) }
@@ -334,42 +334,13 @@ final class AudioController: @unchecked Sendable {
     }
 
     private func readJSON(from socket: Int32) throws -> [String: Any] {
-        guard let value = try JSONSerialization.jsonObject(with: readFrame(limit: 1_048_576, from: socket)) as? [String: Any] else {
+        guard let value = try JSONSerialization.jsonObject(with: NativeFrame.read(from: socket, limit: 1_048_576)) as? [String: Any] else {
             throw NativeClientError.protocolError("Invalid audio response")
         }
         return value
     }
 
     private func sendFrame(_ payload: Data) throws {
-        guard descriptor >= 0 else { throw NativeClientError.socket("Audio socket is closed") }
-        var size = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &size, count: 4); frame.append(payload)
-        try frame.withUnsafeBytes { raw in
-            var sent = 0
-            while sent < raw.count {
-                let count = Darwin.send(descriptor, raw.baseAddress!.advanced(by: sent), raw.count - sent, 0)
-                guard count > 0 else { throw NativeClientError.socket("Audio socket write failed") }
-                sent += count
-            }
-        }
-    }
-
-    private func readFrame(limit: Int, from socket: Int32) throws -> Data {
-        let header = try readExact(4, from: socket)
-        let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        guard size > 0 && size <= limit else { throw NativeClientError.protocolError("Invalid audio frame") }
-        return try readExact(Int(size), from: socket)
-    }
-
-    private func readExact(_ count: Int, from socket: Int32) throws -> Data {
-        var data = Data(count: count); var offset = 0
-        try data.withUnsafeMutableBytes { raw in
-            while offset < count {
-                let received = Darwin.recv(socket, raw.baseAddress!.advanced(by: offset), count - offset, 0)
-                guard received > 0 else { throw NativeClientError.socket("Audio socket closed") }
-                offset += received
-            }
-        }
-        return data
+        try NativeFrame.write(payload, to: descriptor, limit: 256 * 1024)
     }
 }

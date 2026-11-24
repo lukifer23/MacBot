@@ -425,3 +425,40 @@ def test_replan_keeps_bounded_evidence_and_omits_raw_tool_output():
     parsed = json.loads(payload)
     assert parsed["outcomes"][0]["attempted_arguments"] == {"query": "MacBot"}
     assert parsed["sources"][0]["excerpt"] == "Documentation for MacBot."
+
+
+def test_background_plan_can_be_stopped_before_it_attaches(tmp_path):
+    entered, released = threading.Event(), threading.Event()
+
+    class WaitingPlanner(BoundedPlanner):
+        def route(self, text, cancel):
+            entered.set()
+            if not released.wait(2):
+                raise RuntimeError("Test did not release the planner")
+            assert cancel.is_set()
+            return super().route(text, cancel)
+
+    settings = Settings(data_dir=tmp_path)
+    prepare(settings)
+    auth = AuthStore(tmp_path)
+    tools = Tools(settings, auth)
+    history = HistoryStore(settings, os.urandom(32))
+    events = EventJournal()
+    engine = TaskEngine(history, events, tools, WaitingPlanner(), ResultSummarizer())
+    try:
+        task = engine.create("Check this Mac", "native", background=True)
+        assert task["state"] == "proposed"
+        assert entered.wait(2)
+        task_id = task["task_id"]
+        assert engine.cancel(task_id, "native")["state"] == "cancelled"
+        released.set()
+        engine.plans.join()
+        assert history.load_task(task_id)["state"] == "cancelled"
+        assert not history.load_steps(task_id)
+    finally:
+        released.set()
+        engine.close()
+        events.close()
+        history.close()
+        tools.close()
+        auth.close()

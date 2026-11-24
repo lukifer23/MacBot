@@ -33,6 +33,8 @@ final class AppState: ObservableObject {
     @Published var importingDocuments = false
     @Published var documentQuery = ""
     @Published var retentionDays = 30
+    @Published var liveTranscriptionPreview = false
+    @Published private(set) var partialTranscript = ""
     @Published var endpointMilliseconds = 350
     @Published var contextLength = 16_384
     @Published var searchCredentialConfigured = false
@@ -40,6 +42,12 @@ final class AppState: ObservableObject {
     @Published var restartRequired = false
     @Published var speakTypedReplies = true
     @Published var isRestarting = false
+    @Published var macActionRequest = ""
+    @Published private(set) var macActionTarget: MacApplicationTarget?
+    @Published private(set) var macActionStatus: String?
+    @Published private(set) var macActionBusy = false
+    @Published private(set) var transcribingFile = false
+    @Published private(set) var modelProfile = "release"
     @Published var confirmClearConversation = false
     @Published var pendingDocumentDeletion: DocumentItem?
     @Published var confirmCredentialRemoval = false
@@ -52,6 +60,7 @@ final class AppState: ObservableObject {
     @Published var taskCommandsInFlight: Set<String> = []
 
     private var savedRetentionDays = 30
+    private var savedLiveTranscriptionPreview = false
     private var savedEndpointMilliseconds = 350
     private var savedContextLength = 16_384
     private var savedVoice = ""
@@ -59,9 +68,12 @@ final class AppState: ObservableObject {
     private let services = ServiceManager()
     private var commandClient: NativeClient?
     private var controlClient: NativeClient?
+    private var mediaClient: NativeClient?
+    private var macActionClient: NativeClient?
     private var eventClient: NativeClient?
     private var audio: AudioController?
     private var eventTask: Task<Void, Never>?
+    private var taskRevisions: [String: Int] = [:]
     private var cursor = 0
     private var lastDictationSequence = 0
     private var epoch: String?
@@ -87,6 +99,7 @@ final class AppState: ObservableObject {
     }
     var settingsHaveChanges: Bool {
         retentionDays != savedRetentionDays
+            || liveTranscriptionPreview != savedLiveTranscriptionPreview
             || endpointMilliseconds != savedEndpointMilliseconds
             || contextLength != savedContextLength
             || selectedVoice != savedVoice
@@ -129,8 +142,11 @@ final class AppState: ObservableObject {
         audio = nil
         commandClient = nil
         controlClient = nil
+        mediaClient = nil
+        macActionClient = nil
         eventClient = nil
         listening = false
+        partialTranscript = ""
         isDictating = false
         let token = try await services.restart(historyKey: historyKey)
         let run = services.dataDirectory.appending(path: "run")
@@ -151,6 +167,8 @@ final class AppState: ObservableObject {
         try audioController.connect(path: audioSocket, token: token)
         commandClient = commands
         controlClient = NativeClient(socketPath: controlSocket, token: token)
+        mediaClient = NativeClient(socketPath: controlSocket, token: token)
+        macActionClient = NativeClient(socketPath: controlSocket, token: token)
         eventClient = events
         audio = audioController
         connected = true
@@ -199,8 +217,8 @@ final class AppState: ObservableObject {
                 case .task:
                     let response = try await client.request(JSONPayload([
                         "op": "task_create", "protocol_version": TaskProtocolV3.version,
-                        "message": text,
-                    ]), timeout: 120).value
+                        "message": text, "background": true,
+                    ]), timeout: 10).value
                     try requireTaskProtocol(response)
                     if let payload = response["task"] as? [String: Any] {
                         upsertTask(payload, sequence: cursor + 1)
@@ -290,6 +308,12 @@ final class AppState: ObservableObject {
         }
 
         messages = restoredMessages
+        taskRevisions = Dictionary(
+            taskSnapshots.compactMap { snapshot -> (String, Int)? in
+                guard let id = snapshot["task_id"] as? String,
+                      let revision = snapshot["revision"] as? Int else { return nil }
+                return (id, revision)
+            }, uniquingKeysWith: max)
         tasks = restoredTasks
         responseIndex.removeAll()
         nextPresentationSequence = restoredMessages.count + restoredTasks.count
@@ -377,6 +401,45 @@ final class AppState: ObservableObject {
         }
     }
 
+    func chooseAudioToTranscribe() {
+        guard !transcribingFile, let client = mediaClient else { return }
+        let picker = NSOpenPanel()
+        picker.prompt = "Transcribe"
+        picker.allowedContentTypes = ["wav", "mp3", "m4a", "ogg", "webm"].compactMap { UTType(filenameExtension: $0) }
+        picker.allowsMultipleSelection = false
+        transcribingFile = true
+        Task {
+            defer { transcribingFile = false }
+            guard await picker.begin() == .OK, let url = picker.url else { return }
+            do {
+                let types = ["wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "ogg": "audio/ogg", "webm": "audio/webm"]
+                guard let type = types[url.pathExtension.lowercased()] else {
+                    throw NativeClientError.protocolError("Choose a WAV, MP3, M4A, Ogg, or WebM recording.")
+                }
+                let limit = 8 * 1024 * 1024
+                let content = try await Task.detached {
+                    let file = try FileHandle(forReadingFrom: url)
+                    defer { try? file.close() }
+                    return try file.read(upToCount: limit + 1) ?? Data()
+                }.value
+                guard !content.isEmpty, content.count <= limit else {
+                    throw NativeClientError.protocolError("The recording must be between 1 byte and 8 MiB.")
+                }
+                let response = try await client.request(JSONPayload([
+                    "op": "transcribe_file",
+                    "content": "data:\(type);base64,\(content.base64EncodedString())",
+                ]), timeout: 60).value
+                guard mediaClient === client else { return }
+                guard let text = response["text"] as? String, !text.isEmpty else {
+                    throw NativeClientError.protocolError("No speech was recognized.")
+                }
+                dictationText += dictationText.isEmpty ? text : "\n\n\(text)"
+            } catch {
+                if mediaClient === client { show(error) }
+            }
+        }
+    }
+
     func copyTranscript() {
         copyText(heard)
     }
@@ -397,6 +460,57 @@ final class AppState: ObservableObject {
         NSPasteboard.general.clearContents()
         if !NSPasteboard.general.setString(text, forType: .string) {
             errorMessage = "The transcript could not be copied."
+        }
+    }
+
+    func planMacAction() {
+        let request = macActionRequest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !macActionBusy, !request.isEmpty, request.count <= 400,
+              let client = macActionClient else { return }
+        let targets = Array(MacActions.installedApplications().prefix(100))
+        macActionTarget = nil
+        macActionStatus = nil
+        guard !targets.isEmpty else {
+            macActionStatus = "No installed applications were found."
+            return
+        }
+        macActionBusy = true
+        Task {
+            defer { macActionBusy = false }
+            do {
+                let response = try await client.request(JSONPayload([
+                    "op": "mac_action_plan",
+                    "message": request,
+                    "applications": targets.map { String($0.name.prefix(120)) },
+                ]), timeout: 30).value
+                guard macActionClient === client else { return }
+                if let index = response["candidate"] as? Int, targets.indices.contains(index) {
+                    macActionTarget = targets[index]
+                } else {
+                    macActionStatus = "No unambiguous app-opening action was found."
+                }
+            } catch {
+                macActionStatus = error.localizedDescription
+            }
+        }
+    }
+
+    func discardMacAction() {
+        macActionTarget = nil
+    }
+
+    func approveMacAction() {
+        guard !macActionBusy, let target = macActionTarget else { return }
+        macActionTarget = nil
+        macActionBusy = true
+        Task {
+            defer { macActionBusy = false }
+            do {
+                let app = try await MacActions.open(target)
+                macActionStatus = "Opened \(target.name) (PID \(app.processIdentifier))."
+            } catch {
+                macActionStatus = error.localizedDescription
+            }
         }
     }
 
@@ -426,7 +540,10 @@ final class AppState: ObservableObject {
             }
             do {
                 if application {
-                    _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                    guard let target = MacApplicationTarget(url: url) else {
+                        throw NativeClientError.protocolError("The selected item is not a registered app bundle.")
+                    }
+                    _ = try await MacActions.open(target)
                 } else {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
@@ -468,6 +585,7 @@ final class AppState: ObservableObject {
         isRestarting = true
         connected = false
         listening = false
+        partialTranscript = ""
         isDictating = false
         muted = false
         productState = .starting
@@ -479,6 +597,8 @@ final class AppState: ObservableObject {
         audio = nil
         commandClient = nil
         controlClient = nil
+        mediaClient = nil
+        macActionClient = nil
         eventClient = nil
         start()
     }
@@ -652,14 +772,17 @@ final class AppState: ObservableObject {
             let response = try await client.request(JSONPayload(["op": "settings"])).value
             guard let settings = response["settings"] as? [String: Any] else { return }
             retentionDays = settings["retention_days"] as? Int ?? 30
+            liveTranscriptionPreview = settings["live_transcription_preview"] as? Bool ?? false
             endpointMilliseconds = settings["endpoint_ms"] as? Int ?? 350
             contextLength = settings["context_length"] as? Int ?? 16_384
             selectedVoice = settings["tts_voice"] as? String ?? voiceName
+            modelProfile = settings["model_profile"] as? String ?? "release"
             availableVoices = (settings["voices"] as? [[String: Any]] ?? []).compactMap { item in
                 guard let id = item["id"] as? String else { return nil }
                 return VoiceOption(id: id, installed: item["installed"] as? Bool == true)
             }
             savedRetentionDays = retentionDays
+            savedLiveTranscriptionPreview = liveTranscriptionPreview
             savedEndpointMilliseconds = endpointMilliseconds
             savedContextLength = contextLength
             savedVoice = selectedVoice
@@ -686,11 +809,13 @@ final class AppState: ObservableObject {
                     "values": [
                         "retention_days": retentionDays,
                         "endpoint_ms": endpointMilliseconds,
+                        "live_transcription_preview": liveTranscriptionPreview,
                         "context_length": contextLength,
                         "tts_voice": selectedVoice,
                     ],
                 ]))
                 savedRetentionDays = retentionDays
+                savedLiveTranscriptionPreview = liveTranscriptionPreview
                 savedEndpointMilliseconds = endpointMilliseconds
                 savedContextLength = contextLength
                 savedVoice = selectedVoice
@@ -802,7 +927,14 @@ final class AppState: ObservableObject {
         let turnID = event["turn_id"] as? String ?? UUID().uuidString
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
+        case "partial_transcription":
+            if listening, let text = data["text"] as? String { partialTranscript = text }
+            return
+        case "capture_activity":
+            partialTranscript = ""
+            return
         case "dictation":
+            partialTranscript = ""
             let eventSequence = event["seq"] as? Int ?? 0
             guard eventSequence > lastDictationSequence else { return }
             lastDictationSequence = eventSequence
@@ -810,6 +942,7 @@ final class AppState: ObservableObject {
                 dictationText = dictationText.isEmpty ? text : "\(dictationText) \(text)"
             }
         case "transcription":
+            partialTranscript = ""
             let text = data["text"] as? String ?? ""
             heard = text
             if !text.isEmpty {
@@ -869,7 +1002,10 @@ final class AppState: ObservableObject {
         case "listening":
             listening = data["enabled"] as? Bool ?? listening
             isDictating = listening && (data["mode"] as? String) == "dictation"
-            if !listening { audio?.stopCapture() }
+            if !listening {
+                partialTranscript = ""
+                audio?.stopCapture()
+            }
             phase = listening ? .listening : .idle
             productState = listening ? .listening : .ready
         case "transcribing":
@@ -940,8 +1076,11 @@ final class AppState: ObservableObject {
     private func upsertTask(_ snapshot: [String: Any], sequence: Int) {
         do {
             let id = snapshot["task_id"] as? String ?? ""
+            let revision = snapshot["revision"] as? Int
+            if let revision, let current = taskRevisions[id], revision < current { return }
             let existingSequence = tasks.first(where: { $0.id == id })?.sequence ?? sequence
             let item = try taskItem(from: snapshot, sequence: existingSequence)
+            if let revision { taskRevisions[id] = revision }
             if let index = tasks.firstIndex(where: { $0.id == item.id }) {
                 let previous = tasks[index].state
                 tasks[index] = item

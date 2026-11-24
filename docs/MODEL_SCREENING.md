@@ -140,3 +140,19 @@ promoting an artifact. Include Kokoro Core ML and Qwen3-TTS Aiden 0.6B in the
 existing blinded listening set. [FluidAudio models](https://github.com/FluidInference/FluidAudio)
 · [FluidAudio measurements](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Benchmarks.md)
 · [Parakeet Unified](https://huggingface.co/nvidia/parakeet-unified-en-0.6b)
+
+
+## Run a verified candidate in the app
+
+```sh
+uv run --frozen macbot model-profile
+uv run --frozen macbot models download qwen3.5-4b-q4-k-m
+uv run --frozen macbot model-profile qwen-4b-q4
+```
+
+The profile command verifies every selected artifact and saves the choice for the
+next service restart. The paired installer includes the optional MLX runtime.
+A source checkout needs `uv sync --frozen --extra mlx` for the MLX profile.
+MLX uses prompt-based JSON and the same parser and permission checks as llama.cpp.
+Use the production Task benchmark to measure any resulting difference in valid
+plans before promoting a profile. Revert with `macbot model-profile release`.

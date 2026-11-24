@@ -75,6 +75,11 @@ class LocalLLM:
         profile: InferenceProfile,
     ) -> Iterator[dict]:
         if self.model is not None:
+            if schema is not None:
+                messages = copy.deepcopy(messages)
+                messages[0]["content"] += "\nReturn only JSON matching this schema: " + json.dumps(
+                    schema, separators=(",", ":")
+                )
             yield from self._mlx(messages, definitions, request, profile)
             return
         body: dict = {

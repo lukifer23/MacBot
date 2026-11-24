@@ -43,7 +43,19 @@ class Services(StrictModel):
         return self
 
 
+MODEL_PROFILES: dict[str, dict[str, str]] = {
+    "release": {},
+    "qwen-4b-q4": {"llm": "qwen3.5-4b-q4-k-m"},
+    "qwen-4b-q5": {"llm": "qwen3.5-4b-q5-k-m"},
+    "qwen-2b-mlx": {"llm": "qwen3.5-2b-mlx", "llm_backend": "mlx"},
+    "aiden-0.6b": {"tts_voice": "qwen-aiden-0.6b"},
+    "ryan-0.6b": {"tts_voice": "qwen-ryan-0.6b"},
+    "ryan-1.7b": {"tts_voice": "qwen-ryan-1.7b"},
+}
+
+
 class Models(StrictModel):
+    profile: str = "release"
     llm: str = "qwen3.5-2b-official"
     llm_backend: Literal["llama", "mlx"] = "llama"
     llm_url: str = "http://127.0.0.1:8080"
@@ -75,6 +87,7 @@ class Models(StrictModel):
 
 
 class Audio(StrictModel):
+    live_transcription_preview: bool = False
     endpoint_ms: int = Field(default=350, ge=150, le=2000)
     pre_roll_ms: int = Field(default=256, ge=64, le=1000)
     max_utterance_sec: int = Field(default=30, ge=2, le=120)
@@ -207,6 +220,29 @@ def validate_release_selection(settings: Settings) -> None:
         )
 
 
+def model_profile_fields(profile: str) -> dict[str, str]:
+    if profile not in MODEL_PROFILES:
+        raise ValueError(f"Unknown model profile: {profile}")
+    roles = release_model_manifest()
+    return {
+        "llm": roles["llm"]["artifact"],
+        "llm_backend": roles["llm"]["backend"],
+        "stt": roles["stt"]["artifact"],
+        "tts_voice": roles["tts"]["voice"],
+        "embedding": roles["embedding"]["artifact"],
+        **MODEL_PROFILES[profile],
+    }
+
+
+def validate_runtime_selection(settings: Settings) -> None:
+    if settings.models.profile == "release":
+        validate_release_selection(settings)
+        return
+    fields = model_profile_fields(settings.models.profile)
+    if any(getattr(settings.models, key) != value for key, value in fields.items()):
+        raise ValueError("Configured model artifacts do not match the selected evaluation profile")
+
+
 def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix=".macbot-", dir=path.parent)
@@ -264,7 +300,7 @@ def load(config_path: str | Path | None = None, environ: dict[str, str] | None =
                 node = node.setdefault(part, {})
             node[parts[-1]] = yaml.safe_load(value)
     settings = Settings.model_validate(raw)
-    validate_release_selection(settings)
+    validate_runtime_selection(settings)
     return settings
 
 

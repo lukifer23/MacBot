@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import httpx
@@ -18,7 +19,17 @@ import psutil
 import yaml
 
 from .auth import AuthStore
-from .config import Settings, atomic_write, load, prepare, save, validate_release_selection
+from .config import (
+    MODEL_PROFILES,
+    Settings,
+    atomic_write,
+    load,
+    model_profile_fields,
+    prepare,
+    save,
+    validate_release_selection,
+    validate_runtime_selection,
+)
 from .history import KEYCHAIN_SERVICE, runtime_history_key
 from .provision import (
     catalog,
@@ -29,6 +40,7 @@ from .provision import (
     release_artifacts,
     sha256,
     verify,
+    voice_model,
 )
 
 REVISIONS = {
@@ -169,9 +181,42 @@ def build_inference(settings: Settings, source: Path | None = None):
     )
 
 
+def selected_artifacts(settings: Settings) -> dict[str, str]:
+    return {
+        **release_artifacts(),
+        "llm": settings.models.llm,
+        "tts": voice_model(settings.models.tts_voice),
+    }
+
+
+def dependency_versions() -> dict[str, str | None]:
+    packages = (
+        "macbot",
+        "mlx",
+        "mlx-lm",
+        "mlx-audio",
+        "parakeet-mlx",
+        "onnxruntime",
+        "tokenizers",
+        "numpy",
+        "scipy",
+        "httpx",
+        "flask",
+        "pydantic",
+        "cryptography",
+    )
+    runtime_packages: dict[str, str | None] = {}
+    for package in packages:
+        try:
+            runtime_packages[package] = version(package)
+        except PackageNotFoundError:
+            runtime_packages[package] = None
+    return runtime_packages
+
+
 def doctor(settings: Settings) -> dict:
     checks = {}
-    needed = list(dict.fromkeys(release_artifacts().values()))
+    needed = list(dict.fromkeys(selected_artifacts(settings).values()))
     for name in needed:
         try:
             model_dir(settings, name)
@@ -184,10 +229,13 @@ def doctor(settings: Settings) -> dict:
     return {
         "ready_to_start": all(c["present"] for c in checks.values()),
         "checks": checks,
+        "python": sys.version.split()[0],
+        "dependency_versions": dependency_versions(),
         "device_acceptance": "not_verified",
         "model_selection": {
             "selected": settings.models.llm,
-            "roles": release_artifacts(),
+            "roles": selected_artifacts(settings),
+            "profile": settings.models.profile,
             "inventory": installed_model_inventory(settings),
             "software_benchmark": "passed",
             "device_and_listening_acceptance": "pending",
@@ -267,6 +315,8 @@ def main():
     models.add_argument(
         "--release", action="store_true", help="Select the artifacts in the release manifest"
     )
+    profile = sub.add_parser("model-profile")
+    profile.add_argument("name", nargs="?", choices=MODEL_PROFILES)
     start = sub.add_parser("start")
     start.add_argument("--background", action="store_true")
     for name in ["stop", "status", "open", "orchestrator", "dashboard", "rag", "voice", "verify"]:
@@ -299,6 +349,37 @@ def main():
         if args.command == "build-inference":
             prepare(settings)
             build_inference(settings, args.source)
+            return
+        if args.command == "model-profile":
+            if args.name is None:
+                print(
+                    json.dumps(
+                        {
+                            "selected": settings.models.profile,
+                            "profiles": {
+                                name: model_profile_fields(name) for name in MODEL_PROFILES
+                            },
+                        },
+                        indent=2,
+                    )
+                )
+                return
+            candidate = settings.model_copy(deep=True)
+            candidate.models.profile = args.name
+            for key, value in model_profile_fields(args.name).items():
+                setattr(candidate.models, key, value)
+            validate_runtime_selection(candidate)
+            if candidate.models.llm_backend == "mlx":
+                from importlib.util import find_spec
+
+                if find_spec("mlx_lm") is None:
+                    raise RuntimeError(
+                        "Install the optional MLX runtime using uv sync --frozen --extra mlx"
+                    )
+            for artifact in set(selected_artifacts(candidate).values()):
+                verify(candidate, artifact)
+            save(candidate)
+            print(json.dumps({"profile": args.name, "restart_required": True}))
             return
         if args.command == "models":
             entries = catalog()
