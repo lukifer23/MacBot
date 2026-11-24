@@ -92,7 +92,7 @@ def verify(provisioned, model, report):
         ]:
             endpoint.port = free_port(allocated)
         prepare(s)
-        for name in [model, "parakeet", voice_model(s.models.tts_voice), "silero", "minilm"]:
+        for name in [model, s.models.stt, voice_model(s.models.tts_voice), "silero", "minilm"]:
             source = provisioned / "models" / name
             assert source.is_dir(), f"Provision {name} first"
             (s.data_dir / "models" / name).symlink_to(source, target_is_directory=True)

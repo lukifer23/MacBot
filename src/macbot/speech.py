@@ -17,6 +17,7 @@ import soundfile as sf
 
 from .config import Settings
 from .provision import QWEN_TTS_VOICES, model_dir, model_file, voices
+from .whistle import Whistle
 
 
 def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
@@ -80,9 +81,12 @@ class SileroVAD:
 
 class Transcriber:
     def __init__(self, settings: Settings):
-        os.environ["HF_HUB_OFFLINE"] = "1"
         self.settings = settings
         self.lock = threading.Lock()
+        self.whistle = Whistle(settings) if settings.models.stt == "whistle" else None
+        if self.whistle is not None:
+            return
+        os.environ["HF_HUB_OFFLINE"] = "1"
         import mlx.core as mx
         from parakeet_mlx import from_pretrained
 
@@ -94,6 +98,8 @@ class Transcriber:
             raise ValueError("Audio duration outside configured range")
         audio = np.clip(audio, -1, 1).astype(np.float32)
         with self.lock:
+            if self.whistle is not None:
+                return self.whistle.transcribe(audio)
             import mlx.core as mx
             from parakeet_mlx.audio import get_logmel
 
@@ -101,7 +107,23 @@ class Transcriber:
             return self.model.generate(mel)[0].text.strip()
 
     def preview(self, chunks: Iterable[np.ndarray]) -> Iterator[str]:
-        """Decode sequential chunks on the resident model's streaming context."""
+        """Decode sequential chunks into a provisional transcript."""
+        if self.whistle is not None:
+            limit = self.settings.audio.max_utterance_sec * 16000
+            audio = np.empty(limit, dtype=np.float32)
+            end = previous = 0
+            for chunk in chunks:
+                count = min(len(chunk), limit - end)
+                audio[end : end + count] = chunk[:count]
+                end += count
+                # Whistle's encoder uses whole-clip context. Bound preview work
+                # to one update per 800 ms of new audio.
+                if end - previous >= 12800 or end == limit:
+                    yield self.transcribe(audio[:end])
+                    previous = end
+                if end == limit:
+                    return
+            return
         import mlx.core as mx
 
         source = iter(chunks)
@@ -156,7 +178,9 @@ class Transcriber:
             return audio
 
     def close(self):
-        pass
+        with self.lock:
+            if self.whistle is not None:
+                self.whistle.close()
 
 
 class Synthesizer:

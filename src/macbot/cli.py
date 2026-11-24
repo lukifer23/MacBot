@@ -154,6 +154,7 @@ def selected_artifacts(settings: Settings) -> dict[str, str]:
     return {
         **release_artifacts(),
         "llm": settings.models.llm,
+        "stt": settings.models.stt,
         "tts": voice_model(settings.models.tts_voice),
     }
 

@@ -16,7 +16,7 @@ Version 2 settings include:
 | Section | Settings |
 | --- | --- |
 | `services` | Dashboard 3000, assistant 8123, RAG 8001, supervisor 8090. Loopback only, distinct ports. |
-| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx` for lab comparisons), local LLM URL, context length, maximum output tokens, temperature, threads, the sole `parakeet` STT, registered Qwen voice, and MiniLM embedding role. |
+| `models` | Registered LLM name, `llm_backend` (`llama` or `mlx` for lab comparisons), local LLM URL, context length, maximum output tokens, temperature, threads, `parakeet` or the `whistle` speech profile, registered Qwen voice, and MiniLM embedding role. |
 | `audio` | Endpoint silence 350 ms, pre-roll 256 ms, speech start 96 ms, maximum utterance 30 seconds, idle capture timeout 300 seconds, VAD threshold 0.5. |
 | `tools` | Exactly `rag_search`, `web_search`, and `web_fetch` for the research release. Conversation cannot execute side effects; explicit Task plans require bounded native authorization. |
 | `privacy` | Encrypted history enablement and retention in days (default 30). The encryption key is held in Keychain. |

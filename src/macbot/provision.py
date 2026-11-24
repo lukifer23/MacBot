@@ -409,10 +409,12 @@ def configure_model_profile(settings: Settings, profile: str) -> None:
         raise FileNotFoundError(
             "Build the selected llama.cpp runtime before activating this profile"
         )
-    for artifact in {*release_artifacts().values()} - {
-        release_artifacts()["llm"],
-        release_artifacts()["tts"],
-    } | {settings.models.llm, voice_model(settings.models.tts_voice)}:
+    for artifact in {
+        **release_artifacts(),
+        "llm": settings.models.llm,
+        "stt": settings.models.stt,
+        "tts": voice_model(settings.models.tts_voice),
+    }.values():
         model_dir(settings, artifact)
 
 

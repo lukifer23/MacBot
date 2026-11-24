@@ -1,6 +1,7 @@
 {
   "version": 1,
   "models": [
+    {"artifact": "whistle", "role": "stt", "backend": "cactus-runtime-4.0.0", "provenance": "official_upstream_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
     {"artifact": "lfm-1.2b", "role": "llm", "backend": "llama.cpp", "provenance": "third_party_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
     {"artifact": "qwen3-4b", "role": "llm", "backend": "llama.cpp", "provenance": "third_party_quantization", "release_status": "rejected_provenance", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
     {"artifact": "qwen3.5-2b", "role": "llm", "backend": "llama.cpp", "provenance": "third_party_quantization", "release_status": "rejected_provenance", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
