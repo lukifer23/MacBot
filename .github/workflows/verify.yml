@@ -27,7 +27,9 @@ jobs:
       - name: Real macOS service lifecycle integration
         run: uv run --frozen pytest -m native_integration --durations=20
       - name: Native Swift contract tests
-        run: swift test --package-path native/MacBotApp
+        run: |
+          cmp src/macbot/defaults/task_protocol_v3.json native/MacBotApp/Sources/MacBotApp/Resources/task_protocol_v3.json
+          swift test --package-path native/MacBotApp
       - run: uv build
       - name: Inspect distribution contents
         run: uv run --frozen python scripts/inspect_package.py
