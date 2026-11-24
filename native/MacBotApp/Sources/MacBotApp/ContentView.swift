@@ -141,7 +141,7 @@ private struct ConversationView: View {
         HStack(spacing: 14) {
             Image(systemName: state.productState.isOperational ? state.phase.symbol : state.productState.symbol)
                 .font(.title2)
-                .symbolEffect(.pulse, isActive: !reduceMotion && [.listening, .thinking, .acting, .speaking].contains(state.phase))
+                .symbolEffect(.pulse, isActive: !reduceMotion && [.listening, .gatheringContext, .thinking, .acting, .speaking].contains(state.phase))
                 .frame(width: 40, height: 40).background(.quaternary, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(state.productState.isOperational ? state.phase.title : state.productState.title).font(.headline)
@@ -309,7 +309,15 @@ private struct TaskResultCard: View {
 
     var body: some View {
         Group {
-            if item.state == .awaitingAuthorization {
+            if item.canEditRequest {
+                VStack(alignment: .leading, spacing: 8) {
+                    heading
+                    Text(item.detail).textSelection(.enabled)
+                    Button("Edit request", systemImage: "square.and.pencil") { state.editResearchRequest(item) }
+                        .disabled(!state.canRestoreResearchDraft)
+                        .accessibilityIdentifier("task.\(item.id).edit-request")
+                }
+            } else if item.state == .awaitingAuthorization {
                 VStack(alignment: .leading, spacing: 0) {
                     heading
                     details
@@ -333,7 +341,7 @@ private struct TaskResultCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title).font(.headline)
                 Text(item.state.title).font(.caption).foregroundStyle(.secondary)
-                if compact && item.state != .awaitingAuthorization {
+                if compact && item.state != .awaitingAuthorization && !item.canEditRequest {
                     Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
@@ -440,7 +448,7 @@ private struct TaskResultCard: View {
                         Text("Authority: \(display(step.safetyClass))")
                             .font(.caption).foregroundStyle(.secondary)
                         if !step.dependsOn.isEmpty {
-                            Text("Depends on: \(dependencyLabels(step).joined(separator: ", "))")
+                            Text("Waits for evidence from \(dependencyLabels(step).joined(separator: ", "))")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if step.attempts > 0 {

@@ -14,7 +14,13 @@ import httpx
 
 from .auth import AuthStore
 from .config import Settings
-from .inference import InferenceLane, InferenceProfile, InferenceRequest, inference_profiles
+from .inference import (
+    InferenceLane,
+    InferenceProfile,
+    InferenceRequest,
+    inference_profiles,
+    lfm3_answer_stream,
+)
 from .provision import model_dir
 
 
@@ -61,8 +67,13 @@ class LocalLLM:
         if request is None:
             return
         with request:
-            yield from self._stream_owned(
+            stream = self._stream_owned(
                 messages, definitions, request, schema=schema, profile=selected
+            )
+            yield from (
+                lfm3_answer_stream(stream)
+                if self.settings.models.llm.startswith("lfm3-")
+                else stream
             )
 
     def _stream_owned(

@@ -182,6 +182,29 @@ func taskSnapshotRejectsUnknownProtocolState() {
     }
 }
 
+@MainActor @Test
+func failedPlanCanRestoreItsOriginalRequestWithoutOverwritingDraft() throws {
+    let state = AppState()
+    state.connected = true
+    state.productState = .ready
+    let task = try state.taskItem(from: [
+        "task_id": "failed-plan",
+        "state": "failed",
+        "original_text": "Search my documents for the warranty",
+        "error": "The plan missed a requested step.",
+    ], sequence: 1)
+    #expect(task.canEditRequest)
+    state.draft = "In progress"
+    state.editResearchRequest(task)
+    #expect(state.draft == "In progress")
+    state.draft = ""
+    state.selectedPage = .tasks
+    state.editResearchRequest(task)
+    #expect(state.draft == "Search my documents for the warranty")
+    #expect(state.composerMode == .task)
+    #expect(state.selectedPage == .conversation)
+}
+
 
 @MainActor @Test
 func reconnectMergesUTF8TextWithoutAppendingReplayedChunks() {

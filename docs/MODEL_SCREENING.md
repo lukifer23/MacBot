@@ -193,4 +193,13 @@ rendered template. Check visible-text filtering and time to the first spoken
 word on the MacBot service path before promotion. The offline run did not use
 the MacBot service, parse streaming tool-call deltas, or execute any tools.
 
+A follow-up CPU run on b12359 exercised the updated Task planner with the
+QAD weights and the production prompts and schemas. The four cases covered a
+simple local search, an ordered local and web search, an explicit web exclusion,
+and an unsupported Calendar operation. All four passed at the planner boundary.
+The model omitted the dependency in its raw JSON and proposed a web search for
+the Calendar request. MacBot enforced the requested order and rejected the
+ungrounded proposal. Dependent steps wait for usable evidence and execute the
+reviewed query. Evidence is not inserted into a web query by the dependency.
+
 [LiquidAI artifact and support requirements](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)

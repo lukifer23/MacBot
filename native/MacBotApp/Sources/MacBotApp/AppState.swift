@@ -102,7 +102,10 @@ final class AppState: ObservableObject {
     var canListen: Bool { canConverse }
     var canManageLibrary: Bool { connected && productState.isOperational && !isRestarting }
     var canChangeSettings: Bool { connected && productState.isOperational && !isRestarting }
-    var canInterrupt: Bool { [.planning, .thinking, .acting, .speaking].contains(phase) }
+    var canInterrupt: Bool { [.gatheringContext, .planning, .thinking, .acting, .speaking].contains(phase) }
+    var canRestoreResearchDraft: Bool {
+        canConverse && !isSending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var hasExecutingTask: Bool {
         tasks.contains { [.queued, .running, .pauseRequested, .cancelRequested].contains($0.state) }
     }
@@ -119,6 +122,13 @@ final class AppState: ObservableObject {
         tasks.filter { $0.state.isActive && $0.state != .awaitingAuthorization }
     }
     var completedTasks: [TaskItem] { Array(tasks.filter { !$0.state.isActive }.reversed()) }
+
+    func editResearchRequest(_ task: TaskItem) {
+        guard canRestoreResearchDraft, task.canEditRequest, let request = task.originalRequest else { return }
+        draft = request
+        composerMode = .task
+        selectedPage = .conversation
+    }
 
     func start() {
         guard eventTask == nil else { return }
@@ -735,6 +745,8 @@ final class AppState: ObservableObject {
             }
             let observations = status["metrics"] as? [[String: Any]] ?? []
             let ttft = observations.compactMap { $0["ttft_ms"] as? Double }
+            let context = observations.compactMap { $0["context_ms"] as? Double }
+            let firstAnswer = observations.compactMap { $0["generation_to_first_text_ms"] as? Double }
             let firstAudio = observations.compactMap { $0["first_audio_scheduled_ms"] as? Double }
             let stt = observations.compactMap { $0["stt_ms"] as? Double }
             let interrupt = status["interruption_ms"] as? [Double] ?? []
@@ -745,6 +757,8 @@ final class AppState: ObservableObject {
             let errors = status["errors"] as? Int ?? 0
             metrics = [
                 .init(id: "ttft", label: "First text p50 / p95", value: latencyPair(ttft)),
+                .init(id: "context", label: "Context gathering p50 / p95", value: latencyPair(context)),
+                .init(id: "first-answer", label: "Generation start → first answer p50 / p95", value: latencyPair(firstAnswer)),
                 .init(id: "audio", label: "Speech end → audio queued p50 / p95", value: latencyPair(firstAudio)),
                 .init(id: "stt", label: "Transcription p50 / p95", value: latencyPair(stt)),
                 .init(id: "interrupt", label: "Playback stop ack p50 / p95", value: latencyPair(interrupt)),
@@ -1070,6 +1084,9 @@ final class AppState: ObservableObject {
         case "planning":
             phase = .planning
             productState = .working
+        case "gathering_context":
+            phase = .gatheringContext
+            productState = .working
         case "generating":
             phase = .thinking
             productState = .working
@@ -1085,7 +1102,7 @@ final class AppState: ObservableObject {
             if snapshot["state"] == nil { snapshot["state"] = state.isEmpty ? "running" : state }
             if snapshot["turn_id"] == nil { snapshot["turn_id"] = turnID }
             upsertTask(snapshot, sequence: sequence)
-            productState = hasExecutingTask ? .working : (listening ? .listening : .ready)
+            return
         case "speaking":
             phase = .speaking
             productState = .working
@@ -1224,7 +1241,8 @@ final class AppState: ObservableObject {
             authority: taskAuthority(
                 snapshot["capability_manifest"] as? [String: Any]
                     ?? snapshot["authority"] as? [String: Any]
-                    ?? [:])
+                    ?? [:]),
+            originalRequest: snapshot["original_text"] as? String
         )
     }
 
