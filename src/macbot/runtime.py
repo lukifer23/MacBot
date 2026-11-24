@@ -887,17 +887,15 @@ class Runtime:
             {"role": "user", "content": turn.text},
             {"role": "assistant", "content": response_text},
         ]
-        if self.history_store:
-            row_ids = self.history_store.append_messages(turn.session_id, turn.id, new_messages)
-            for row_id, message in zip(row_ids, new_messages, strict=True):
-                message["_id"] = row_id
-                message["_turn_id"] = turn.id
-        else:
-            for message in new_messages:
-                message["_turn_id"] = turn.id
         with self.lock:
             if turn.cancelled.is_set():
                 return
+            if self.history_store:
+                row_ids = self.history_store.append_messages(turn.session_id, turn.id, new_messages)
+                for row_id, message in zip(row_ids, new_messages, strict=True):
+                    message["_id"] = row_id
+            for message in new_messages:
+                message["_turn_id"] = turn.id
             current_history = self._history_for(turn.session_id)
             current_history.extend(new_messages)
             if not self.history_store and server_pruned:

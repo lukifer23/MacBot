@@ -1,6 +1,6 @@
 # MacBot modernization review
 
-Reviewed November 23, 2026 against [main at 08e8ba4](https://github.com/lukifer23/MacBot/commit/08e8ba4fa4350fb127825c674475b13ea47fb49b). This branch is a software checkpoint. Model, runtime installation, microphone, speaker, desktop action, and physical-device acceptance are pending.
+The initial review used [main at 08e8ba4](https://github.com/lukifer23/MacBot/commit/08e8ba4fa4350fb127825c674475b13ea47fb49b). The follow-up starts from [main after PR #50](https://github.com/lukifer23/MacBot/commit/f82b8eb3b5bed823ebd02b988bc50ef2f6fda9d6), which includes dictation and the pinned Qwen3.5-4B quantization candidates. Model, runtime installation, microphone, speaker, desktop action, and physical-device acceptance remain pending.
 
 ## Product direction
 
@@ -23,6 +23,21 @@ The repository's GitHub description still advertises Whisper, Docker, and a web 
 | Latency and memory | Model token profiles, prompt reuse, bounded queues, playback generations, and a residency lease already exist. Historical sampled RSS and text TTFT describe individual probes. | Compare capture-to-endpoint, STT, inference queue, first useful text, first synthesized sample, audible onset, and Stop acknowledgement separately. Report p50/p95, cold and warm, under active talk and background Task work. Track peak unified-memory pressure alongside RSS and report dropped frames, thermal drift, and cancellation tails. |
 
 Audio should continue to bypass JSON. Keep one live audio owner and bounded pass-through with turn and playback generation IDs. Advance the generation on interrupt and discard late PCM for older generations. Keep cancellation acknowledgements independent of task planning, document import, and event polling. When measuring, record sample-rate conversions, copy count, queue residence, and audio overruns before considering shared memory.
+
+## Follow-up implementation
+
+| Area | In this change | Open work |
+| --- | --- | --- |
+| Native voice | Socket reads run independently of playback callbacks. Capture buffers and the drain wait are bounded. The control socket waits for the matching capture ID on the audio socket. Stop rejects stale playback generations. Timing distinguishes first PCM sent from native scheduling. | Measure physical audible onset, interruptions and Bluetooth routes. Qualify a streaming decoder and partial transcript revision. |
+| Conversation | Stable turn IDs and byte-offset deltas reconcile streamed text on reconnect. Transcript history remains visible after context compaction. Background compaction yields to new turns and evicts only cited turns from model context. Follow latest can be turned off. | Measure native hydration as history grows, then decide whether to add pagination and windowing. |
+| Task planning and evidence | Validated earlier-step references become durable dependencies. Failed or empty prerequisites skip dependent work. Replanning consumes bounded evidence. The model benchmark now runs the production planner. | Evaluate multi-step tasks and grounded synthesis on the holdout. Move planning off the caller's synchronous request once a durable acknowledgement and cancellation path covers both success and recovery. |
+| Mac actions | Launch Services opens selected applications and Finder reveals selected files or folders. | Model-proposed native actions still need agreement on a typed capability protocol, authorization linked to the resolved target, and receipts from the native owner. |
+| Runtime and models | Keep the SwiftUI and Python ownership split. Compare the pinned Metal and MLX candidates using the text and Task case sets, and compare ANE speech engines against the resident speech stack on the same audio. | Gather per-role quality and end-to-end memory and latency evidence before changing release artifacts. |
+
+Pipecat and MLX provide reference implementations for streaming and local
+inference. MacBot still needs its own history, permissions, recovery, and
+model-residency contracts. A backend replacement should earn its place by
+improving the measured voice or Task path under those same contracts.
 
 ## Model and quantization matrix
 
