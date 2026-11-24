@@ -160,21 +160,37 @@ plans before promoting a profile. Revert with `macbot model-profile release`.
 
 ## LFM3 and the newer llama.cpp runtime
 
-LiquidAI's Q4_K_M artifact is pinned to its upstream file revision and SHA-256.
+LiquidAI's Q4_K_M and QAD Q4_0 artifacts are pinned to their upstream file
+revision and SHA-256. The QAD weights are 1,049,615,680 bytes.
 It requires llama.cpp b11960 or newer. MacBot installs b11960 alongside the
 release binary and checks its saved revision and executable hash before use.
 
 ```sh
 uv run --frozen macbot build-inference --build b11960
 uv run --frozen macbot models download lfm3-1.7b-q4-k-m
+uv run --frozen macbot models download lfm3-1.7b-qad-q4-0
 uv run --frozen python scripts/benchmark_models.py qwen3.5-2b-official --llama-build b10509 --case-set task --context-length 8192 --output reports/qwen-2b-b10509-task.jsonl
 uv run --frozen python scripts/benchmark_models.py qwen3.5-2b-official --llama-build b11960 --case-set task --context-length 8192 --output reports/qwen-2b-b11960-task.jsonl
 uv run --frozen python scripts/benchmark_models.py lfm3-1.7b-q4-k-m --llama-build b11960 --case-set task --context-length 8192 --output reports/lfm3-b11960-task.jsonl
+uv run --frozen python scripts/benchmark_models.py lfm3-1.7b-qad-q4-0 --llama-build b11960 --case-set task --context-length 8192 --output reports/lfm3-qad-b11960-task.jsonl
 ```
 
 The first two runs hold the model constant. The second and third hold the
-runtime constant. The `qwen-2b-new-runtime` and `lfm3-1.7b-q4` profiles
-exercise those comparisons in the app after a restart. No evaluated quality,
-memory, or latency result has been recorded for LFM3 in MacBot yet.
+runtime constant. The third and fourth compare quantizations. Select the QAD
+profile with `macbot model-profile lfm3-1.7b-qad` for an app run after restart.
+
+In an isolated M3 Pro smoke test, LM Studio loaded the QAD file at 8,192 tokens
+with Metal offload and one prediction slot. It produced the requested sentence
+at 67.19 tokens/s and reported 0.15 s to first token. The answer included a
+reasoning phase, so that figure precedes the final visible answer.
+
+The same file on CPU in llama.cpp b12359 passed six offline prompts using
+MacBot's research tool schemas. Three emitted the expected tool and argument
+key, with an exact public URL match for `web_fetch`. Three returned text without
+tool calls, including two explicit requests to avoid an action. One response
+included a reasoning block even with `enable_thinking` set to false in the
+rendered template. Check visible-text filtering and time to the first spoken
+word on the MacBot service path before promotion. The offline run did not use
+the MacBot service, parse streaming tool-call deltas, or execute any tools.
 
 [LiquidAI artifact and support requirements](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)

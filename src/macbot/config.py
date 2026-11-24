@@ -55,6 +55,7 @@ MODEL_PROFILES: dict[str, dict[str, str]] = {
     "qwen-4b-q5": {"llm": "qwen3.5-4b-q5-k-m"},
     "qwen-2b-new-runtime": {"llama_build": "b11960"},
     "lfm3-1.7b-q4": {"llm": "lfm3-1.7b-q4-k-m", "llama_build": "b11960"},
+    "lfm3-1.7b-qad": {"llm": "lfm3-1.7b-qad-q4-0", "llama_build": "b11960"},
     "qwen-2b-mlx": {"llm": "qwen3.5-2b-mlx", "llm_backend": "mlx"},
     "aiden-0.6b": {"tts_voice": "qwen-aiden-0.6b"},
     "ryan-0.6b": {"tts_voice": "qwen-ryan-0.6b"},
