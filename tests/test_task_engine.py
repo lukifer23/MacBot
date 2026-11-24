@@ -2,6 +2,8 @@ import os
 import threading
 import time
 
+import pytest
+
 from macbot.auth import AuthStore
 from macbot.config import Settings, prepare
 from macbot.events import EventJournal
@@ -202,7 +204,8 @@ def test_cancel_during_final_synthesis_resolves_partial_and_worker_survives(tmp_
         auth.close()
 
 
-def test_pause_during_final_synthesis_resolves_paused_then_resumes(tmp_path):
+@pytest.mark.parametrize("command", ["resume", "cancel"])
+def test_pause_during_final_synthesis_releases_lane_before_next_command(tmp_path, command):
     settings = Settings(data_dir=tmp_path)
     prepare(settings)
     auth = AuthStore(tmp_path)
@@ -226,8 +229,17 @@ def test_pause_during_final_synthesis_resolves_paused_then_resumes(tmp_path):
             time.sleep(0.01)
         else:
             raise AssertionError(history.load_task(proposal["task_id"]))
-        engine.resume(proposal["task_id"], "native")
-        assert wait_for_terminal(engine, proposal["task_id"])["state"] == "completed"
+        task_id = proposal["task_id"]
+        if command == "resume":
+            engine.resume(task_id, "native")
+            assert wait_for_terminal(engine, task_id)["state"] == "completed"
+        else:
+            stopped = engine.cancel(task_id, "native")
+            assert stopped["state"] == "partial"
+            assert stopped["result"]["summary"].startswith("Task stopped.")
+            assert len(stopped["result"]["steps"]) == 2
+            assert summarizer.calls == 1
+            assert history.load_task(task_id)["state"] == "partial"
         assert engine.worker.is_alive()
     finally:
         engine.close()

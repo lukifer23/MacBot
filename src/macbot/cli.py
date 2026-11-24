@@ -264,6 +264,9 @@ def main():
     models = sub.add_parser("models")
     models.add_argument("action", choices=["list", "download", "verify"])
     models.add_argument("names", nargs="*")
+    models.add_argument(
+        "--release", action="store_true", help="Select the artifacts in the release manifest"
+    )
     start = sub.add_parser("start")
     start.add_argument("--background", action="store_true")
     for name in ["stop", "status", "open", "orchestrator", "dashboard", "rag", "voice", "verify"]:
@@ -298,16 +301,22 @@ def main():
             build_inference(settings, args.source)
             return
         if args.command == "models":
-            prepare(settings)
+            entries = catalog()
+            if args.release and args.names:
+                raise ValueError("Use --release or explicit model names")
+            names = list(release_artifacts().values()) if args.release else args.names
+            unknown = sorted(set(names) - entries.keys())
+            if unknown:
+                raise ValueError("Unregistered models: " + ", ".join(unknown))
             if args.action == "list":
-                print(json.dumps(catalog(), indent=2))
+                shown = {name: entries[name] for name in names} if names else entries
+                print(json.dumps(shown, indent=2))
                 return
-            if not args.names:
-                raise ValueError("Specify model names from macbot models list")
-            for name in args.names:
-                print(
-                    json.dumps((download if args.action == "download" else verify)(settings, name))
-                )
+            if not names:
+                raise ValueError("Specify --release or names from macbot models list")
+            operation = download if args.action == "download" else verify
+            for name in dict.fromkeys(names):
+                print(json.dumps(operation(settings, name)))
             return
         if args.command in {"migrate-rag", "restore-rag", "rebuild-index"}:
             prepare(settings)

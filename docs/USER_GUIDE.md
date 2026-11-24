@@ -17,7 +17,7 @@ From the repository root:
 ```sh
 ./scripts/bootstrap_mac.sh
 uv run --frozen macbot build-inference
-uv run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
+uv run --frozen macbot models download --release
 uv run --frozen macbot doctor
 ./scripts/build_native_app.sh --install
 open "$HOME/Applications/MacBot.app"

@@ -12,6 +12,35 @@ enum NativeClientError: LocalizedError {
     }
 }
 
+func connectNativeSocket(path: String) throws -> Int32 {
+    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { throw NativeClientError.socket("Could not create the local socket") }
+    var connected = false
+    defer { if !connected { Darwin.close(descriptor) } }
+
+    // Runtime replacement can close a peer mid-write. Return EPIPE to callers.
+    var noSignal: Int32 = 1
+    guard setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+        throw NativeClientError.socket("Could not protect the local socket from disconnected writes")
+    }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8CString)
+    guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+        throw NativeClientError.socket("Local socket path is too long")
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { target in
+        target.initializeMemory(as: UInt8.self, repeating: 0)
+        bytes.withUnsafeBytes { source in target.copyBytes(from: source) }
+    }
+    let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
+    connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(descriptor, $0, length) == 0 }
+    }
+    guard connected else { throw NativeClientError.socket("MacBot services are not reachable") }
+    return descriptor
+}
+
 actor NativeClient {
     let socketPath: String
     let token: String
@@ -24,27 +53,9 @@ actor NativeClient {
     func request(_ payload: JSONPayload, timeout: TimeInterval = 30) throws -> JSONPayload {
         var body = payload.value
         body["protocol_version"] = TaskProtocolV3.version
-        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { throw NativeClientError.socket("Could not create the local socket") }
+        let descriptor = try connectNativeSocket(path: socketPath)
         defer { Darwin.close(descriptor) }
         try configureTimeout(timeout, on: descriptor)
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Array(socketPath.utf8CString)
-        guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-            throw NativeClientError.socket("Local socket path is too long")
-        }
-        withUnsafeMutableBytes(of: &address.sun_path) { target in
-            target.initializeMemory(as: UInt8.self, repeating: 0)
-            pathBytes.withUnsafeBytes { source in target.copyBytes(from: source) }
-        }
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(descriptor, $0, length)
-            }
-        }
-        guard connected == 0 else { throw socketFailure("MacBot services are not reachable") }
         try write([
             "op": "authenticate", "token": token,
             "protocol_version": TaskProtocolV3.version,

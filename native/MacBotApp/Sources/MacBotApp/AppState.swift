@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
@@ -54,6 +56,7 @@ final class AppState: ObservableObject {
 
     private let services = ServiceManager()
     private var commandClient: NativeClient?
+    private var controlClient: NativeClient?
     private var eventClient: NativeClient?
     private var audio: AudioController?
     private var eventTask: Task<Void, Never>?
@@ -122,6 +125,7 @@ final class AppState: ObservableObject {
         audio?.close()
         audio = nil
         commandClient = nil
+        controlClient = nil
         eventClient = nil
         listening = false
         let token = try await services.restart(historyKey: historyKey)
@@ -142,6 +146,7 @@ final class AppState: ObservableObject {
         let audioController = AudioController()
         try audioController.connect(path: audioSocket, token: token)
         commandClient = commands
+        controlClient = NativeClient(socketPath: controlSocket, token: token)
         eventClient = events
         audio = audioController
         connected = true
@@ -196,10 +201,10 @@ final class AppState: ObservableObject {
                     if let payload = response["task"] as? [String: Any] {
                         upsertTask(payload, sequence: cursor + 1)
                     }
-                    selectedPage = .tasks
+                    if selectedPage == .conversation { selectedPage = .tasks }
                 }
             } catch {
-                draft = text
+                draft = draft.isEmpty ? text : "\(text)\n\n\(draft)"
                 show(error)
             }
         }
@@ -280,7 +285,7 @@ final class AppState: ObservableObject {
 
     func toggleListening() {
         guard !isChangingListening else { return }
-        guard let client = commandClient else {
+        guard let client = controlClient else {
             explainUnavailable("start hands-free conversation")
             return
         }
@@ -319,7 +324,7 @@ final class AppState: ObservableObject {
 
     func interrupt() {
         guard !isInterrupting else { return }
-        guard let client = commandClient else {
+        guard let client = controlClient else {
             explainUnavailable("stop the current response")
             return
         }
@@ -332,6 +337,42 @@ final class AppState: ObservableObject {
                 productState = listening ? .listening : .ready
             } catch { show(error) }
         }
+    }
+
+    func copyTranscript() {
+        guard !heard.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        if !NSPasteboard.general.setString(heard, forType: .string) {
+            errorMessage = "The transcript could not be copied."
+        }
+    }
+
+    func chooseApplication() {
+        let picker = NSOpenPanel()
+        picker.prompt = "Open App"
+        picker.message = "Choose an installed app to open."
+        picker.allowedContentTypes = [.applicationBundle]
+        picker.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
+        picker.canChooseFiles = true
+        picker.canChooseDirectories = false
+        picker.allowsMultipleSelection = false
+        Task {
+            guard await picker.begin() == .OK, let url = picker.url else { return }
+            do {
+                _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+            } catch {
+                show(error)
+            }
+        }
+    }
+
+    func revealDataFolder() {
+        let url = services.dataDirectory
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "MacBot’s data folder will appear after local setup."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func clearConversation() {
@@ -366,6 +407,7 @@ final class AppState: ObservableObject {
         audio?.close()
         audio = nil
         commandClient = nil
+        controlClient = nil
         eventClient = nil
         start()
     }

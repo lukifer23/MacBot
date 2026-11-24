@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import platform
 import re
 import socket
@@ -96,15 +97,19 @@ def contains_answer(content, term):
 
 
 def percentile(values, p=0.95):
-    return sorted(values)[max(0, __import__("math").ceil(len(values) * p) - 1)]
+    if not values:
+        return None
+    return sorted(values)[math.ceil(len(values) * p) - 1]
 
 
-def run(name, backend, destination, case_set="core"):
+def run(name, backend, destination, case_set="core", context_length=None):
     cases = HOLDOUT_CASES if case_set == "holdout" else CASES
-    if destination.exists():
+    summary_path = destination.with_suffix(".summary.json")
+    if destination == summary_path or destination.exists() or summary_path.exists():
         raise FileExistsError("Choose a new output path; benchmark evidence is immutable")
-    root = load().data_dir
-    receipt = verify(load(), name)
+    config = load()
+    root = config.data_dir
+    receipt = verify(config, name)
     with tempfile.TemporaryDirectory(prefix="macbot-bench-") as temporary:
         s = Settings(data_dir=Path(temporary))
         prepare(s)
@@ -119,6 +124,8 @@ def run(name, backend, destination, case_set="core"):
         s.models.llm_url = f"http://127.0.0.1:{port}"
         s.models.temperature = 0
         s.models.max_tokens = 128
+        if context_length is not None:
+            s.models.context_length = context_length
         supervisor = MacBotOrchestrator(s)
         llm = None
         tools = None
@@ -136,6 +143,9 @@ def run(name, backend, destination, case_set="core"):
             tools = Tools(s, supervisor.auth)
             startup = time.monotonic() - started
             records = []
+            # Reserve the report after startup; partial results survive an interrupted run.
+            with destination.open("x"):
+                pass
             # First pass includes one cold inference; second pass is warm. No history/cache shortcut is requested.
             for repeat in range(2):
                 for index, (prompt, expected, args, term) in enumerate(cases):
@@ -235,6 +245,7 @@ def run(name, backend, destination, case_set="core"):
                 "backend": backend,
                 "startup_seconds": startup,
                 "warm_selection_accuracy": sum(r["pass"] for r in warm) / len(warm),
+                "warm_first_output_rate": sum(r["ttft_ms"] is not None for r in warm) / len(warm),
                 "warm_p95_ttft_ms": percentile(
                     [r["ttft_ms"] for r in warm if r["ttft_ms"] is not None]
                 ),
@@ -242,7 +253,8 @@ def run(name, backend, destination, case_set="core"):
                 "platform": platform.platform(),
                 "scope": "Text and tool-selection screening only. No actions executed. Not audible latency or release acceptance.",
             }
-            destination.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
+            with summary_path.open("x") as output:
+                json.dump(summary, output, indent=2)
             print(json.dumps(summary), flush=True)
         finally:
             if llm:
@@ -260,7 +272,8 @@ if __name__ == "__main__":
     parser.add_argument("model")
     parser.add_argument("--case-set", choices=["core", "holdout"], default="core")
     parser.add_argument("--backend", choices=["llama", "mlx"], default="llama")
+    parser.add_argument("--context-length", type=int, metavar="TOKENS")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    run(args.model, args.backend, args.output, args.case_set)
+    run(args.model, args.backend, args.output, args.case_set, args.context_length)
