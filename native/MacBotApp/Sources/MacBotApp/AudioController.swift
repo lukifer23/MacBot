@@ -23,35 +23,21 @@ final class AudioController: @unchecked Sendable {
     private var scheduled: Set<UInt64> = []
 
     func connect(path: String, token: String) throws {
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw NativeClientError.socket("Could not create the audio socket") }
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8CString)
-        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-            Darwin.close(fd); throw NativeClientError.socket("Audio socket path is too long")
+        descriptor = try connectNativeSocket(path: path)
+        do {
+            try sendJSON([
+                "op": "authenticate", "token": token,
+                "protocol_version": TaskProtocolV3.version,
+            ])
+            let reply = try readJSON()
+            guard reply["ok"] as? Bool == true else {
+                throw NativeClientError.protocolError("Native audio authentication failed")
+            }
+            try startPlaybackOnly()
+        } catch {
+            close()
+            throw error
         }
-        withUnsafeMutableBytes(of: &address.sun_path) { target in
-            target.initializeMemory(as: UInt8.self, repeating: 0)
-            bytes.withUnsafeBytes { source in target.copyBytes(from: source) }
-        }
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, length) }
-        }
-        guard result == 0 else {
-            Darwin.close(fd); throw NativeClientError.socket("MacBot audio service is not reachable")
-        }
-        descriptor = fd
-        try sendJSON([
-            "op": "authenticate", "token": token,
-            "protocol_version": TaskProtocolV3.version,
-        ])
-        let reply = try readJSON()
-        guard reply["ok"] as? Bool == true else {
-            close(); throw NativeClientError.protocolError("Native audio authentication failed")
-        }
-        try startPlaybackOnly()
         playbackQueue.async { [weak self] in self?.readPlayback() }
     }
 

@@ -53,9 +53,11 @@ def test_real_capture_pipeline_reports_vad_activity_and_only_final_transcription
             frame = samples[offset : offset + 512]
             if len(frame) < 512:
                 break
-            runtime.audio.capture.put(frame.copy(), timeout=1)
+            runtime.audio.capture.put((runtime.capture_epoch, frame.copy()), timeout=1)
         for _ in range(20):
-            runtime.audio.capture.put(np.zeros(512, dtype="float32"), timeout=1)
+            runtime.audio.capture.put(
+                (runtime.capture_epoch, np.zeros(512, dtype="float32")), timeout=1
+            )
         deadline = time.monotonic() + 10
         activity = None
         final = None

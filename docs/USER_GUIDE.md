@@ -17,7 +17,7 @@ From the repository root:
 ```sh
 ./scripts/bootstrap_mac.sh
 uv run --frozen macbot build-inference
-uv run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
+uv run --frozen macbot models download --release
 uv run --frozen macbot doctor
 ./scripts/build_native_app.sh --install
 open "$HOME/Applications/MacBot.app"
@@ -47,6 +47,13 @@ Use Conversation for an immediate, cancellable response. It may use
 deterministic read-only enrichment, but it cannot authorize side effects. Choose
 whether the reply should be spoken, then send the message. Stop response cancels
 the current generation and queued playback.
+
+Choose **Dictate** to transcribe into an editable draft. After **Stop dictation**,
+you can copy the draft or move it into the composer. This path uses local
+speech recognition and keeps its draft in memory until you send it.
+
+Open **Mac Actions** to choose an app or reveal MacBot’s data folder in Finder.
+These controls act on your direct selection.
 
 Use Task for durable bounded research. Submission first creates a persisted
 plan and authority manifest. Review its steps, targets, sources, deadline, and

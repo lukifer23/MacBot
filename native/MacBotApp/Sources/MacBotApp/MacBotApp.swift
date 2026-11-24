@@ -64,8 +64,12 @@ private struct MenuBarControls: View {
             Label(state.productState.title, systemImage: state.productState.symbol)
             Text(state.connectionDetail).font(.caption).foregroundStyle(.secondary)
             Divider()
-            Button(state.listening ? "Stop hands-free" : "Start hands-free") {
-                state.toggleListening()
+            Button(state.isDictating ? "Stop dictation" : state.listening ? "Stop hands-free" : "Start hands-free") {
+                if state.isDictating {
+                    state.toggleDictation()
+                } else {
+                    state.toggleListening()
+                }
             }
             .disabled(!state.canListen)
             Button("Stop response") { state.interrupt() }.disabled(!state.canInterrupt)

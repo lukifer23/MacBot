@@ -24,7 +24,7 @@ git clone https://github.com/lukifer23/MacBot.git
 cd MacBot
 ./scripts/bootstrap_mac.sh
 uv run --frozen macbot build-inference
-uv run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
+uv run --frozen macbot models download --release
 ./scripts/build_native_app.sh --install
 open "$HOME/Applications/MacBot.app"
 ```
@@ -149,6 +149,7 @@ artifact check is an open gate, never a passing skip. See
 - [Historical implementation checkpoint](docs/PAUSED_STATE.md)
 - [Agent harness decision](docs/AGENT_HARNESS.md)
 - [Model screening](docs/MODEL_SCREENING.md)
+- [Modernization audit and implementation plan](docs/MODERNIZATION_2026-11.md)
 - [Dependency audit history](docs/DEPENDENCY_AUDIT.md)
 - [Test migration](docs/TEST_MIGRATION.md)
 - [Speech model notes](docs/TTS_OPTIMIZATION_GUIDE.md)

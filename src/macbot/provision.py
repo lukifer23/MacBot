@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -27,7 +28,7 @@ QWEN_TTS_VOICES = {
 }
 
 _ATTESTATION_LOCK = threading.Lock()
-_ATTESTED_FILES: dict[tuple[str, int, int, int, str], bool] = {}
+_ATTESTED_FILES: dict[tuple[str, str], tuple[int, int, int, int, int]] = {}
 
 
 def voice_model(name: str) -> str:
@@ -132,19 +133,19 @@ def model_dir(settings: Settings, name: str) -> Path:
     path = settings.data_dir / "models" / name
     for entry in entries[name]["files"]:
         target = path / entry["name"]
-        if not target.is_file() or target.stat().st_size != entry["size"]:
+        if not target.is_file() or (stat := target.stat()).st_size != entry["size"]:
             raise FileNotFoundError(
                 f"Model {name} not provisioned; run macbot models download {name}"
             )
-        stat = target.stat()
-        key = (str(target), stat.st_ino, stat.st_size, stat.st_mtime_ns, entry["sha256"])
+        key = (str(target), entry["sha256"])
+        identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         with _ATTESTATION_LOCK:
-            attested = key in _ATTESTED_FILES
+            attested = _ATTESTED_FILES.get(key) == identity
         if not attested:
             if sha256(target) != entry["sha256"]:
                 raise ValueError(f"Model checksum mismatch: {name}: {entry['name']}")
             with _ATTESTATION_LOCK:
-                _ATTESTED_FILES[key] = True
+                _ATTESTED_FILES[key] = identity
     return path
 
 
@@ -321,6 +322,14 @@ def _convert_llama_gguf(settings: Settings, name: str, item: dict[str, Any]) -> 
 
 def download(settings: Settings, name: str) -> dict[str, Any]:
     item = catalog()[name]
+    lock_path = settings.data_dir / "models" / f".{name}.provision.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _download_locked(settings, name, item)
+
+
+def _download_locked(settings: Settings, name: str, item: dict[str, Any]) -> dict[str, Any]:
     root = settings.data_dir / "models" / name
     if "conversion" in item:
         try:
@@ -343,7 +352,9 @@ def download(settings: Settings, name: str) -> dict[str, Any]:
 
 def verify(settings: Settings, name: str) -> dict[str, Any]:
     item = catalog()[name]
-    model_dir(settings, name)
+    bad = _verify_files(settings.data_dir / "models" / name, item["files"])
+    if bad:
+        raise ValueError(f"Model {name} failed verification: {', '.join(bad)}")
     return {"model": name, "revision": item["revision"], "verified": True}
 
 

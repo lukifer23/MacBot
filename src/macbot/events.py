@@ -8,7 +8,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Literal
 
-EPHEMERAL_KINDS = {"delta", "partial_transcription"}
+EPHEMERAL_KINDS = {"delta", "partial_transcription", "dictation"}
 
 State = Literal[
     "accepted", "running", "completed", "interrupted", "denied", "failed", "approval_required"

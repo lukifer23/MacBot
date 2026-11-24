@@ -19,7 +19,7 @@ playback; there is no Python audio-helper build. Xcode Command Line Tools,
 CMake, and FFmpeg are system prerequisites; setup does not install Homebrew or
 rewrite system settings.
 
-Model downloads are explicit. Each registry entry includes upstream revision, filenames, size, SHA-256 and licensing provenance. `macbot models verify NAME...` rehashes installed artifacts. Runtime checks presence and size and fails when required artifacts are missing; inference never calls provisioning. Run full hash verification after transfers or before release.
+Model downloads are explicit. Each registry entry includes its upstream revision, filenames, size, SHA-256, and license. Use `macbot models list --release` to see selected artifacts and `macbot models verify --release` to rehash them. The same actions accept explicit artifact names for lab work. Runtime performs a local checksum attestation and caches it for unchanged files. Run full verification after transfers and before release.
 
 ```sh
 uv build

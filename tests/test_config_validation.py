@@ -89,13 +89,14 @@ def test_model_directory_attests_registered_hash_before_use(tmp_path, monkeypatc
     import hashlib
 
     entry = {
+        "revision": "fixture",
         "files": [
             {
                 "name": "model.bin",
                 "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
-        ]
+        ],
     }
     monkeypatch.setattr(provision, "catalog", lambda: {"test-model": entry})
     settings = Settings(data_dir=tmp_path)
@@ -103,9 +104,12 @@ def test_model_directory_attests_registered_hash_before_use(tmp_path, monkeypatc
     target.parent.mkdir(parents=True)
     target.write_bytes(payload)
     assert provision.model_dir(settings, "test-model") == target.parent
+    assert provision.verify(settings, "test-model")["verified"]
     target.write_bytes(b"fake model bytes")
     with pytest.raises(ValueError, match="checksum mismatch"):
         provision.model_dir(settings, "test-model")
+    with pytest.raises(ValueError, match="failed verification: model.bin"):
+        provision.verify(settings, "test-model")
 
 
 def test_qwen_voice_registry_has_pinned_reproducible_sources_and_outputs():

@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
@@ -9,6 +11,8 @@ final class AppState: ObservableObject {
     @Published var connected = false
     @Published var connectionDetail = "Starting local services"
     @Published var listening = false
+    @Published private(set) var isDictating = false
+    @Published var dictationText = ""
     @Published var muted = false
     @Published var composerMode: ComposerMode = .conversation
     @Published var draft = ""
@@ -54,6 +58,7 @@ final class AppState: ObservableObject {
 
     private let services = ServiceManager()
     private var commandClient: NativeClient?
+    private var controlClient: NativeClient?
     private var eventClient: NativeClient?
     private var audio: AudioController?
     private var eventTask: Task<Void, Never>?
@@ -122,8 +127,10 @@ final class AppState: ObservableObject {
         audio?.close()
         audio = nil
         commandClient = nil
+        controlClient = nil
         eventClient = nil
         listening = false
+        isDictating = false
         let token = try await services.restart(historyKey: historyKey)
         let run = services.dataDirectory.appending(path: "run")
         let controlSocket = run.appending(path: "control.sock").path
@@ -142,6 +149,7 @@ final class AppState: ObservableObject {
         let audioController = AudioController()
         try audioController.connect(path: audioSocket, token: token)
         commandClient = commands
+        controlClient = NativeClient(socketPath: controlSocket, token: token)
         eventClient = events
         audio = audioController
         connected = true
@@ -196,10 +204,10 @@ final class AppState: ObservableObject {
                     if let payload = response["task"] as? [String: Any] {
                         upsertTask(payload, sequence: cursor + 1)
                     }
-                    selectedPage = .tasks
+                    if selectedPage == .conversation { selectedPage = .tasks }
                 }
             } catch {
-                draft = text
+                draft = draft.isEmpty ? text : "\(text)\n\n\(draft)"
                 show(error)
             }
         }
@@ -279,12 +287,22 @@ final class AppState: ObservableObject {
     }
 
     func toggleListening() {
+        toggleCapture(dictation: false)
+    }
+
+    func toggleDictation() {
+        toggleCapture(dictation: true)
+    }
+
+    private func toggleCapture(dictation: Bool) {
         guard !isChangingListening else { return }
-        guard let client = commandClient else {
-            explainUnavailable("start hands-free conversation")
+        guard !listening || dictation == isDictating else { return }
+        guard let client = controlClient else {
+            explainUnavailable("change microphone capture")
             return
         }
         let desired = !listening
+        let mode = dictation ? "dictation" : "conversation"
         isChangingListening = true
         Task {
             defer { isChangingListening = false }
@@ -296,11 +314,14 @@ final class AppState: ObservableObject {
                     audio?.stopCapture()
                 }
                 _ = try await client.request(
-                    JSONPayload(["op": "listen", "enabled": desired]), timeout: 15)
+                    JSONPayload(["op": "listen", "enabled": desired, "mode": mode]), timeout: 15)
+                guard controlClient === client else { return }
                 listening = desired
+                isDictating = desired && dictation
                 phase = desired ? .listening : .idle
                 productState = desired ? .listening : .ready
             } catch {
+                guard controlClient === client else { return }
                 if desired { audio?.stopCapture() }
                 show(error)
             }
@@ -319,7 +340,7 @@ final class AppState: ObservableObject {
 
     func interrupt() {
         guard !isInterrupting else { return }
-        guard let client = commandClient else {
+        guard let client = controlClient else {
             explainUnavailable("stop the current response")
             return
         }
@@ -332,6 +353,57 @@ final class AppState: ObservableObject {
                 productState = listening ? .listening : .ready
             } catch { show(error) }
         }
+    }
+
+    func copyTranscript() {
+        copyText(heard)
+    }
+
+    func copyDictation() {
+        copyText(dictationText)
+    }
+
+    func useDictationInComposer() {
+        let text = dictationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        draft = draft.isEmpty ? text : "\(draft)\n\n\(text)"
+        dictationText = ""
+    }
+
+    private func copyText(_ text: String) {
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        if !NSPasteboard.general.setString(text, forType: .string) {
+            errorMessage = "The transcript could not be copied."
+        }
+    }
+
+    func chooseApplication() {
+        let picker = NSOpenPanel()
+        picker.prompt = "Open App"
+        picker.message = "Choose an installed app to open."
+        picker.allowedContentTypes = [.applicationBundle]
+        picker.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
+        picker.canChooseFiles = true
+        picker.canChooseDirectories = false
+        picker.allowsMultipleSelection = false
+        Task {
+            guard await picker.begin() == .OK, let url = picker.url else { return }
+            do {
+                _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+            } catch {
+                show(error)
+            }
+        }
+    }
+
+    func revealDataFolder() {
+        let url = services.dataDirectory
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "MacBot’s data folder will appear after local setup."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func clearConversation() {
@@ -357,6 +429,7 @@ final class AppState: ObservableObject {
         isRestarting = true
         connected = false
         listening = false
+        isDictating = false
         muted = false
         productState = .starting
         phase = .starting
@@ -366,6 +439,7 @@ final class AppState: ObservableObject {
         audio?.close()
         audio = nil
         commandClient = nil
+        controlClient = nil
         eventClient = nil
         start()
     }
@@ -689,6 +763,10 @@ final class AppState: ObservableObject {
         let turnID = event["turn_id"] as? String ?? UUID().uuidString
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
+        case "dictation":
+            if let text = data["text"] as? String, !text.isEmpty {
+                dictationText = dictationText.isEmpty ? text : "\(dictationText) \(text)"
+            }
         case "transcription":
             let text = data["text"] as? String ?? ""
             heard = text
@@ -740,8 +818,13 @@ final class AppState: ObservableObject {
             productState = .working
         case "listening":
             listening = data["enabled"] as? Bool ?? listening
+            isDictating = listening && (data["mode"] as? String) == "dictation"
+            if !listening { audio?.stopCapture() }
             phase = listening ? .listening : .idle
             productState = listening ? .listening : .ready
+        case "transcribing":
+            phase = .transcribing
+            productState = .working
         case "tool_result":
             let tool = data["tool"] as? String ?? "Action"
             let actionID = data["action_id"] as? String ?? "\(turnID)-\(sequence)"

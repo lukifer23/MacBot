@@ -10,7 +10,7 @@ setup: deps
 build:
 	$(UV) run --frozen macbot build-inference --source "$(CURDIR)"
 models:
-	$(UV) run --frozen macbot models download qwen3.5-2b-official parakeet qwen3-tts-1.7b minilm silero
+	$(UV) run --frozen macbot models download --release
 start:
 	$(UV) run --frozen macbot start --background
 stop:

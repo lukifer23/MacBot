@@ -16,6 +16,7 @@ struct ContentView: View {
             switch state.selectedPage ?? .conversation {
             case .conversation: ConversationView()
             case .tasks: TaskCenterView()
+            case .macActions: MacActionsView()
             case .library: LibraryView()
             case .diagnostics: DiagnosticsView()
             case .settings: SettingsView()
@@ -51,6 +52,7 @@ struct ContentView: View {
 
 private struct ConversationView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -65,7 +67,7 @@ private struct ConversationView: View {
                                 state.canConverse ? "Ready when you are" : state.productState.title,
                                 systemImage: state.productState.symbol,
                                 description: Text(state.canConverse
-                                    ? "Type a message or start hands-free conversation."
+                                    ? "Type a message, plan a research task, or start hands-free."
                                     : state.connectionDetail)
                             ).padding(.top, 90)
                         }
@@ -79,7 +81,9 @@ private struct ConversationView: View {
                 }
                 .onChange(of: state.messages.count + state.tasks.count) {
                     if let id = state.timeline.last?.id {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                            proxy.scrollTo(id, anchor: .bottom)
+                        }
                     }
                 }
                 .onChange(of: state.messages.last?.text) {
@@ -89,11 +93,16 @@ private struct ConversationView: View {
                 }
             }
             Divider()
+            if state.isDictating || !state.dictationText.isEmpty { dictationPreview }
             composer
         }
         .navigationTitle("Conversation")
         .toolbar {
             ToolbarItemGroup {
+                Button("Focus composer", systemImage: "square.and.pencil") { composerFocused = true }
+                    .disabled(!state.canConverse)
+                    .keyboardShortcut("l", modifiers: .command)
+                    .help("Focus the message or task composer")
                 Button("Clear conversation", systemImage: "trash") { state.confirmClearConversation = true }
                     .disabled(state.messages.isEmpty || !state.canConverse || state.isClearingConversation)
                     .help("Delete this local conversation")
@@ -118,7 +127,7 @@ private struct ConversationView: View {
         HStack(spacing: 14) {
             Image(systemName: state.productState.isOperational ? state.phase.symbol : state.productState.symbol)
                 .font(.title2)
-                .symbolEffect(.pulse, isActive: [.listening, .thinking, .acting, .speaking].contains(state.phase))
+                .symbolEffect(.pulse, isActive: !reduceMotion && [.listening, .thinking, .acting, .speaking].contains(state.phase))
                 .frame(width: 40, height: 40).background(.quaternary, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(state.productState.isOperational ? state.phase.title : state.productState.title).font(.headline)
@@ -126,6 +135,11 @@ private struct ConversationView: View {
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
+            if !state.heard.isEmpty {
+                Button("Copy transcript", systemImage: "document.on.document", action: state.copyTranscript)
+                    .labelStyle(.iconOnly)
+                    .help("Copy the latest transcription")
+            }
             Button(action: state.toggleMuted) {
                 Label(state.muted ? "Unmute" : "Mute", systemImage: state.muted ? "mic.slash.fill" : "mic.fill")
             }
@@ -136,9 +150,35 @@ private struct ConversationView: View {
                 Label(state.listening ? "Stop hands-free" : "Start hands-free", systemImage: state.listening ? "stop.circle.fill" : "waveform.circle.fill")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!state.canListen || state.isChangingListening)
+            .disabled(!state.canListen || state.isChangingListening || state.isDictating)
             .accessibilityIdentifier("conversation.hands-free")
+            Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
+                .buttonStyle(.bordered)
+                .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
+                .accessibilityIdentifier("conversation.dictation")
         }.padding(20).background(.bar)
+    }
+
+    private var dictationPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Dictation draft").font(.headline)
+                Spacer()
+                Button("Copy", action: state.copyDictation).disabled(state.dictationText.isEmpty)
+                Button("Clear") { state.dictationText = "" }.disabled(state.dictationText.isEmpty)
+                Button("Use in composer") {
+                    state.useDictationInComposer()
+                    composerFocused = true
+                }
+                .disabled(state.isDictating || state.dictationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            TextEditor(text: $state.dictationText)
+                .frame(height: 78)
+                .accessibilityLabel("Dictation draft")
+                .accessibilityIdentifier("dictation.draft")
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
     }
 
     private var composer: some View {
@@ -147,6 +187,7 @@ private struct ConversationView: View {
                 ForEach(ComposerMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
             }
             .pickerStyle(.segmented)
+            .disabled(state.isSending)
             .accessibilityHint("Choose an immediate conversation or a durable task that requires authorization")
             .accessibilityIdentifier("composer.mode")
             Text(state.composerMode.guidance).font(.caption).foregroundStyle(.secondary)
@@ -163,9 +204,9 @@ private struct ConversationView: View {
                     .accessibilityIdentifier("composer.input")
                 Button(action: state.send) {
                     Label(state.composerMode.actionLabel, systemImage: state.composerMode == .task ? "checklist" : "arrow.up")
-                        .labelStyle(.iconOnly).fontWeight(.semibold)
+                        .fontWeight(.semibold)
                 }
-                .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
+                .buttonStyle(.borderedProminent)
                 .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.canConverse || state.isSending)
                 .keyboardShortcut(.return, modifiers: .command)
                 .accessibilityIdentifier("composer.send")
@@ -203,45 +244,63 @@ private struct TaskResultCard: View {
     var compact = false
 
     var body: some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(item.detail).textSelection(.enabled)
-                Label(item.source.replacingOccurrences(of: "_", with: " ").capitalized, systemImage: "person.crop.circle.badge.checkmark")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !item.authority.isEmpty { authority }
-                if !item.steps.isEmpty { steps }
-                if !item.availableCommands.isEmpty {
-                    HStack {
-                        ForEach(TaskCommand.allCases.filter(item.availableCommands.contains), id: \.self) { command in
-                            if command == .cancel || command == .deny {
-                                Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
-                                    .buttonStyle(.bordered)
-                                    .disabled(state.taskCommandsInFlight.contains(item.id))
-                                    .accessibilityIdentifier("task.\(item.id).\(command.rawValue)")
-                            } else {
-                                Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(state.taskCommandsInFlight.contains(item.id))
-                                    .accessibilityIdentifier("task.\(item.id).\(command.rawValue)")
-                            }
-                        }
-                    }
+        Group {
+            if item.state == .awaitingAuthorization {
+                VStack(alignment: .leading, spacing: 0) {
+                    heading
+                    details
                 }
-            }.padding(.top, 8)
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: item.state.symbol).foregroundStyle(tint)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title.replacingOccurrences(of: "_", with: " ").capitalized).font(.headline)
-                    Text(item.state.title).font(.caption).foregroundStyle(.secondary)
-                    if compact { Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            } else {
+                DisclosureGroup {
+                    details
+                } label: {
+                    heading
                 }
-                Spacer()
             }
         }
         .padding(14).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("task.\(item.id)")
+    }
+
+    private var heading: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: item.state.symbol).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title).font(.headline)
+                Text(item.state.title).font(.caption).foregroundStyle(.secondary)
+                if compact && item.state != .awaitingAuthorization {
+                    Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(item.detail).textSelection(.enabled)
+            if !item.authority.isEmpty { authority }
+            if !item.steps.isEmpty { steps }
+            if !item.availableCommands.isEmpty {
+                HStack {
+                    ForEach(TaskCommand.allCases.filter(item.availableCommands.contains), id: \.self) { command in
+                        if command == .cancel || command == .deny {
+                            taskButton(command).buttonStyle(.bordered)
+                        } else {
+                            taskButton(command).buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func taskButton(_ command: TaskCommand) -> some View {
+        Button(command.label, systemImage: command.symbol) { state.perform(command, on: item) }
+            .disabled(state.taskCommandsInFlight.contains(item.id))
+            .accessibilityIdentifier("task.\(item.id).\(command.rawValue)")
     }
 
     private var authority: some View {
@@ -456,6 +515,29 @@ private struct LibraryView: View {
                 }
             }
         }
+    }
+}
+
+private struct MacActionsView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        Form {
+            Section("Applications") {
+                LabeledContent {
+                    Button("Choose an app…", systemImage: "macwindow", action: state.chooseApplication)
+                } label: {
+                    Text("Open an installed Mac app")
+                }
+                LabeledContent {
+                    Button("Show in Finder", systemImage: "folder", action: state.revealDataFolder)
+                } label: {
+                    Text("MacBot data folder")
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Mac Actions")
     }
 }
 

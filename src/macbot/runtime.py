@@ -43,6 +43,7 @@ class Turn:
     first_audio_scheduled_ns: int | None = None
     terminal: bool = False
     synthesis_only: bool = False
+    dictation_only: bool = False
     state: str = "accepted"
     phase: str = "queued"
     stt_ms: float | None = None
@@ -55,7 +56,7 @@ class NativeAudioState:
     """Queues and counters shared with Swift audio; no secondary helper transport."""
 
     def __init__(self) -> None:
-        self.capture: queue.Queue[np.ndarray] = queue.Queue(maxsize=32)
+        self.capture: queue.Queue[tuple[int, np.ndarray]] = queue.Queue(maxsize=32)
         self.generation = 0
         self.inflight = 0
         self.error: str | None = None
@@ -125,6 +126,7 @@ class Runtime:
         self.stopping = threading.Event()
         self.listening = False
         self.capture_session = "local"
+        self.capture_mode = "conversation"
         self.capture_epoch = 0
         self.capture_speech = False
         self.active_capture_id: str | None = None
@@ -217,6 +219,7 @@ class Runtime:
         session_id: str = "local",
         speech_end_ns: int | None = None,
         synthesis_only: bool = False,
+        dictation_only: bool = False,
         turn_id: str | None = None,
     ) -> Turn:
         if text is not None:
@@ -225,10 +228,18 @@ class Runtime:
             raise ValueError("speak must be boolean")
         if text is None and audio is None:
             raise ValueError("A message or audio is required")
-        if self.task_engine and not synthesis_only and session_id == "native":
+        if dictation_only and (audio is None or text is not None or speak or synthesis_only):
+            raise ValueError("Dictation requires audio and bypasses the assistant response")
+        if (
+            self.task_engine
+            and not synthesis_only
+            and not dictation_only
+            and session_id == "native"
+        ):
             self.task_engine.pause_for_conversation()
         with self.lock:
-            self.interrupt()
+            if not dictation_only:
+                self.interrupt()
             turn = Turn(
                 turn_id or uuid.uuid4().hex,
                 session_id,
@@ -238,14 +249,14 @@ class Runtime:
                 generation=self.audio.generation,
                 speech_end_ns=speech_end_ns,
                 synthesis_only=synthesis_only,
+                dictation_only=dictation_only,
             )
-            self.current = turn
-            self.last_activity = time.monotonic()
             try:
                 self.turns.put_nowait(turn)
             except queue.Full:
-                self.current = None
                 raise RuntimeError("Turn queue is full") from None
+            self.current = turn
+            self.last_activity = time.monotonic()
             self._emit(turn, "accepted")
             return turn
 
@@ -283,32 +294,44 @@ class Runtime:
         if enabled:
             raise RuntimeError("Listening is available only through authenticated native IPC")
         with self.lock:
+            self.capture_epoch += 1
             self.listening = enabled
+            self.native_capture = enabled
+            self.audio.close()
             self.capture_speech = False
             self.active_capture_id = None
             self.vad_probability = 0.0
-            self.capture_epoch += 1
-            self.events.publish("local", "", "running", "listening", enabled=enabled)
+            self.events.publish(session_id, "", "running", "listening", enabled=enabled)
 
-    def listen_native(self, enabled: bool, session_id: str = "native") -> None:
+    def listen_native(
+        self, enabled: bool, session_id: str = "native", mode: str = "conversation"
+    ) -> None:
+        if mode not in ("conversation", "dictation"):
+            raise ValueError("Unsupported capture mode")
         if enabled and (not self.transcriber or not self.vad):
             raise RuntimeError("Speech models are not loaded")
         if enabled and (not self.native_audio_connected or not self.native_aec):
             raise RuntimeError("Native echo-cancelled audio is not ready")
         with self.lock:
-            self.native_capture = enabled
+            if enabled and mode == "dictation":
+                self.interrupt()
+            self.native_capture = False
+            self.capture_epoch += 1
             self.listening = enabled
             self.capture_session = session_id
+            self.capture_mode = mode
+            self.audio.close()
             self.capture_speech = False
             self.active_capture_id = None
             self.vad_probability = 0.0
-            self.capture_epoch += 1
             self.last_activity = time.monotonic()
-            self.events.publish(session_id, "", "running", "listening", enabled=enabled)
+            self.native_capture = enabled
+            self.events.publish(session_id, "", "running", "listening", enabled=enabled, mode=mode)
 
     def feed_native_audio(self, samples: np.ndarray) -> None:
         if samples.dtype != np.float32 or samples.ndim != 1 or len(samples) > 16_384:
             raise ValueError("Native PCM frame is invalid")
+        epoch = self.capture_epoch
         if not self.native_capture or not self.listening:
             return
         self.native_input_frames += 1
@@ -317,7 +340,7 @@ class Runtime:
             float(np.sqrt(np.mean(np.square(samples, dtype=np.float64)))) if len(samples) else 0.0
         )
         try:
-            self.audio.capture.put_nowait(samples.copy())
+            self.audio.capture.put_nowait((epoch, samples.copy()))
         except queue.Full:
             self.audio.dropped += len(samples)
 
@@ -680,6 +703,10 @@ class Runtime:
             turn.text = transcription
             turn.stt_ms = (time.monotonic_ns() - stt_started) / 1e6
             turn.audio = None
+            if turn.dictation_only:
+                turn.terminal = True
+                self._emit(turn, "completed", "dictation", text=transcription.strip())
+                return
             self._emit(turn, "running", "transcription", text=turn.text)
         if turn.cancelled.is_set():
             return
@@ -843,11 +870,13 @@ class Runtime:
         capture_id: str | None = None
         while not self.stopping.is_set():
             try:
-                chunk = self.audio.capture.get(timeout=0.1)
+                chunk_epoch, chunk = self.audio.capture.get(timeout=0.1)
             except queue.Empty:
                 continue
-            if capture_epoch != self.capture_epoch:
-                capture_epoch = self.capture_epoch
+            if chunk_epoch != self.capture_epoch:
+                continue
+            if capture_epoch != chunk_epoch:
+                capture_epoch = chunk_epoch
                 pending = np.empty(0, dtype=np.float32)
                 pre.clear()
                 utterance = []
@@ -865,10 +894,12 @@ class Runtime:
                 pre.clear()
                 continue
             if time.monotonic() - self.last_activity > self.settings.audio.idle_timeout_sec:
-                self.listen(False)
+                self.listen(False, self.capture_session)
                 continue
             pending = np.concatenate((pending, chunk))
             while len(pending) >= 512:
+                if capture_epoch != self.capture_epoch:
+                    break
                 frame, pending = pending[:512].copy(), pending[512:]
                 try:
                     self.vad_probability = self.vad.probability(frame)
@@ -901,7 +932,8 @@ class Runtime:
                     )
                     utterance = list(pre)
                     pre.clear()
-                    self.interrupt()
+                    if self.capture_mode == "conversation":
+                        self.interrupt()
                     self.last_activity = time.monotonic()
                 else:
                     utterance.append(frame)
@@ -923,14 +955,22 @@ class Runtime:
                     )
                     voiced = quiet = 0
                     try:
-                        self.submit(
-                            audio=audio,
-                            speech_end_ns=speech_end_ns,
-                            session_id=self.capture_session,
-                            turn_id=completed_id,
-                        )
+                        with self.lock:
+                            if capture_epoch != self.capture_epoch or not self.listening:
+                                break
+                            dictation = self.capture_mode == "dictation"
+                            self.submit(
+                                audio=audio,
+                                speak=not dictation,
+                                speech_end_ns=speech_end_ns,
+                                session_id=self.capture_session,
+                                turn_id=completed_id,
+                                dictation_only=dictation,
+                            )
                     except Exception as exc:
-                        self.events.publish("local", "", "failed", "audio", message=str(exc))
+                        self.events.publish(
+                            self.capture_session, "", "failed", "audio", message=str(exc)
+                        )
 
     def _transcribe_final(self, turn: Turn) -> str | None:
         if self.transcriber is None or turn.audio is None:
@@ -952,6 +992,7 @@ class Runtime:
                 "epoch": self.events.epoch,
                 "capture_epoch": self.capture_epoch,
                 "listening": self.listening,
+                "mode": self.capture_mode,
                 "audio_ready": native,
                 "aec": self.native_aec if native else False,
                 "input": (

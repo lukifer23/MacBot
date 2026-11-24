@@ -439,6 +439,7 @@ struct DocumentItem: Identifiable, Equatable {
 enum SidebarPage: String, CaseIterable, Identifiable {
     case conversation = "Conversation"
     case tasks = "Task Center"
+    case macActions = "Mac Actions"
     case library = "Library"
     case diagnostics = "Diagnostics"
     case settings = "Settings"
@@ -447,6 +448,7 @@ enum SidebarPage: String, CaseIterable, Identifiable {
         switch self {
         case .conversation: "bubble.left.and.bubble.right"
         case .tasks: "checklist"
+        case .macActions: "macwindow"
         case .library: "books.vertical"
         case .diagnostics: "gauge.with.dots.needle.67percent"
         case .settings: "gearshape"
