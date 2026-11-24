@@ -806,5 +806,18 @@
         "sha256": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4"
       }
     ]
+  },
+  "lfm3-1.7b-qad-q4-0": {
+    "repo": "LiquidAI/LFM3-1.7B-GGUF",
+    "revision": "b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf",
+    "license": "lfm1.0",
+    "files": [
+      {
+        "name": "LFM3-1.7B-QAD-Q4_0.gguf",
+        "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf/LFM3-1.7B-QAD-Q4_0.gguf",
+        "size": 1049615680,
+        "sha256": "43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452"
+      }
+    ]
   }
 }

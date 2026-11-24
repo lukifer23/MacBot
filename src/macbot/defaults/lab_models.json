@@ -15,6 +15,7 @@
     {"artifact": "qwen3-tts-0.6b", "role": "tts", "backend": "mlx-audio", "provenance": "official_upstream_converted_locally", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
     {"artifact": "qwen3.5-4b-q4-k-m", "role": "llm", "backend": "llama.cpp", "provenance": "third_party_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
     {"artifact": "qwen3.5-4b-q5-k-m", "role": "llm", "backend": "llama.cpp", "provenance": "third_party_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64"}},
-    {"artifact": "lfm3-1.7b-q4-k-m", "role": "llm", "backend": "llama.cpp", "provenance": "official_upstream_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64", "llama_build": "b11960"}}
+    {"artifact": "lfm3-1.7b-q4-k-m", "role": "llm", "backend": "llama.cpp", "provenance": "official_upstream_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64", "llama_build": "b11960"}},
+    {"artifact": "lfm3-1.7b-qad-q4-0", "role": "llm", "backend": "llama.cpp", "provenance": "official_upstream_quantization", "release_status": "lab_only", "checksum_source": "models.json files[].sha256", "compatibility": {"platform": "macOS", "architecture": "arm64", "llama_build": "b11960"}}
   ]
 }
