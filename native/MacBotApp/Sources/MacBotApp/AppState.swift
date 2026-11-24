@@ -914,6 +914,16 @@ final class AppState: ObservableObject {
             ?? taskState.title
         let steps = try (snapshot["steps"] as? [[String: Any]] ?? []).map(taskStep)
             .sorted { $0.ordinal < $1.ordinal }
+        let sources = (result["sources"] as? [[String: Any]] ?? []).compactMap { row -> TaskSource? in
+            guard let id = row["id"] as? String, let title = row["title"] as? String else { return nil }
+            let url = (row["url"] as? String).flatMap { value -> URL? in
+                guard let url = URL(string: value), let scheme = url.scheme,
+                      ["http", "https"].contains(scheme), url.host != nil,
+                      url.user == nil, url.password == nil else { return nil }
+                return url
+            }
+            return TaskSource(id: id, title: title, url: url, excerpt: row["excerpt"] as? String ?? "")
+        }
         return TaskItem(
             id: id,
             title: (snapshot["title"] as? String)
@@ -926,6 +936,7 @@ final class AppState: ObservableObject {
             turnID: snapshot["turn_id"] as? String,
             availableCommands: commands(from: snapshot, state: taskState),
             steps: steps,
+            sources: sources,
             authority: taskAuthority(
                 snapshot["capability_manifest"] as? [String: Any]
                     ?? snapshot["authority"] as? [String: Any]

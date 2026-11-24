@@ -12,7 +12,7 @@ for tool in uv git cmake ffmpeg xcrun; do
   fi
 done
 xcrun --find swiftc >/dev/null
-uv sync --frozen --all-extras --group dev
+uv sync --frozen --group dev
 # File Provider can mark newly-created .pth files hidden in synchronized
 # folders. Python 3.12 deliberately skips those files, which breaks editable
 # imports in child processes even though the parent pytest process has a source

@@ -338,6 +338,13 @@ struct TaskStepItem: Identifiable, Equatable {
     }
 }
 
+struct TaskSource: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let url: URL?
+    let excerpt: String
+}
+
 struct TaskItem: Identifiable, Equatable {
     let id: String
     var title: String
@@ -348,6 +355,7 @@ struct TaskItem: Identifiable, Equatable {
     var turnID: String?
     var availableCommands: Set<TaskCommand>
     var steps: [TaskStepItem]
+    var sources: [TaskSource]
     var authority: TaskAuthority
 
     init(
@@ -360,6 +368,7 @@ struct TaskItem: Identifiable, Equatable {
         turnID: String? = nil,
         availableCommands: Set<TaskCommand> = [],
         steps: [TaskStepItem] = [],
+        sources: [TaskSource] = [],
         authority: TaskAuthority = .init()
     ) {
         self.id = id
@@ -371,6 +380,7 @@ struct TaskItem: Identifiable, Equatable {
         self.turnID = turnID
         self.availableCommands = availableCommands
         self.steps = steps
+        self.sources = sources
         self.authority = authority
     }
 }

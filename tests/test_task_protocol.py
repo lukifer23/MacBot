@@ -16,12 +16,12 @@ def test_every_advertised_cancel_command_has_a_legal_backend_transition():
         TaskState.PROPOSED,
         TaskState.AWAITING_AUTHORIZATION,
         TaskState.QUEUED,
+        TaskState.PAUSED,
         TaskState.BLOCKED,
     }
     requested_cancel = {
         TaskState.RUNNING,
         TaskState.PAUSE_REQUESTED,
-        TaskState.PAUSED,
     }
     for state in TaskState:
         commands = legal_commands(state)
@@ -30,6 +30,7 @@ def test_every_advertised_cancel_command_has_a_legal_backend_transition():
         target = TaskState.CANCELLED if state in direct_cancel else TaskState.CANCEL_REQUESTED
         assert state in direct_cancel | requested_cancel
         assert require_task_transition(state.value, target.value)[1] is target
+    assert require_task_transition(TaskState.PAUSED, TaskState.PARTIAL)[1] is TaskState.PARTIAL
 
 
 def test_unknown_task_state_cannot_synthesize_commands():

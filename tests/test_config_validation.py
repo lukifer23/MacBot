@@ -177,6 +177,18 @@ def test_release_manifest_selects_exactly_one_typed_artifact_per_role(tmp_path):
     assert (tmp_path / "models/qwen3.5-2b").is_dir()
 
 
+def test_qwen_4b_quant_comparison_uses_one_pinned_lab_revision():
+    names = ("qwen3.5-4b-q4-k-m", "qwen3.5-4b-q5-k-m")
+    entries = catalog()
+    assert len({entries[name]["revision"] for name in names}) == 1
+    for name in names:
+        item = entries[name]
+        artifact = item["files"][0]
+        assert item["revision"] in artifact["url"]
+        assert len(artifact["sha256"]) == 64
+        assert model_roles(name) == ()
+
+
 def test_browser_data_url_and_invalid_audio():
     assert decode_audio("data:audio/webm;codecs=opus;base64,YXVkaW8=") == (b"audio", ".webm")
     for invalid in ["data:text/html;base64,SGk=", "%%%", "", None]:

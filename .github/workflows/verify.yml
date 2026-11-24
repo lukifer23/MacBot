@@ -17,6 +17,7 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
+      - run: uv lock --check
       - run: uv sync --frozen --all-extras --group dev
       - run: uv run --frozen ruff check src tests scripts
       - run: uv run --frozen ruff format --check src tests scripts
