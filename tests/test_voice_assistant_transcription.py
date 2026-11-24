@@ -37,19 +37,34 @@ def test_whistle_resident_preview_and_dictation():
         assert any(text for text in previews)
         assert "gospel" in model.transcribe(samples).lower()
 
-        turn = runtime.submit(audio=samples, speak=False, dictation_only=True)
+        runtime.capture_mode = "dictation"
+        runtime.capture_session = "whistle-validation"
+        runtime.listening = True
+        # Supply the same 32 ms PCM frames that the native capture path queues.
+        trailing_silence = np.zeros(20 * 512, dtype=np.float32)
+        capture = np.concatenate((samples, trailing_silence))
+        for offset in range(0, len(capture) - 511, 512):
+            runtime.audio.capture.put(
+                (runtime.capture_epoch, capture[offset : offset + 512].copy()), timeout=1
+            )
         cursor = 0
+        heard_speech = False
+        transcript = []
         until = time.monotonic() + 10
         while time.monotonic() < until:
             batch = runtime.events.read(cursor, timeout=0.25)
             cursor = batch["cursor"]
             for event in batch["events"]:
-                if event["turn_id"] != turn.id:
+                if event["session_id"] != "whistle-validation":
                     continue
                 assert event["state"] != "failed", event
+                if event["kind"] == "capture_activity" and event["data"].get("active"):
+                    heard_speech = True
                 if event["kind"] == "dictation":
-                    assert "gospel" in event["data"]["text"].lower()
-                    return
+                    assert heard_speech
+                    transcript.append(event["data"]["text"])
+                    if "gospel" in " ".join(transcript).lower():
+                        return
         pytest.fail("Whistle dictation did not emit its final transcript")
     finally:
         runtime.close()

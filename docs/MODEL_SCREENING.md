@@ -226,4 +226,10 @@ transcript uses the complete utterance. Run the same benchmark with
 same Mac. Read-speech latency starts with available PCM samples and excludes
 audio capture, endpoint detection, answer generation, and playback.
 
+On the hosted Apple Silicon Mac, the pinned Whistle runtime loaded in 26 ms.
+The first clip took 101 ms, warm p95 was 174 ms, corpus WER was 6.27%, and
+peak sampled process RSS was 114 MiB. The 20 clips are read speech from one
+LibriSpeech speaker. These measurements do not establish microphone latency or
+relative accuracy against Parakeet on the same machine.
+
 [Cactus Whistle model card](https://huggingface.co/Cactus-Compute/whistle)

@@ -99,6 +99,16 @@ def release_artifacts() -> dict[str, str]:
     return {role: str(entry["artifact"]) for role, entry in release_model_manifest().items()}
 
 
+def selected_artifacts(settings: Settings) -> dict[str, str]:
+    return {
+        **release_artifacts(),
+        "llm": settings.models.llm,
+        "stt": settings.models.stt,
+        "tts": voice_model(settings.models.tts_voice),
+        "embedding": settings.models.embedding,
+    }
+
+
 def model_roles(name: str) -> tuple[str, ...]:
     """Classify an artifact without treating benchmark candidates as production."""
     entries = catalog()
@@ -409,12 +419,7 @@ def configure_model_profile(settings: Settings, profile: str) -> None:
         raise FileNotFoundError(
             "Build the selected llama.cpp runtime before activating this profile"
         )
-    for artifact in {
-        **release_artifacts(),
-        "llm": settings.models.llm,
-        "stt": settings.models.stt,
-        "tts": voice_model(settings.models.tts_voice),
-    }.values():
+    for artifact in selected_artifacts(settings).values():
         model_dir(settings, artifact)
 
 
