@@ -63,6 +63,7 @@ final class AppState: ObservableObject {
     private var audio: AudioController?
     private var eventTask: Task<Void, Never>?
     private var cursor = 0
+    private var lastDictationSequence = 0
     private var epoch: String?
     private var responseIndex: [String: Int] = [:]
     private var historyKey: Data?
@@ -224,11 +225,18 @@ final class AppState: ObservableObject {
         guard let nextEpoch = response["epoch"] as? String,
               let nextCursor = response["cursor"] as? Int,
               nextCursor >= 0,
-              let messageSnapshots = response["messages"] as? [[String: Any]],
+              let savedMessages = response["messages"] as? [[String: Any]],
               let taskSnapshots = response["tasks"] as? [[String: Any]] else {
             throw NativeClientError.protocolError("The local synchronization snapshot is incomplete")
         }
 
+        let messageSnapshots = savedMessages.map { message in
+            guard let turnID = message["turn_id"] as? String, !turnID.isEmpty,
+                  let role = message["role"] as? String else { return message }
+            var stable = message
+            stable["id"] = "\(role)-\(turnID)"
+            return stable
+        }
         let messageOrder = messageSnapshots.enumerated().map { index, snapshot in
             ("message-\(snapshot["id"] as? String ?? index.description)",
              snapshot["created_at"] as? Int ?? index)
@@ -240,7 +248,8 @@ final class AppState: ObservableObject {
         let order = (messageOrder + taskOrder).sorted {
             $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 < $1.1
         }
-        let ranks = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element.0, $0.offset) })
+        let ranks = Dictionary(
+            order.enumerated().map { ($0.element.0, $0.offset) }, uniquingKeysWith: min)
 
         var restoredMessages: [ChatItem] = []
         for (index, snapshot) in messageSnapshots.enumerated() {
@@ -264,12 +273,14 @@ final class AppState: ObservableObject {
 
         if let active = response["active_turn"] as? [String: Any],
            let turnID = active["id"] as? String {
-            if let userText = active["user_text"] as? String,
-               !userText.isEmpty,
-               !restoredMessages.contains(where: { $0.id == "user-\(turnID)" }) {
-                restoredMessages.append(.init(
-                    id: "user-\(turnID)", role: .user, text: userText,
-                    sequence: restoredMessages.count + restoredTasks.count))
+            for (role, key) in [(ChatItem.Role.user, "user_text"), (.assistant, "assistant_text")] {
+                let id = "\(role.rawValue)-\(turnID)"
+                if let text = active[key] as? String, !text.isEmpty,
+                   !restoredMessages.contains(where: { $0.id == id }) {
+                    restoredMessages.append(.init(
+                        id: id, role: role, text: text,
+                        sequence: restoredMessages.count + restoredTasks.count))
+                }
             }
             if let phaseValue = active["phase"] as? String {
                 phase = assistantPhase(phaseValue)
@@ -282,6 +293,7 @@ final class AppState: ObservableObject {
         tasks = restoredTasks
         responseIndex.removeAll()
         nextPresentationSequence = restoredMessages.count + restoredTasks.count
+        if epoch != nextEpoch { lastDictationSequence = 0 }
         cursor = nextCursor
         epoch = nextEpoch
     }
@@ -307,14 +319,24 @@ final class AppState: ObservableObject {
         Task {
             defer { isChangingListening = false }
             do {
+                var request: [String: Any] = ["op": "listen", "enabled": desired, "mode": mode]
                 if desired {
-                    try await audio?.start()
-                    audio?.setMuted(muted)
+                    guard let controller = audio else {
+                        throw NativeClientError.socket("The local audio connection is unavailable")
+                    }
+                    let captureID = UUID().uuidString
+                    try await controller.start(captureID: captureID)
+                    guard controlClient === client else {
+                        controller.stopCapture()
+                        return
+                    }
+                    controller.setMuted(muted)
+                    request["capture_id"] = captureID
                 } else {
                     audio?.stopCapture()
                 }
                 _ = try await client.request(
-                    JSONPayload(["op": "listen", "enabled": desired, "mode": mode]), timeout: 15)
+                    JSONPayload(request), timeout: 15)
                 guard controlClient === client else { return }
                 listening = desired
                 isDictating = desired && dictation
@@ -379,18 +401,35 @@ final class AppState: ObservableObject {
     }
 
     func chooseApplication() {
+        chooseMacTarget(application: true)
+    }
+
+    func chooseItemToReveal() {
+        chooseMacTarget(application: false)
+    }
+
+    private func chooseMacTarget(application: Bool) {
         let picker = NSOpenPanel()
-        picker.prompt = "Open App"
-        picker.message = "Choose an installed app to open."
-        picker.allowedContentTypes = [.applicationBundle]
-        picker.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
+        picker.prompt = application ? "Open App" : "Reveal in Finder"
         picker.canChooseFiles = true
-        picker.canChooseDirectories = false
+        picker.canChooseDirectories = !application
         picker.allowsMultipleSelection = false
+        if application {
+            picker.allowedContentTypes = [.applicationBundle]
+            picker.directoryURL = FileManager.default.urls(for: .applicationDirectory, in: .localDomainMask).first
+        }
         Task {
             guard await picker.begin() == .OK, let url = picker.url else { return }
+            guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else {
+                errorMessage = "The selected item is no longer available."
+                return
+            }
             do {
-                _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                if application {
+                    _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                } else {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
             } catch {
                 show(error)
             }
@@ -712,8 +751,6 @@ final class AppState: ObservableObject {
                 var request: [String: Any] = ["op": "events", "after": cursor]
                 if let epoch { request["epoch"] = epoch }
                 let response = try await native.request(JSONPayload(request), timeout: 25).value
-                cursor = response["cursor"] as? Int ?? cursor
-                epoch = response["epoch"] as? String
                 if response["reset"] as? Bool == true || response["gap"] as? Bool == true {
                     try await reconcileState()
                     continue
@@ -721,6 +758,8 @@ final class AppState: ObservableObject {
                 for event in response["events"] as? [[String: Any]] ?? [] {
                     consume(event)
                 }
+                cursor = response["cursor"] as? Int ?? cursor
+                epoch = response["epoch"] as? String
                 connected = true
                 connectionDetail = "Local and private"
                 consecutiveFailures = 0
@@ -764,6 +803,9 @@ final class AppState: ObservableObject {
         let data = event["data"] as? [String: Any] ?? [:]
         switch kind {
         case "dictation":
+            let eventSequence = event["seq"] as? Int ?? 0
+            guard eventSequence > lastDictationSequence else { return }
+            lastDictationSequence = eventSequence
             if let text = data["text"] as? String, !text.isEmpty {
                 dictationText = dictationText.isEmpty ? text : "\(dictationText) \(text)"
             }
@@ -788,10 +830,18 @@ final class AppState: ObservableObject {
             }
         case "delta":
             let text = data["text"] as? String ?? ""
-            if let index = responseIndex[turnID] {
-                messages[index].text += text
-            } else {
-                messages.append(.init(id: "assistant-\(turnID)", role: .assistant, text: text, sequence: sequence))
+            let id = "assistant-\(turnID)"
+            if let index = responseIndex[turnID] ?? messages.firstIndex(where: { $0.id == id }) {
+                let current = messages[index].text
+                if let offset = data["offset"] as? Int {
+                    let suffix = Self.unseenDelta(text, offset: offset, after: current.utf8.count)
+                    messages[index].text += suffix
+                } else {
+                    messages[index].text += text
+                }
+                responseIndex[turnID] = index
+            } else if (data["offset"] as? Int ?? 0) == 0 {
+                messages.append(.init(id: id, role: .assistant, text: text, sequence: sequence))
                 responseIndex[turnID] = messages.count - 1
             }
         case "planning":
@@ -859,6 +909,11 @@ final class AppState: ObservableObject {
             productState = connected ? (listening ? .listening : .ready) : .blocked
             errorMessage = data["message"] as? String ?? "The turn failed"
         }
+    }
+
+    static func unseenDelta(_ text: String, offset: Int, after receivedBytes: Int) -> String {
+        guard offset >= 0, offset <= receivedBytes else { return "" }
+        return String(bytes: text.utf8.dropFirst(receivedBytes - offset), encoding: .utf8) ?? ""
     }
 
     private func upsertAction(

@@ -9,6 +9,8 @@ import socket
 import struct
 import tempfile
 import threading
+import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +28,12 @@ MAX_FRAME = 12 * 1024 * 1024
 def _read_exact(connection: socket.socket, size: int) -> bytes:
     output = bytearray()
     while len(output) < size:
-        block = connection.recv(size - len(output))
+        try:
+            block = connection.recv(size - len(output))
+        except TimeoutError as exc:
+            if output:
+                raise ConnectionError("Timed out during a native frame") from exc
+            raise
         if not block:
             raise ConnectionError("Native client disconnected")
         output.extend(block)
@@ -160,9 +167,16 @@ class NativeIPCServer:
             )
             while not self.stopping.is_set():
                 request = read_frame(connection)
+                envelope: dict[str, Any] = {}
                 try:
+                    if "request_id" in request:
+                        request_id = request["request_id"]
+                        if not isinstance(request_id, str) or len(request_id) != 36:
+                            raise ValueError("Native request ID must be a UUID")
+                        uuid.UUID(request_id)
+                        envelope["request_id"] = request_id
                     response = self._dispatch(request)
-                    write_frame(connection, {"ok": True, **response})
+                    write_frame(connection, {"ok": True, **response, **envelope})
                 except (ValueError, PermissionError, RuntimeError) as exc:
                     failure_class = (
                         "denied"
@@ -175,6 +189,7 @@ class NativeIPCServer:
                         connection,
                         {
                             "ok": False,
+                            **envelope,
                             "error": type(exc).__name__,
                             "message": str(exc),
                             "failure": {
@@ -224,12 +239,16 @@ class NativeIPCServer:
                 {"ok": True, "protocol": TASK_PROTOCOL_VERSION, "sample_rate": 16000},
             )
             connection.settimeout(1)
-            with self.audio_write_lock:
+            with self.runtime.lock, self.audio_write_lock:
                 previous = self.audio_connection
                 self.audio_connection = connection
+                self.runtime.native_audio_connected = False
+                self.runtime.native_aec = False
+                self.runtime.native_capture_id = None
                 self.runtime.native_audio_sender = self._send_audio
                 if previous and previous is not connection:
-                    previous.close()
+                    with suppress(OSError):
+                        previous.shutdown(socket.SHUT_RDWR)
             while not self.stopping.is_set():
                 try:
                     size = struct.unpack(">I", _read_exact(connection, 4))[0]
@@ -242,22 +261,29 @@ class NativeIPCServer:
                     event = json.loads(frame[1:])
                     if not isinstance(event, dict) or len(frame) > 16_384:
                         raise ValueError("Native audio event is invalid")
-                    self.runtime.native_audio_event(event)
+                    with self.runtime.lock:
+                        if self.audio_connection is not connection:
+                            return
+                        self.runtime.native_audio_event(event)
                     continue
                 if frame[0] != 2 or (len(frame) - 1) % 4:
                     raise ValueError("Native capture frame is invalid")
                 samples = np.frombuffer(frame, dtype="<f4", offset=1)
-                self.runtime.feed_native_audio(samples)
+                with self.runtime.lock:
+                    if self.audio_connection is not connection:
+                        return
+                    self.runtime.feed_native_audio(samples)
         except (ConnectionError, OSError, ValueError):
             pass
         finally:
-            with self.audio_write_lock:
+            with self.runtime.lock, self.audio_write_lock:
                 if self.audio_connection is connection:
                     self.audio_connection = None
                     self.runtime.native_audio_sender = None
                     self.runtime.native_audio_connected = False
                     self.runtime.native_aec = False
-                    for completed in self.runtime.native_playback_done.values():
+                    self.runtime.native_capture_id = None
+                    for completed in tuple(self.runtime.native_playback_done.values()):
                         completed.set()
                     self.runtime.listen_native(False, session_id="native")
             connection.close()
@@ -268,6 +294,8 @@ class NativeIPCServer:
             if not connection:
                 raise RuntimeError("Native playback connection is unavailable")
             generation = int(values["generation"])
+            if operation == "pcm" and generation != self.runtime.audio.generation:
+                return
             if operation == "pcm":
                 samples = np.asarray(values["samples"], dtype="<f4")
                 payload = (
@@ -290,10 +318,13 @@ class NativeIPCServer:
         if not isinstance(op, str) or op not in PROTOCOL_OPERATIONS - {"authenticate"}:
             raise ValueError("Unsupported native operation")
         if op == "sync":
+            # Replay events committed during the snapshot instead of jumping past them.
+            with self.runtime.events.condition:
+                cursor = self.runtime.events.seq
             messages: list[dict[str, Any]] = []
             if self.runtime.history_store:
                 for stored_message in self.runtime.history_store.load_messages(
-                    "native", limit=2000
+                    "native", limit=2000, include_compacted=True
                 ):
                     role = stored_message.get("role")
                     content = stored_message.get("content")
@@ -316,14 +347,17 @@ class NativeIPCServer:
                         "id": turn.id,
                         "phase": turn.phase,
                         "user_text": turn.text,
+                        "assistant_text": turn.published_text,
                     }
-                    if turn and not turn.terminal
+                    if turn
+                    and not turn.terminal
+                    and not (turn.dictation_only or turn.synthesis_only)
                     else None
                 )
             return {
                 "protocol_version": TASK_PROTOCOL_VERSION,
                 "epoch": self.runtime.events.epoch,
-                "cursor": self.runtime.events.seq,
+                "cursor": cursor,
                 "messages": messages,
                 "tasks": tasks,
                 "active_turn": active_turn,
@@ -479,7 +513,14 @@ class NativeIPCServer:
                 raise ValueError("enabled must be boolean")
             if not isinstance(mode, str):
                 raise ValueError("Capture mode must be a string")
-            self.runtime.listen_native(enabled, session_id="native", mode=mode)
+            capture_id = request.get("capture_id")
+            if capture_id is not None:
+                if not isinstance(capture_id, str) or len(capture_id) != 36:
+                    raise ValueError("Native capture ID must be a UUID")
+                uuid.UUID(capture_id)
+            self.runtime.listen_native(
+                enabled, session_id="native", mode=mode, capture_id=capture_id
+            )
             return {"audio": self.runtime.audio_status()}
         if op == "interrupt":
             self.runtime.interrupt()

@@ -46,14 +46,15 @@ typed unavailable result; MacBot does not open a browser or switch providers.
 Use Conversation for an immediate, cancellable response. It may use
 deterministic read-only enrichment, but it cannot authorize side effects. Choose
 whether the reply should be spoken, then send the message. Stop response cancels
-the current generation and queued playback.
+the current generation and queued playback. Turn off **Follow latest** in the
+Conversation toolbar to read earlier messages while new text arrives.
 
 Choose **Dictate** to transcribe into an editable draft. After **Stop dictation**,
 you can copy the draft or move it into the composer. This path uses local
 speech recognition and keeps its draft in memory until you send it.
 
-Open **Mac Actions** to choose an app or reveal MacBot’s data folder in Finder.
-These controls act on your direct selection.
+Open **Mac Actions** to choose an app, reveal a selected file or folder in
+Finder, or open the location of MacBot’s data folder.
 
 Use Task for durable bounded research. Submission first creates a persisted
 plan and authority manifest. Review its steps, targets, sources, deadline, and
@@ -65,10 +66,9 @@ continues a paused Task. A material replan returns to authorization. An
 `unknown_effect` or blocked state requires explicit reconciliation; it is never
 silently retried.
 
-The current kernel executes the authorized ready list and then evaluates the
-accumulated evidence. Dependency-aware planning, per-step evaluation, and
-claim-linked citation validation remain open implementation work, so inspect
-evidence provenance before relying on a research result.
+A research plan can link a step to earlier steps. If a prerequisite fails or
+returns an empty result, MacBot skips dependent work and records the reason.
+Open the task’s Sources section to compare the cited excerpts with the answer.
 
 ## Library, Settings, and diagnostics
 

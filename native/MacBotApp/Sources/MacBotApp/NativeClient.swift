@@ -5,9 +5,11 @@ enum NativeClientError: LocalizedError {
     case socket(String)
     case protocolError(String)
     case timeout(String)
+    case rejected(NativeRequestFailure)
     var errorDescription: String? {
         switch self {
         case .socket(let value), .protocolError(let value), .timeout(let value): value
+        case .rejected(let failure): failure.message
         }
     }
 }
@@ -41,6 +43,13 @@ func connectNativeSocket(path: String) throws -> Int32 {
     return descriptor
 }
 
+struct NativeRequestFailure: Decodable, Sendable {
+    let code: String
+    let message: String
+    let retryable: Bool
+    let failureClass: FailureClass
+}
+
 actor NativeClient {
     let socketPath: String
     let token: String
@@ -53,6 +62,8 @@ actor NativeClient {
     func request(_ payload: JSONPayload, timeout: TimeInterval = 30) throws -> JSONPayload {
         var body = payload.value
         body["protocol_version"] = TaskProtocolV3.version
+        let requestID = UUID().uuidString
+        body["request_id"] = requestID
         let descriptor = try connectNativeSocket(path: socketPath)
         defer { Darwin.close(descriptor) }
         try configureTimeout(timeout, on: descriptor)
@@ -64,7 +75,18 @@ actor NativeClient {
         guard hello["ok"] as? Bool == true else { throw NativeClientError.protocolError("Native authentication failed") }
         try write(body, to: descriptor)
         let response = try read(from: descriptor)
+        guard response["request_id"] as? String == requestID else {
+            throw NativeClientError.protocolError("The local response did not match its request")
+        }
         guard response["ok"] as? Bool == true else {
+            if let failure = response["failure"] as? [String: Any],
+               let data = try? JSONSerialization.data(withJSONObject: failure) {
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                if let rejection = try? decoder.decode(NativeRequestFailure.self, from: data) {
+                    throw NativeClientError.rejected(rejection)
+                }
+            }
             throw NativeClientError.protocolError(response["message"] as? String ?? "Native request failed")
         }
         return JSONPayload(response)

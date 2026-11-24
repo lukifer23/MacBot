@@ -198,17 +198,21 @@ class HistoryStore:
                 ids.append(row_id)
         return ids
 
-    def load_messages(self, session_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    def load_messages(
+        self, session_id: str, limit: int = 200, *, include_compacted: bool = False
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 2000:
             raise ValueError("Message limit out of range")
+        sql = "SELECT id,turn_id,nonce,ciphertext,created_ns FROM messages WHERE session_id=?"
+        if not include_compacted:
+            sql += (
+                " AND NOT EXISTS ("
+                "SELECT 1 FROM summaries AS summary, json_each(summary.source_ids) AS source "
+                "WHERE summary.session_id=messages.session_id AND source.value=messages.turn_id)"
+            )
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,turn_id,nonce,ciphertext,created_ns FROM messages AS message "
-                "WHERE message.session_id=? AND NOT EXISTS ("
-                "SELECT 1 FROM summaries AS summary, json_each(summary.source_ids) AS source "
-                "WHERE summary.session_id=message.session_id AND source.value=message.turn_id) "
-                "ORDER BY created_ns DESC, ordinal DESC LIMIT ?",
-                (session_id, limit),
+                sql + " ORDER BY created_ns DESC, ordinal DESC LIMIT ?", (session_id, limit)
             ).fetchall()
         messages: list[dict[str, Any]] = []
         for row_id, turn_id, nonce, ciphertext, created_ns in reversed(rows):

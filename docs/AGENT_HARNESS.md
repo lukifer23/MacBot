@@ -21,10 +21,17 @@ The native Agent Kernel is the only release loop. It must pass the stable
 research corpus, recovery, authorization, provenance, cancellation, latency,
 and device gates without a fallback planner or external session store.
 
+Planning validates references to earlier steps and persists them as durable
+step IDs. A failed or empty prerequisite skips dependent work. Replanning
+receives bounded outcomes, previous arguments, and excerpts from recorded
+results. Conversation reads and memory use a data envelope separate from system
+instructions.
+
 Final synthesis receives the original research question, bounded outcome
 records, and numbered excerpts built from persisted tool results. The UI
 shows these recorded sources alongside the answer. Source ID validation
-rejects references to missing entries. Checking whether each claim is
+rejects references to missing entries. Tasks with no usable recorded source return an evidence status without invoking
+the synthesizer. Checking whether each claim is
 supported by the cited excerpt remains a separate quality gate.
 
 ## Boundary for any future architecture review

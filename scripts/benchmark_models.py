@@ -7,6 +7,7 @@ This measures text generation, NOT end-to-audible latency or device acceptance.
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 import platform
@@ -15,11 +16,13 @@ import socket
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import psutil
 
 from macbot.config import Settings, load, prepare
+from macbot.intent import SCHEMA, IntentRouter
 from macbot.llm import LocalLLM
 from macbot.orchestrator import MacBotOrchestrator
 from macbot.provision import catalog, sha256, verify
@@ -87,6 +90,32 @@ HOLDOUT_CASES = [
 ]
 
 
+TASK_CASES = [
+    ("Search my documents for the warranty terms.", ("rag_search",), None, None),
+    (
+        "Search the web for the latest changes to US vehicle import rules.",
+        ("web_search",),
+        None,
+        None,
+    ),
+    (
+        "Search my documents for the return policy, then use that result to search the web "
+        "for evidence about the same policy.",
+        ("rag_search", "web_search"),
+        ((), (0,)),
+        None,
+    ),
+    (
+        "Search my documents for the payment policy without searching the web.",
+        ("rag_search",),
+        None,
+        None,
+    ),
+    ("Open Calendar and delete my next appointment.", (), None, None),
+    ("Research it.", (), None, None),
+]
+
+
 def contains_answer(content, term):
     terms = (
         term
@@ -103,7 +132,7 @@ def percentile(values, p=0.95):
 
 
 def run(name, backend, destination, case_set="core", context_length=None):
-    cases = HOLDOUT_CASES if case_set == "holdout" else CASES
+    cases = {"core": CASES, "holdout": HOLDOUT_CASES, "task": TASK_CASES}[case_set]
     summary_path = destination.with_suffix(".summary.json")
     if destination == summary_path or destination.exists() or summary_path.exists():
         raise FileExistsError("Choose a new output path; benchmark evidence is immutable")
@@ -141,6 +170,7 @@ def run(name, backend, destination, case_set="core", context_length=None):
                     raise RuntimeError(outcome)
             llm = LocalLLM(s, supervisor.auth)
             tools = Tools(s, supervisor.auth)
+            planner = IntentRouter(llm, tools) if case_set == "task" else None
             startup = time.monotonic() - started
             records = []
             # Reserve the report after startup; partial results survive an interrupted run.
@@ -155,42 +185,54 @@ def run(name, backend, destination, case_set="core", context_length=None):
                     calls = {}
                     error = None
                     try:
-                        for delta in llm.stream(
-                            [
-                                {"role": "system", "content": s.system_prompt},
-                                {"role": "user", "content": prompt},
-                            ],
-                            tools.definitions(),
-                            threading.Event(),
-                        ):
-                            if (
-                                delta.get("content")
-                                or delta.get("tool_calls")
-                                or delta.get("_first_token")
-                            ) and first is None:
-                                first = time.monotonic() - start
-                            content += delta.get("content") or ""
-                            for fragment in delta.get("tool_calls", []):
-                                call = calls.setdefault(
-                                    fragment.get("index", 0), {"name": "", "arguments": ""}
-                                )
-                                for key in ("name", "arguments"):
-                                    call[key] += fragment.get("function", {}).get(key, "")
-                        parsed = [
-                            {"name": c["name"], "arguments": json.loads(c["arguments"])}
-                            for c in calls.values()
-                        ]
-                        for call in parsed:
-                            tools.validate(call["name"], call["arguments"])
-                        passed = (
-                            (not parsed and contains_answer(content, term))
-                            if expected is None
-                            else (
-                                len(parsed) == 1
-                                and parsed[0]["name"] == expected
-                                and (args is None or parsed[0]["arguments"] == args)
+                        if planner is not None:
+                            intent = planner.route(prompt, threading.Event())
+                            parsed = [asdict(action) for action in intent.actions]
+                            content = intent.clarification
+                            actual = tuple(action.name for action in intent.actions)
+                            links = tuple(action.depends_on for action in intent.actions)
+                            passed = (
+                                intent.mode == ("act" if expected else "clarify")
+                                and actual == expected
+                                and (args is None or links == args)
                             )
-                        )
+                        else:
+                            for delta in llm.stream(
+                                [
+                                    {"role": "system", "content": s.system_prompt},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                tools.definitions(),
+                                threading.Event(),
+                            ):
+                                if (
+                                    delta.get("content")
+                                    or delta.get("tool_calls")
+                                    or delta.get("_first_token")
+                                ) and first is None:
+                                    first = time.monotonic() - start
+                                content += delta.get("content") or ""
+                                for fragment in delta.get("tool_calls", []):
+                                    call = calls.setdefault(
+                                        fragment.get("index", 0), {"name": "", "arguments": ""}
+                                    )
+                                    for key in ("name", "arguments"):
+                                        call[key] += fragment.get("function", {}).get(key, "")
+                            parsed = [
+                                {"name": c["name"], "arguments": json.loads(c["arguments"])}
+                                for c in calls.values()
+                            ]
+                            for call in parsed:
+                                tools.validate(call["name"], call["arguments"])
+                            passed = (
+                                (not parsed and contains_answer(content, term))
+                                if expected is None
+                                else (
+                                    len(parsed) == 1
+                                    and parsed[0]["name"] == expected
+                                    and (args is None or parsed[0]["arguments"] == args)
+                                )
+                            )
                     except Exception as exc:
                         parsed = []
                         passed = False
@@ -229,6 +271,11 @@ def run(name, backend, destination, case_set="core", context_length=None):
                 "model": receipt,
                 "case_set": case_set,
                 "cases": len(cases),
+                "task_router_sha256": (
+                    hashlib.sha256(inspect.getsource(IntentRouter.route).encode()).hexdigest()
+                    if planner is not None
+                    else None
+                ),
                 "artifacts": catalog()[name],
                 "runtime_versions": {
                     package: importlib.metadata.version(package)
@@ -239,11 +286,16 @@ def run(name, backend, destination, case_set="core", context_length=None):
                 "binary_sha256": sha256(root / "bin/llama-server") if backend == "llama" else None,
                 "system_prompt_sha256": hashlib.sha256(s.system_prompt.encode()).hexdigest(),
                 "tool_schema_sha256": hashlib.sha256(
-                    json.dumps(tools.definitions(), sort_keys=True).encode()
+                    json.dumps(
+                        SCHEMA if planner is not None else tools.definitions(), sort_keys=True
+                    ).encode()
                 ).hexdigest(),
                 "model_settings": s.models.model_dump(),
                 "backend": backend,
                 "startup_seconds": startup,
+                "warm_p95_decision_ms": (
+                    percentile([r["total_ms"] for r in warm]) if planner is not None else None
+                ),
                 "warm_selection_accuracy": sum(r["pass"] for r in warm) / len(warm),
                 "warm_first_output_rate": sum(r["ttft_ms"] is not None for r in warm) / len(warm),
                 "warm_p95_ttft_ms": percentile(
@@ -251,7 +303,12 @@ def run(name, backend, destination, case_set="core", context_length=None):
                 ),
                 "max_rss_bytes": max(r["rss_bytes"] for r in records),
                 "platform": platform.platform(),
-                "scope": "Text and tool-selection screening only. No actions executed. Not audible latency or release acceptance.",
+                "scope": (
+                    "Production Task planner screening. Reports completed decisions without "
+                    "executing any capability."
+                    if planner is not None
+                    else "Text and tool-selection screening. No actions executed."
+                ),
             }
             with summary_path.open("x") as output:
                 json.dump(summary, output, indent=2)
@@ -270,7 +327,7 @@ def run(name, backend, destination, case_set="core", context_length=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("model")
-    parser.add_argument("--case-set", choices=["core", "holdout"], default="core")
+    parser.add_argument("--case-set", choices=["core", "holdout", "task"], default="core")
     parser.add_argument("--backend", choices=["llama", "mlx"], default="llama")
     parser.add_argument("--context-length", type=int, metavar="TOKENS")
     parser.add_argument("--output", type=Path, required=True)

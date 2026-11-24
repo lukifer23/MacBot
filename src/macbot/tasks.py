@@ -164,6 +164,7 @@ class PlannedAction:
     arguments: dict[str, Any]
     source_span: str
     safety_class: SafetyClass
+    depends_on: tuple[int, ...] = ()
 
     @property
     def idempotency_key(self) -> str:
@@ -188,6 +189,7 @@ class ActionResult:
     source_span: str
     safety_class: SafetyClass
     idempotency_key: str
+    depends_on: tuple[int, ...] = ()
     state: ActionState = "accepted"
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -254,6 +256,7 @@ class TaskPlan:
                     source_span=item.source_span,
                     safety_class=item.safety_class,
                     idempotency_key=item.idempotency_key,
+                    depends_on=item.depends_on,
                 )
                 for item in intent.actions
             ],
@@ -276,6 +279,7 @@ class TaskPlan:
                 safety_class=action.safety_class,
                 idempotency_key=action.idempotency_key,
                 step_id=action.action_id,
+                depends_on=tuple(self.actions[ordinal].action_id for ordinal in action.depends_on),
             )
             for index, action in enumerate(self.actions)
         ]
