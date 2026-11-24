@@ -50,6 +50,10 @@ if path.exists():
 (path / "Contents/Resources").mkdir(parents=True)
 PY
 cp "$package_root/.build/release/MacBotApp" "$app/Contents/MacOS/MacBotApp"
+# SwiftPM can preserve resource symlinks on some toolchains. Ship a real
+# resource and reject drift from the canonical Python protocol.
+cmp "$repo_root/src/macbot/defaults/task_protocol_v3.json" \
+  "$package_root/Sources/MacBotApp/Resources/task_protocol_v3.json"
 resource_bundle="$package_root/.build/release/MacBotApp_MacBotApp.bundle"
 if [[ ! -d "$resource_bundle" ]]; then
   echo "SwiftPM did not produce the required MacBotApp resource bundle" >&2

@@ -103,7 +103,9 @@ guarantee. Supported operations are
 `interrupt`, `clear`, `documents`, `document_import`, `document_delete`, and
 `document_search`. A successful frame is `{"ok":true,...}`. A failed command is
 `{"ok":false,"error":"...","message":"...","failure":{"code":"...","message":"...","retryable":false,"failure_class":"denied|invalid_request|permanent"}}`.
-The packaged protocol resource is canonical for Task states and commands; the
+The Python protocol resource is canonical for Task states and commands. The
+Swift resource is a byte-for-byte transport copy checked during CI and app builds.
+In both languages, the
 remaining operation payloads are still hand-maintained in Swift and Python and
 must be schema-generated before claiming a single-source complete protocol.
 
