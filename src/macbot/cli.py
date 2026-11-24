@@ -41,9 +41,9 @@ from .provision import (
     llama_binary_directory,
     model_dir,
     release_artifacts,
+    selected_artifacts,
     sha256,
     verify,
-    voice_model,
 )
 
 
@@ -148,14 +148,6 @@ def build_inference(
         }
     }
     atomic_write(out / "versions.json", json.dumps(provenance, indent=2, sort_keys=True).encode())
-
-
-def selected_artifacts(settings: Settings) -> dict[str, str]:
-    return {
-        **release_artifacts(),
-        "llm": settings.models.llm,
-        "tts": voice_model(settings.models.tts_voice),
-    }
 
 
 def dependency_versions() -> dict[str, str | None]:

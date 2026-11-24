@@ -56,6 +56,12 @@ MODEL_PROFILES: dict[str, dict[str, str]] = {
     "qwen-2b-new-runtime": {"llama_build": "b11960"},
     "lfm3-1.7b-q4": {"llm": "lfm3-1.7b-q4-k-m", "llama_build": "b11960"},
     "lfm3-1.7b-qad": {"llm": "lfm3-1.7b-qad-q4-0", "llama_build": "b11960"},
+    "whistle": {"stt": "whistle"},
+    "lfm3-1.7b-qad-whistle": {
+        "llm": "lfm3-1.7b-qad-q4-0",
+        "llama_build": "b11960",
+        "stt": "whistle",
+    },
     "qwen-2b-mlx": {"llm": "qwen3.5-2b-mlx", "llm_backend": "mlx"},
     "aiden-0.6b": {"tts_voice": "qwen-aiden-0.6b"},
     "ryan-0.6b": {"tts_voice": "qwen-ryan-0.6b"},
@@ -73,7 +79,7 @@ class Models(StrictModel):
     max_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.1, ge=0, le=2)
     threads: int = Field(default=4, ge=1, le=32)
-    stt: Literal["parakeet"] = "parakeet"
+    stt: Literal["parakeet", "whistle"] = "parakeet"
     tts_voice: str = "qwen-aiden-1.7b"
     embedding: Literal["minilm"] = "minilm"
 

@@ -455,6 +455,7 @@ struct ModelProfileOption: Identifiable {
     let id: String
     let model: String
     let runtime: String
+    let stt: String?
     let installed: Bool
     let modelBytes: Int64
 }

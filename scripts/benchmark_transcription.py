@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -31,16 +32,24 @@ def distance(expected, actual):
     return row[-1]
 
 
-def run(output):
+def run(output, model):
     s = load()
+    s.models.stt = model
     root = s.data_dir / "benchmarks/librispeech"
     manifest = json.loads((root / "manifest.json").read_text())
-    receipt = verify(s, "parakeet")
+    receipt = verify(s, model)
+    summary_path = output.with_suffix(".summary.json")
+    if not manifest["records"]:
+        raise ValueError("The benchmark corpus has no recordings")
+    if output.exists() or summary_path.exists():
+        raise FileExistsError("Choose a new output path for benchmark evidence")
     start = time.monotonic()
     stt = Transcriber(s)
     load_ms = (time.monotonic() - start) * 1000
     results = []
     try:
+        with output.open("x"):
+            pass
         for repeat in range(2):
             for record in manifest["records"]:
                 path = root / record["file"]
@@ -52,7 +61,6 @@ def run(output):
                 elapsed = (time.monotonic() - start) * 1000
                 expected = words(record["transcript"])
                 actual = words(text)
-                processes = [psutil.Process()]
                 result = {
                     "id": record["id"],
                     "repeat": repeat,
@@ -62,13 +70,13 @@ def run(output):
                     "transcript": text,
                     "word_errors": distance(expected, actual),
                     "reference_words": len(expected),
-                    "rss_bytes": sum(p.memory_info().rss for p in processes),
+                    "rss_bytes": psutil.Process().memory_info().rss,
                 }
                 results.append(result)
                 with output.open("a") as f:
                     f.write(json.dumps(result) + "\n")
                 print(
-                    "parakeet",
+                    model,
                     repeat,
                     record["id"],
                     round(elapsed, 1),
@@ -78,18 +86,19 @@ def run(output):
         warm = [r for r in results if r["repeat"] == 1]
         times = sorted(r["elapsed_ms"] for r in warm)
         summary = {
-            "backend": "parakeet",
+            "backend": "cactus-cpu" if model == "whistle" else "parakeet-mlx",
             "model": receipt,
             "corpus_revision": manifest["revision"],
             "load_ms": load_ms,
             "first_inference_ms": results[0]["elapsed_ms"],
-            "warm_p95_ms": times[18],
+            "warm_p95_ms": times[math.ceil(len(times) * 0.95) - 1],
             "warm_wer": sum(r["word_errors"] for r in warm)
             / sum(r["reference_words"] for r in warm),
             "max_rss_bytes": max(r["rss_bytes"] for r in results),
             "scope": manifest["scope"],
         }
-        output.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
+        with summary_path.open("x") as report:
+            json.dump(summary, report, indent=2)
         print(json.dumps(summary), flush=True)
     finally:
         stt.close()
@@ -97,9 +106,10 @@ def run(output):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
+    p.add_argument("--model", choices=("parakeet", "whistle"), default="parakeet")
     p.add_argument("--output", required=True, type=Path)
     args = p.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     settings = load()
     with InferenceResidencyLease(settings.data_dir, purpose="stt-benchmark"):
-        run(args.output)
+        run(args.output, args.model)

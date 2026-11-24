@@ -24,7 +24,7 @@ import macbot
 from macbot.auth import AuthStore
 from macbot.config import Settings, prepare, save
 from macbot.native_ipc import read_frame, write_frame
-from macbot.provision import voice_model
+from macbot.provision import selected_artifacts
 from macbot.residency import InferenceResidencyConflict, InferenceResidencyLease
 
 
@@ -92,7 +92,7 @@ def verify(provisioned, model, report):
         ]:
             endpoint.port = free_port(allocated)
         prepare(s)
-        for name in [model, "parakeet", voice_model(s.models.tts_voice), "silero", "minilm"]:
+        for name in selected_artifacts(s).values():
             source = provisioned / "models" / name
             assert source.is_dir(), f"Provision {name} first"
             (s.data_dir / "models" / name).symlink_to(source, target_is_directory=True)

@@ -736,6 +736,9 @@ private struct SettingsView: View {
                     }.disabled(!state.canChangeSettings || state.isSavingSettings)
                     if let profile = state.modelProfiles.first(where: { $0.id == state.candidateProfile }) {
                         LabeledContent("Model and runtime", value: "\(profile.model) · \(profile.runtime)")
+                        if let stt = profile.stt {
+                            LabeledContent("Transcription model", value: stt == "whistle" ? "Whistle · Cactus CPU" : stt)
+                        }
                         LabeledContent("Language model files", value: ByteCountFormatter.string(fromByteCount: profile.modelBytes, countStyle: .file))
                         if !profile.installed {
                             Text("Provision the model and runtime before choosing this profile.").font(.callout)

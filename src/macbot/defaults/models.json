@@ -807,6 +807,25 @@
       }
     ]
   },
+  "whistle": {
+    "repo": "Cactus-Compute/whistle",
+    "revision": "d3ea19e0fe4f99fa7dfb9afa63070b1c6eacaff1",
+    "license": "Apache-2.0",
+    "files": [
+      {
+        "name": "whistle.cact",
+        "url": "https://huggingface.co/Cactus-Compute/whistle/resolve/d3ea19e0fe4f99fa7dfb9afa63070b1c6eacaff1/whistle.cact",
+        "size": 16919407,
+        "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb"
+      },
+      {
+        "name": "cactus_runtime-4.0.0-py3-none-macosx_11_0_arm64.whl",
+        "url": "https://huggingface.co/Cactus-Compute/cactus/resolve/1a028f5a3972b67dd8d8752f882113d475e7ec4c/releases/4.0.0/python/cactus_runtime-4.0.0-py3-none-macosx_11_0_arm64.whl",
+        "size": 720571,
+        "sha256": "782a43480285bf36e7dda947f50496dc597dceb26a8f8f9406d89fbe7ce96a1c"
+      }
+    ]
+  },
   "lfm3-1.7b-qad-q4-0": {
     "repo": "LiquidAI/LFM3-1.7B-GGUF",
     "revision": "b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf",

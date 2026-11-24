@@ -203,3 +203,33 @@ ungrounded proposal. Dependent steps wait for usable evidence and execute the
 reviewed query. Evidence is not inserted into a web query by the dependency.
 
 [LiquidAI artifact and support requirements](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)
+
+## Whistle speech recognition
+
+The `whistle` profile runs Cactus Whistle on the Apple Silicon CPU. The model
+and its native runtime are checksum-pinned and provisioned together. For an
+isolated speech comparison, retain the release chat and voice models and switch
+only the transcriber. `lfm3-1.7b-qad-whistle` pairs it with the compact QAD model.
+Save a profile in Settings or via the CLI, then restart local services.
+
+```sh
+uv run --frozen macbot models download whistle
+uv run --frozen python scripts/provision_benchmark_audio.py
+uv run --frozen python scripts/benchmark_transcription.py --model whistle --output reports/whistle.jsonl
+uv run --frozen macbot model-profile whistle
+```
+
+Both recognizers use the same final capture, dictation, and file transcription
+paths. Whistle live preview re-decodes after 800 ms of new audio. The final
+transcript uses the complete utterance. Run the same benchmark with
+`--model parakeet` and a new output path to compare accuracy and latency on the
+same Mac. Read-speech latency starts with available PCM samples and excludes
+audio capture, endpoint detection, answer generation, and playback.
+
+On the hosted Apple Silicon Mac, the pinned Whistle runtime loaded in 26 ms.
+The first clip took 101 ms, warm p95 was 174 ms, corpus WER was 6.27%, and
+peak sampled process RSS was 114 MiB. The 20 clips are read speech from one
+LibriSpeech speaker. These measurements do not establish microphone latency or
+relative accuracy against Parakeet on the same machine.
+
+[Cactus Whistle model card](https://huggingface.co/Cactus-Compute/whistle)

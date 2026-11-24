@@ -819,6 +819,7 @@ final class AppState: ObservableObject {
                       let model = item["model"] as? String,
                       let runtime = item["runtime"] as? String else { return nil }
                 return ModelProfileOption(id: id, model: model, runtime: runtime,
+                                          stt: item["stt"] as? String,
                                           installed: item["installed"] as? Bool == true,
                                           modelBytes: item["model_bytes"] as? Int64 ?? 0)
             }

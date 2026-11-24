@@ -30,6 +30,14 @@ jobs:
         run: |
           cmp src/macbot/defaults/task_protocol_v3.json native/MacBotApp/Sources/MacBotApp/Resources/task_protocol_v3.json
           swift test --package-path native/MacBotApp
+      - name: Download and run real Whistle speech recognition
+        env:
+          MACBOT_DATA_DIR: ${{ runner.temp }}/macbot-whistle
+        run: |
+          uv run --frozen macbot models download whistle silero
+          uv run --frozen python scripts/provision_benchmark_audio.py
+          uv run --frozen pytest tests/test_voice_assistant_transcription.py -k whistle
+          uv run --frozen python scripts/benchmark_transcription.py --model whistle --output "$MACBOT_DATA_DIR/reports/whistle.jsonl"
       - run: uv build
       - name: Inspect distribution contents
         run: uv run --frozen python scripts/inspect_package.py

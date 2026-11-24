@@ -413,7 +413,7 @@ class NativeIPCServer:
                 entry = artifacts[model]
                 present = all(
                     (self.settings.data_dir / "models" / artifact / file["name"]).is_file()
-                    for artifact in (model, voice_model(fields["tts_voice"]))
+                    for artifact in (model, fields["stt"], voice_model(fields["tts_voice"]))
                     for file in artifacts[artifact]["files"]
                 )
                 runtime = fields["llama_build"] if fields["llm_backend"] == "llama" else "MLX"
@@ -426,6 +426,7 @@ class NativeIPCServer:
                         "id": profile,
                         "model": model,
                         "runtime": runtime,
+                        "stt": fields["stt"],
                         "installed": present,
                         "model_bytes": sum(file["size"] for file in entry["files"]),
                     }
