@@ -14,7 +14,7 @@ from .research_context import replan_context
 from .tasks import Intent, PlannedAction, SafetyClass
 from .tools import READ_ONLY, SCHEMAS, TASK_RELEASE_CAPABILITIES, Tools
 
-ACTION_VARIANTS = [
+ACTION_VARIANTS: list[dict[str, Any]] = [
     {
         "type": "object",
         "additionalProperties": False,

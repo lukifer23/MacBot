@@ -193,7 +193,14 @@ class Runtime:
                 "failed",
             }:
                 turn.state = state
-            if kind in {"transcribing", "generating", "speaking", "approval", "tool"}:
+            if kind in {
+                "transcribing",
+                "gathering_context",
+                "generating",
+                "speaking",
+                "approval",
+                "tool",
+            }:
                 turn.phase = kind
             if state in {"completed", "interrupted", "failed"}:
                 turn.phase = state
