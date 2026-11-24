@@ -33,6 +33,11 @@ final class AppState: ObservableObject {
     @Published var importingDocuments = false
     @Published var documentQuery = ""
     @Published var retentionDays = 30
+    @Published var semanticMemoryEnabled = true
+    @Published var memories: [MemorySummary] = []
+    @Published var memorySheet = false
+    @Published var confirmClearMemory = false
+    @Published private(set) var memoryBusy = false
     @Published var liveTranscriptionPreview = false
     @Published private(set) var partialTranscript = ""
     @Published var endpointMilliseconds = 350
@@ -48,6 +53,9 @@ final class AppState: ObservableObject {
     @Published private(set) var macActionBusy = false
     @Published private(set) var transcribingFile = false
     @Published private(set) var modelProfile = "release"
+    @Published private(set) var activeModelProfile = "release"
+    @Published var candidateProfile = "release"
+    @Published var modelProfiles: [ModelProfileOption] = []
     @Published var confirmClearConversation = false
     @Published var pendingDocumentDeletion: DocumentItem?
     @Published var confirmCredentialRemoval = false
@@ -59,6 +67,7 @@ final class AppState: ObservableObject {
     @Published var isSavingSettings = false
     @Published var taskCommandsInFlight: Set<String> = []
 
+    private var savedSemanticMemoryEnabled = true
     private var savedRetentionDays = 30
     private var savedLiveTranscriptionPreview = false
     private var savedEndpointMilliseconds = 350
@@ -98,14 +107,17 @@ final class AppState: ObservableObject {
         tasks.contains { [.queued, .running, .pauseRequested, .cancelRequested].contains($0.state) }
     }
     var settingsHaveChanges: Bool {
-        retentionDays != savedRetentionDays
+        retentionDays != savedRetentionDays || semanticMemoryEnabled != savedSemanticMemoryEnabled
             || liveTranscriptionPreview != savedLiveTranscriptionPreview
             || endpointMilliseconds != savedEndpointMilliseconds
             || contextLength != savedContextLength
             || selectedVoice != savedVoice
     }
 
-    var activeTasks: [TaskItem] { tasks.filter { $0.state.isActive } }
+    var tasksNeedingApproval: [TaskItem] { tasks.filter { $0.state == .awaitingAuthorization } }
+    var activeTasks: [TaskItem] {
+        tasks.filter { $0.state.isActive && $0.state != .awaitingAuthorization }
+    }
     var completedTasks: [TaskItem] { Array(tasks.filter { !$0.state.isActive }.reversed()) }
 
     func start() {
@@ -200,6 +212,12 @@ final class AppState: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let mode = composerMode
         guard !text.isEmpty, !isSending else { return }
+        if mode == .macAction {
+            guard !macActionBusy, text.count <= 400 else { return }
+            macActionRequest = text
+            planMacAction()
+            return
+        }
         guard let client = commandClient else {
             explainUnavailable("send a message")
             return
@@ -223,7 +241,8 @@ final class AppState: ObservableObject {
                     if let payload = response["task"] as? [String: Any] {
                         upsertTask(payload, sequence: cursor + 1)
                     }
-                    if selectedPage == .conversation { selectedPage = .tasks }
+                case .macAction:
+                    return
                 }
             } catch {
                 draft = draft.isEmpty ? text : "\(text)\n\n\(draft)"
@@ -708,6 +727,7 @@ final class AppState: ObservableObject {
             guard let status = response["status"] as? [String: Any] else { return }
             if let models = status["models"] as? [String: Any] {
                 modelName = models["llm"] as? String ?? "Unknown"
+                activeModelProfile = models["profile"] as? String ?? "release"
                 voiceName = models["tts_voice"] as? String ?? "Unknown"
             }
             if let history = status["history"] as? [String: Any] {
@@ -772,11 +792,22 @@ final class AppState: ObservableObject {
             let response = try await client.request(JSONPayload(["op": "settings"])).value
             guard let settings = response["settings"] as? [String: Any] else { return }
             retentionDays = settings["retention_days"] as? Int ?? 30
+            semanticMemoryEnabled = settings["semantic_memory_enabled"] as? Bool ?? true
+            savedSemanticMemoryEnabled = semanticMemoryEnabled
             liveTranscriptionPreview = settings["live_transcription_preview"] as? Bool ?? false
             endpointMilliseconds = settings["endpoint_ms"] as? Int ?? 350
             contextLength = settings["context_length"] as? Int ?? 16_384
             selectedVoice = settings["tts_voice"] as? String ?? voiceName
             modelProfile = settings["model_profile"] as? String ?? "release"
+            candidateProfile = modelProfile
+            modelProfiles = (settings["profiles"] as? [[String: Any]] ?? []).compactMap { item in
+                guard let id = item["id"] as? String,
+                      let model = item["model"] as? String,
+                      let runtime = item["runtime"] as? String else { return nil }
+                return ModelProfileOption(id: id, model: model, runtime: runtime,
+                                          installed: item["installed"] as? Bool == true,
+                                          modelBytes: item["model_bytes"] as? Int64 ?? 0)
+            }
             availableVoices = (settings["voices"] as? [[String: Any]] ?? []).compactMap { item in
                 guard let id = item["id"] as? String else { return nil }
                 return VoiceOption(id: id, installed: item["installed"] as? Bool == true)
@@ -788,6 +819,63 @@ final class AppState: ObservableObject {
             savedVoice = selectedVoice
             searchCredentialConfigured = KeychainStore.hasSearchCredential()
         } catch { show(error) }
+    }
+
+    func reviewMemories() {
+        guard let client = commandClient, !memoryBusy else { return }
+        memoryBusy = true
+        memories = []
+        memorySheet = true
+        Task {
+            defer { memoryBusy = false }
+            do {
+                let response = try await client.request(JSONPayload(["op": "memory_list"])).value
+                guard commandClient === client else { return }
+                memories = (response["summaries"] as? [[String: Any]] ?? []).compactMap { record in
+                    guard let id = record["id"] as? String,
+                          let content = record["content"] as? String else { return nil }
+                    return MemorySummary(id: id, content: content,
+                                         sourceCount: (record["source_turn_ids"] as? [String])?.count ?? 0)
+                }
+            } catch {
+                memorySheet = false
+                show(error)
+            }
+        }
+    }
+
+    func clearMemories() {
+        guard let client = controlClient, !memoryBusy else { return }
+        memoryBusy = true
+        Task {
+            defer { memoryBusy = false }
+            do {
+                _ = try await client.request(JSONPayload(["op": "memory_clear"]), timeout: 10)
+                if controlClient === client { memories = [] }
+            } catch {
+                memorySheet = false
+                show(error)
+            }
+        }
+    }
+
+    func saveModelProfile() {
+        guard !settingsHaveChanges, !isSavingSettings, candidateProfile != modelProfile,
+              modelProfiles.contains(where: { $0.id == candidateProfile && $0.installed }),
+              let client = commandClient else { return }
+        let profile = candidateProfile
+        isSavingSettings = true
+        Task {
+            defer { isSavingSettings = false }
+            do {
+                _ = try await client.request(JSONPayload([
+                    "op": "update_settings", "values": ["model_profile": profile],
+                ]), timeout: 60)
+                guard commandClient === client else { return }
+                restartRequired = true
+                await refreshSettings()
+            } catch { show(error) }
+        }
     }
 
     func saveRuntimeSettings() {
@@ -808,6 +896,7 @@ final class AppState: ObservableObject {
                     "op": "update_settings",
                     "values": [
                         "retention_days": retentionDays,
+                        "semantic_memory_enabled": semanticMemoryEnabled,
                         "endpoint_ms": endpointMilliseconds,
                         "live_transcription_preview": liveTranscriptionPreview,
                         "context_length": contextLength,
@@ -820,6 +909,7 @@ final class AppState: ObservableObject {
                 savedContextLength = contextLength
                 savedVoice = selectedVoice
                 restartRequired = true
+                await refreshSettings()
             } catch { show(error) }
         }
     }

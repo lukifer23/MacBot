@@ -20,7 +20,9 @@ import yaml
 
 from .auth import AuthStore
 from .config import (
+    LLAMA_BUILDS,
     MODEL_PROFILES,
+    RELEASE_LLAMA_BUILD,
     Settings,
     atomic_write,
     load,
@@ -28,27 +30,21 @@ from .config import (
     prepare,
     save,
     validate_release_selection,
-    validate_runtime_selection,
 )
 from .history import KEYCHAIN_SERVICE, runtime_history_key
 from .provision import (
     catalog,
+    configure_model_profile,
     download,
     install_binaries,
     installed_model_inventory,
+    llama_binary_directory,
     model_dir,
     release_artifacts,
     sha256,
     verify,
     voice_model,
 )
-
-REVISIONS = {
-    # llama.cpp release b10509. Keep the immutable commit as the build input;
-    # the release asset is independently published as sha256
-    # ca989517532a06a22846ed00d6beb2684186c93336b0337d6eecc8fed2143070.
-    "llama.cpp": "fe8156f789011f6ea0baf6917ea09f88b89d9554",
-}
 
 
 def _keychain_history_key() -> bytes | None:
@@ -96,89 +92,62 @@ def _history_pipe(key: bytes | None) -> tuple[int | None, dict[str, str]]:
     return read_fd, environment
 
 
-def build_inference(settings: Settings, source: Path | None = None):
+def build_inference(
+    settings: Settings, source: Path | None = None, build: str = RELEASE_LLAMA_BUILD
+) -> None:
+    revision = LLAMA_BUILDS[build]
     root = (source or settings.data_dir / "sources").expanduser().resolve()
+    component = "llama.cpp"
+    repo = root / "models" / (component if build == RELEASE_LLAMA_BUILD else f"{component}-{build}")
+    origin = "https://github.com/ggml-org/llama.cpp"
+    if not (repo / ".git").exists():
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", origin], check=True)
+    dirty = subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain"], text=True
+    ).strip()
+    if dirty:
+        raise RuntimeError(f"llama.cpp {build}: source checkout has local changes")
+    actual = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if actual.returncode or actual.stdout.strip() != revision:
+        subprocess.run(
+            ["git", "-C", str(repo), "fetch", "--depth", "1", origin, revision], check=True
+        )
+        subprocess.run(["git", "-C", str(repo), "checkout", "--detach", revision], check=True)
     build_flags = [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DGGML_METAL=ON",
-        # MacBot uses only llama-server's authenticated API. Building the
-        # unrelated upstream browser UI adds npm/network work and can hang an
-        # otherwise complete native provisioning run.
         "-DLLAMA_BUILD_UI=OFF",
         "-DLLAMA_USE_PREBUILT_UI=OFF",
     ]
-    for name, revision in REVISIONS.items():
-        repo = root / "models" / name
-        if not repo.exists():
-            repo.mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "remote",
-                    "add",
-                    "origin",
-                    "https://github.com/ggml-org/" + name,
-                ],
-                check=True,
-            )
-        dirty = subprocess.check_output(
-            ["git", "-C", str(repo), "status", "--porcelain"], text=True
-        ).strip()
-        if dirty:
-            raise RuntimeError(f"{name}: source checkout has local changes; refusing to replace it")
-        actual = subprocess.check_output(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-        ).strip()
-        if actual != revision:
-            subprocess.run(
-                ["git", "-C", str(repo), "fetch", "--depth", "1", "origin", revision], check=True
-            )
-            subprocess.run(["git", "-C", str(repo), "checkout", "--detach", revision], check=True)
-        subprocess.run(
-            [
-                "cmake",
-                "-S",
-                str(repo),
-                "-B",
-                str(repo / "build"),
-                *build_flags,
-            ],
-            check=True,
-        )
-        # Conversion tooling is isolated from MacBot's runtime dependency graph.
-        # This is an explicit provisioning step; inference never invokes uv or
-        # accesses the network.
+    build_dir = repo / "build"
+    subprocess.run(["cmake", "-S", str(repo), "-B", str(build_dir), *build_flags], check=True)
+    if build == RELEASE_LLAMA_BUILD:
+        # Only the production source conversion needs the upstream Python tools.
         subprocess.run(["uv", "sync", "--project", str(repo)], check=True, timeout=1800)
-        targets = ["llama-server", "llama-bench", "llama-quantize"]
-        subprocess.run(
-            ["cmake", "--build", str(repo / "build"), "--target", *targets, "-j", "4"], check=True
-        )
-    install_binaries(settings, root)
-    provenance = {}
-    for component, revision in REVISIONS.items():
-        repo = root / "models" / component
-        names = ["llama-server", "llama-bench", "llama-quantize"]
-        provenance[component] = {
-            "source": "https://github.com/ggml-org/" + component,
+    names = ["llama-server", "llama-bench", "llama-quantize"]
+    subprocess.run(["cmake", "--build", str(build_dir), "--target", *names, "-j", "4"], check=True)
+    install_binaries(settings, build_dir / "bin", build)
+    out = llama_binary_directory(settings, build)
+    provenance = {
+        component: {
+            "source": origin,
             "revision": revision,
-            "release": "b10509",
+            "release": build,
             "build_flags": build_flags,
             "license": "MIT",
             "license_sha256": sha256(repo / "LICENSE"),
-            "binaries": {
-                name: sha256(settings.data_dir / "bin" / name)
-                for name in names
-                if (settings.data_dir / "bin" / name).is_file()
-            },
+            "binaries": {name: sha256(out / name) for name in names},
         }
-    atomic_write(
-        settings.data_dir / "bin/versions.json",
-        json.dumps(provenance, indent=2, sort_keys=True).encode(),
-    )
+    }
+    atomic_write(out / "versions.json", json.dumps(provenance, indent=2, sort_keys=True).encode())
 
 
 def selected_artifacts(settings: Settings) -> dict[str, str]:
@@ -224,7 +193,11 @@ def doctor(settings: Settings) -> dict:
         except (ValueError, FileNotFoundError) as exc:
             checks[name] = {"present": False, "error": str(exc)}
     for binary in ["llama-server"] if settings.models.llm_backend == "llama" else []:
-        checks[binary] = {"present": (settings.data_dir / "bin" / binary).is_file()}
+        checks[binary] = {
+            "present": (
+                llama_binary_directory(settings, settings.models.llama_build) / binary
+            ).is_file()
+        }
     checks["ffmpeg"] = {"present": bool(shutil.which("ffmpeg"))}
     return {
         "ready_to_start": all(c["present"] for c in checks.values()),
@@ -309,6 +282,7 @@ def main():
     sub.add_parser("doctor")
     build = sub.add_parser("build-inference")
     build.add_argument("--source", type=Path)
+    build.add_argument("--build", choices=LLAMA_BUILDS, default=RELEASE_LLAMA_BUILD)
     models = sub.add_parser("models")
     models.add_argument("action", choices=["list", "download", "verify"])
     models.add_argument("names", nargs="*")
@@ -348,7 +322,7 @@ def main():
             return
         if args.command == "build-inference":
             prepare(settings)
-            build_inference(settings, args.source)
+            build_inference(settings, args.source, args.build)
             return
         if args.command == "model-profile":
             if args.name is None:
@@ -365,19 +339,7 @@ def main():
                 )
                 return
             candidate = settings.model_copy(deep=True)
-            candidate.models.profile = args.name
-            for key, value in model_profile_fields(args.name).items():
-                setattr(candidate.models, key, value)
-            validate_runtime_selection(candidate)
-            if candidate.models.llm_backend == "mlx":
-                from importlib.util import find_spec
-
-                if find_spec("mlx_lm") is None:
-                    raise RuntimeError(
-                        "Install the optional MLX runtime using uv sync --frozen --extra mlx"
-                    )
-            for artifact in set(selected_artifacts(candidate).values()):
-                verify(candidate, artifact)
+            configure_model_profile(candidate, args.name)
             save(candidate)
             print(json.dumps({"profile": args.name, "restart_required": True}))
             return

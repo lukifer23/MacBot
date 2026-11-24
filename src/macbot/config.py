@@ -43,10 +43,18 @@ class Services(StrictModel):
         return self
 
 
+LLAMA_BUILDS = {
+    "b10509": "fe8156f789011f6ea0baf6917ea09f88b89d9554",
+    "b11960": "8642541b255bfb5dc39cd351a178be09013a55d6",
+}
+RELEASE_LLAMA_BUILD: Literal["b10509"] = "b10509"
+
 MODEL_PROFILES: dict[str, dict[str, str]] = {
     "release": {},
     "qwen-4b-q4": {"llm": "qwen3.5-4b-q4-k-m"},
     "qwen-4b-q5": {"llm": "qwen3.5-4b-q5-k-m"},
+    "qwen-2b-new-runtime": {"llama_build": "b11960"},
+    "lfm3-1.7b-q4": {"llm": "lfm3-1.7b-q4-k-m", "llama_build": "b11960"},
     "qwen-2b-mlx": {"llm": "qwen3.5-2b-mlx", "llm_backend": "mlx"},
     "aiden-0.6b": {"tts_voice": "qwen-aiden-0.6b"},
     "ryan-0.6b": {"tts_voice": "qwen-ryan-0.6b"},
@@ -56,6 +64,7 @@ MODEL_PROFILES: dict[str, dict[str, str]] = {
 
 class Models(StrictModel):
     profile: str = "release"
+    llama_build: Literal["b10509", "b11960"] = RELEASE_LLAMA_BUILD
     llm: str = "qwen3.5-2b-official"
     llm_backend: Literal["llama", "mlx"] = "llama"
     llm_url: str = "http://127.0.0.1:8080"
@@ -112,6 +121,7 @@ class ToolPolicy(StrictModel):
 
 class Privacy(StrictModel):
     history_enabled: bool = True
+    semantic_memory_enabled: bool = True
     retention_days: int = Field(default=30, ge=1, le=3650)
 
 
@@ -202,6 +212,7 @@ def validate_release_selection(settings: Settings) -> None:
     actual = {
         "llm": settings.models.llm,
         "llm_backend": settings.models.llm_backend,
+        "llama_build": settings.models.llama_build,
         "stt": settings.models.stt,
         "tts": settings.models.tts_voice,
         "embedding": settings.models.embedding,
@@ -209,6 +220,7 @@ def validate_release_selection(settings: Settings) -> None:
     expected = {
         "llm": roles["llm"]["artifact"],
         "llm_backend": roles["llm"]["backend"],
+        "llama_build": RELEASE_LLAMA_BUILD,
         "stt": roles["stt"]["artifact"],
         "tts": roles["tts"]["voice"],
         "embedding": roles["embedding"]["artifact"],
@@ -227,6 +239,7 @@ def model_profile_fields(profile: str) -> dict[str, str]:
     return {
         "llm": roles["llm"]["artifact"],
         "llm_backend": roles["llm"]["backend"],
+        "llama_build": RELEASE_LLAMA_BUILD,
         "stt": roles["stt"]["artifact"],
         "tts_voice": roles["tts"]["voice"],
         "embedding": roles["embedding"]["artifact"],

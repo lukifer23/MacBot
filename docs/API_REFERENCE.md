@@ -152,3 +152,9 @@ operator can approve an open. The Python runtime never executes the proposal.
 `transcribe_file` accepts a bounded audio data URL and returns `text`. It
 uses the resident STT model, applies the configured utterance limit, and
 does not append the file or its transcript to history.
+
+
+`memory_list` returns at most 25 recent summaries in the native session.
+`memory_clear` clears those stored summaries without deleting messages or
+research records. It also invalidates the runtime's cached context. The
+`semantic_memory_enabled` preference controls retrieval and future compaction.

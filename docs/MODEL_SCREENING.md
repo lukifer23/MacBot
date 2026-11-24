@@ -156,3 +156,25 @@ A source checkout needs `uv sync --frozen --extra mlx` for the MLX profile.
 MLX uses prompt-based JSON and the same parser and permission checks as llama.cpp.
 Use the production Task benchmark to measure any resulting difference in valid
 plans before promoting a profile. Revert with `macbot model-profile release`.
+
+
+## LFM3 and the newer llama.cpp runtime
+
+LiquidAI's Q4_K_M artifact is pinned to its upstream file revision and SHA-256.
+It requires llama.cpp b11960 or newer. MacBot installs b11960 alongside the
+release binary and checks its saved revision and executable hash before use.
+
+```sh
+uv run --frozen macbot build-inference --build b11960
+uv run --frozen macbot models download lfm3-1.7b-q4-k-m
+uv run --frozen python scripts/benchmark_models.py qwen3.5-2b-official --llama-build b10509 --case-set task --context-length 8192 --output reports/qwen-2b-b10509-task.jsonl
+uv run --frozen python scripts/benchmark_models.py qwen3.5-2b-official --llama-build b11960 --case-set task --context-length 8192 --output reports/qwen-2b-b11960-task.jsonl
+uv run --frozen python scripts/benchmark_models.py lfm3-1.7b-q4-k-m --llama-build b11960 --case-set task --context-length 8192 --output reports/lfm3-b11960-task.jsonl
+```
+
+The first two runs hold the model constant. The second and third hold the
+runtime constant. The `qwen-2b-new-runtime` and `lfm3-1.7b-q4` profiles
+exercise those comparisons in the app after a restart. No evaluated quality,
+memory, or latency result has been recorded for LFM3 in MacBot yet.
+
+[LiquidAI artifact and support requirements](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)

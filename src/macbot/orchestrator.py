@@ -23,7 +23,7 @@ from flask import Flask, jsonify, request
 from .auth import AuthStore, install_security
 from .config import Settings, atomic_write, load, prepare
 from .history import runtime_history_key
-from .provision import model_file
+from .provision import model_file, require_llama_server
 from .residency import InferenceResidencyLease
 
 
@@ -110,7 +110,7 @@ class MacBotOrchestrator:
             url = urlsplit(s.models.llm_url)
             assert url.hostname is not None
             command = [
-                str(s.data_dir / "bin/llama-server"),
+                str(require_llama_server(s)),
                 "-m",
                 str(model_file(s, s.models.llm, ".gguf")),
                 "--host",

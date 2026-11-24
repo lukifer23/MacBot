@@ -101,6 +101,10 @@ def test_source_linked_summary_hides_compacted_messages_and_retrieves_by_vector(
     results = store.search_summaries("session", vector)
     assert results[0]["source_turn_ids"] == ["turn-one"]
     assert results[0]["score"] == 1
+    assert store.recent_summaries("session")[0]["source_turn_ids"] == ["turn-one"]
+    assert store.clear_summaries("session") == 1
+    assert store.recent_summaries("session") == []
+    assert [item["_turn_id"] for item in store.load_messages("session")] == ["turn-one", "turn-two"]
     store.close()
 
 

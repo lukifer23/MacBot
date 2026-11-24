@@ -446,7 +446,11 @@ class Runtime:
     def _history_for(self, session_id: str) -> list[dict[str, Any]]:
         if session_id not in self.histories:
             self.histories[session_id] = (
-                self.history_store.load_messages(session_id) if self.history_store else []
+                self.history_store.load_messages(
+                    session_id, include_compacted=not self.settings.privacy.semantic_memory_enabled
+                )
+                if self.history_store
+                else []
             )
         return self.histories[session_id]
 
@@ -477,7 +481,7 @@ class Runtime:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         with self.lock:
             history = list(self._history_for(session_id))
-        if not self.history_store:
+        if not self.history_store or not self.settings.privacy.semantic_memory_enabled:
             return history, []
         if cancel.is_set():
             return history, []
@@ -521,7 +525,11 @@ class Runtime:
                 self.maintenance.task_done()
 
     def _compact_session(self, session_id: str) -> None:
-        if not self.history_store or self.stopping.is_set():
+        if (
+            not self.history_store
+            or not self.settings.privacy.semantic_memory_enabled
+            or self.stopping.is_set()
+        ):
             return
         cancel = threading.Event()
         request_id = f"compaction:{session_id}:{time.time_ns()}"
@@ -652,6 +660,17 @@ class Runtime:
             if first is None:
                 return
             history[:] = [item for item in history if item.get("_turn_id") != first]
+
+    def clear_summaries(self, session_id: str) -> int:
+        if not self.history_store:
+            return 0
+        with self.lock:
+            self._cancel_compaction(session_id)
+            if self.current and self.current.session_id == session_id and not self.current.terminal:
+                self.interrupt()
+            removed = self.history_store.clear_summaries(session_id)
+            self.histories.pop(session_id, None)
+            return removed
 
     def clear(self, session_id: str = "local", *, all_sessions: bool = False):
         with self.lock:

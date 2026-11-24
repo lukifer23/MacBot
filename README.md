@@ -6,7 +6,7 @@ MacBot is a local AI assistant for Apple Silicon Macs. Talk to it, dictate or tr
 
 | Where | What you can do |
 | --- | --- |
-| Conversation | Type or talk, choose spoken replies, interrupt playback, and copy the latest transcript. Dictation creates an editable draft using speech recognition alone. |
+| Conversation | Type, speak, attach a recording, or ask for research or an app. Review proposals beside the composer and control capture and playback from the same place. |
 | Task Center | Review a research plan and its target scope, authorize or deny it, pause or stop work, and inspect recorded sources and step outcomes. |
 | Library | Import and search local PDF, DOCX, or text documents. |
 | Mac Actions | Ask the local model to find an app, review its exact target, and open it. Open a chosen app or reveal an item directly. |
@@ -42,7 +42,10 @@ The installer activates a paired app and runtime and keeps a rollback generation
 The release manifest selects an artifact for each role. `macbot model-profile`
 shows the configured profile and the available evaluation profiles. Profile
 changes verify the pinned artifacts first and take effect when services restart.
-Use `macbot model-profile release` to return to the release stack.
+Use `macbot model-profile release` to return to the release stack. Settings lists
+provisioned profiles and shows the active profile separately from the next startup
+selection. The LFM3 profile uses a separate llama.cpp build. See the
+[side-by-side comparison](docs/MODEL_SCREENING.md).
 `macbot doctor` reports installed runtime versions and the artifacts the selected
 profile requires. The lab catalog includes Qwen3.5-4B Q4_K_M and Q5_K_M for a controlled comparison. Use [model screening](docs/MODEL_SCREENING.md) and the [model and runtime plan](docs/MODERNIZATION_2026-11.md) for the comparison protocol, provenance, and promotion gates.
 

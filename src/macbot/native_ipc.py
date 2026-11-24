@@ -19,7 +19,14 @@ import numpy as np
 
 from .config import MODEL_PROFILES, Settings, model_profile_fields, validate_runtime_selection
 from .config import save as save_settings
-from .provision import model_dir, voice_model, voices
+from .provision import (
+    catalog,
+    configure_model_profile,
+    llama_binary_directory,
+    model_dir,
+    voice_model,
+    voices,
+)
 from .runtime import Runtime
 from .task_protocol import PROTOCOL_OPERATIONS, TASK_PROTOCOL_VERSION, require_task_protocol
 from .validation import decode_audio
@@ -383,7 +390,11 @@ class NativeIPCServer:
             available_voices: list[dict[str, Any]] = []
             for profile in MODEL_PROFILES:
                 fields = model_profile_fields(profile)
-                if fields["llm"] != self.settings.models.llm:
+                if (
+                    fields["llm"] != self.settings.models.llm
+                    or fields["llama_build"] != self.settings.models.llama_build
+                    or fields["llm_backend"] != self.settings.models.llm_backend
+                ):
                     continue
                 voice = fields["tts_voice"]
                 if any(existing["id"] == voice for existing in available_voices):
@@ -394,15 +405,42 @@ class NativeIPCServer:
                 except (FileNotFoundError, ValueError):
                     installed = False
                 available_voices.append({"id": voice, "installed": installed})
+            profiles = []
+            artifacts = catalog()
+            for profile in MODEL_PROFILES:
+                fields = model_profile_fields(profile)
+                model = fields["llm"]
+                entry = artifacts[model]
+                present = all(
+                    (self.settings.data_dir / "models" / artifact / file["name"]).is_file()
+                    for artifact in (model, voice_model(fields["tts_voice"]))
+                    for file in artifacts[artifact]["files"]
+                )
+                runtime = fields["llama_build"] if fields["llm_backend"] == "llama" else "MLX"
+                present = present and (
+                    runtime == "MLX"
+                    or (llama_binary_directory(self.settings, runtime) / "llama-server").is_file()
+                )
+                profiles.append(
+                    {
+                        "id": profile,
+                        "model": model,
+                        "runtime": runtime,
+                        "installed": present,
+                        "model_bytes": sum(file["size"] for file in entry["files"]),
+                    }
+                )
             return {
                 "settings": {
                     "diagnostics_enabled": self.settings.services.diagnostics_enabled,
                     "retention_days": self.settings.privacy.retention_days,
+                    "semantic_memory_enabled": self.settings.privacy.semantic_memory_enabled,
                     "endpoint_ms": self.settings.audio.endpoint_ms,
                     "live_transcription_preview": self.settings.audio.live_transcription_preview,
                     "context_length": self.settings.models.context_length,
                     "tts_voice": self.settings.models.tts_voice,
                     "model_profile": self.settings.models.profile,
+                    "profiles": profiles,
                     "voices": available_voices,
                 }
             }
@@ -411,10 +449,12 @@ class NativeIPCServer:
             if not isinstance(values, dict) or set(values) - {
                 "diagnostics_enabled",
                 "retention_days",
+                "semantic_memory_enabled",
                 "endpoint_ms",
                 "live_transcription_preview",
                 "context_length",
                 "tts_voice",
+                "model_profile",
             }:
                 raise ValueError("Unsupported settings update")
             candidate = self.settings.model_copy(deep=True)
@@ -433,11 +473,21 @@ class NativeIPCServer:
                     if type(value) is not int:
                         raise ValueError(f"{key} must be an integer")
                     setattr(target, key, value)
+            if "semantic_memory_enabled" in values:
+                memory = values["semantic_memory_enabled"]
+                if not isinstance(memory, bool):
+                    raise ValueError("Semantic memory setting must be a boolean")
+                candidate.privacy.semantic_memory_enabled = memory
             if "live_transcription_preview" in values:
                 preview = values["live_transcription_preview"]
                 if not isinstance(preview, bool):
                     raise ValueError("Live transcription preview must be a boolean")
                 candidate.audio.live_transcription_preview = preview
+            if "model_profile" in values:
+                profile_name = values["model_profile"]
+                if not isinstance(profile_name, str) or "tts_voice" in values:
+                    raise ValueError("Select a profile or a voice in one request")
+                configure_model_profile(candidate, profile_name)
             if "tts_voice" in values:
                 voice = values["tts_voice"]
                 if not isinstance(voice, str) or voice not in voices():
@@ -446,7 +496,12 @@ class NativeIPCServer:
                 if voice != candidate.models.tts_voice:
                     for profile in MODEL_PROFILES:
                         fields = model_profile_fields(profile)
-                        if fields["llm"] == candidate.models.llm and fields["tts_voice"] == voice:
+                        if (
+                            fields["llm"] == candidate.models.llm
+                            and fields["llama_build"] == candidate.models.llama_build
+                            and fields["llm_backend"] == candidate.models.llm_backend
+                            and fields["tts_voice"] == voice
+                        ):
                             candidate.models.profile = profile
                             candidate.models.tts_voice = voice
                             break
@@ -456,6 +511,11 @@ class NativeIPCServer:
             save_settings(candidate)
             self.settings = candidate
             return {"state": "saved", "restart_required": True}
+        if op == "memory_list":
+            history = self.runtime.history_store
+            return {"summaries": history.recent_summaries("native") if history else []}
+        if op == "memory_clear":
+            return {"removed": self.runtime.clear_summaries("native")}
         if op == "events":
             after = request.get("after", 0)
             epoch = request.get("epoch")
