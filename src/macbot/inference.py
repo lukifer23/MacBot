@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -15,6 +15,41 @@ MODEL_PRIORITY = 20
 BACKGROUND_PRIORITY = 30
 
 InferenceProfileName = Literal["conversation", "task_plan", "task_final", "compaction", "model"]
+
+
+def lfm3_answer_stream(deltas: Iterable[dict]) -> Iterator[dict]:
+    """Discard leading reasoning, even when the model splits its markers across deltas."""
+    opening, closing = "<think>", "</think>"
+    pending = ""
+    reasoning = False
+    answering = False
+    for delta in deltas:
+        clean = {k: v for k, v in delta.items() if k not in {"reasoning", "reasoning_content"}}
+        if not answering and isinstance(clean.get("content"), str):
+            pending += clean.pop("content")
+            while pending:
+                if reasoning:
+                    end = pending.find(closing)
+                    if end == -1:
+                        pending = pending[-(len(closing) - 1) :]
+                        break
+                    pending = pending[end + len(closing) :]
+                    reasoning = False
+                    continue
+                candidate = pending.lstrip()
+                if candidate.startswith(opening):
+                    pending = candidate[len(opening) :]
+                    reasoning = True
+                    continue
+                if opening.startswith(candidate):
+                    # Leading whitespace can be arbitrarily long without making an answer.
+                    pending = pending[-64:]
+                    break
+                clean["content"] = pending
+                pending = ""
+                answering = True
+        if clean:
+            yield clean
 
 
 @dataclass(frozen=True)

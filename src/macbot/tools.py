@@ -102,9 +102,9 @@ class Tools:
 
     def authorize_planned(
         self, text: str, source_span: str, name: str, arguments: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any]:
         """Independently bind a semantic plan to exact current-message evidence."""
-        self.validate(name, arguments)
+        arguments = self.validate(name, arguments)
         if not source_span or source_span not in text:
             raise PermissionError("Action is not grounded in the current request")
         evidence = source_span.casefold()
@@ -126,8 +126,12 @@ class Tools:
             raise PermissionError("The current request explicitly negates this action")
         if not any(token in evidence for token in required[name]):
             raise PermissionError("Action evidence does not express the requested capability")
+        requested = self.requested(source_span)
+        if requested and name not in requested:
+            raise PermissionError("The action uses a different source than the request specifies")
         if name == "web_fetch" and arguments["url"].casefold() not in text.casefold():
             raise PermissionError("Evidence URL is not present in the request")
+        return arguments
 
     def definitions(self, text: str | None = None, used: set[str] | None = None) -> list[dict]:
         requested = self.requested(text) if text is not None else None

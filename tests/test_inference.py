@@ -2,7 +2,7 @@ import threading
 import time
 
 from macbot.events import EventJournal
-from macbot.inference import InferenceLane, inference_profiles
+from macbot.inference import InferenceLane, inference_profiles, lfm3_answer_stream
 from macbot.runtime import Runtime, Turn
 
 
@@ -13,6 +13,31 @@ def _wait_until(predicate, timeout=1.0):
             return
         time.sleep(0.005)
     raise AssertionError("condition was not reached")
+
+
+def test_lfm3_filters_split_reasoning_before_answer_and_preserves_metadata():
+    deltas = [
+        {"_context": {"pruned_turns": 1}},
+        {"content": " \n<th"},
+        {"content": "ink>private reasoning</th"},
+        {"reasoning_content": "more private text"},
+        {"content": "ink>\n<think>another block</think>Answer"},
+        {"content": " with a literal <think> marker."},
+        {"tool_calls": [{"index": 0}]},
+    ]
+    assert list(lfm3_answer_stream(deltas)) == [
+        deltas[0],
+        {"content": "Answer"},
+        deltas[-2],
+        deltas[-1],
+    ]
+    assert list(lfm3_answer_stream([{"content": "<think>unfinished"}])) == []
+
+
+def test_lfm3_releases_content_when_a_partial_tag_is_actually_an_answer():
+    assert list(lfm3_answer_stream([{"content": "\n<th"}, {"content": "reshold>"}])) == [
+        {"content": "\n<threshold>"}
+    ]
 
 
 def test_foreground_request_runs_before_queued_background_request():

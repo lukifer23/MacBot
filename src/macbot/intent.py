@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 import threading
+from dataclasses import replace
 from typing import Any
 
 from .llm import LocalLLM
@@ -58,6 +61,8 @@ class IntentRouter:
         self.tools = tools
 
     def route(self, text: str, cancel: threading.Event, *, request_id: str | None = None) -> Intent:
+        sequence = self._requested_sequence(text)
+        schema = SCHEMA
         prompt = (
             "Plan only the explicit bounded research request in the current user message. Return JSON "
             "only. Use act with grounded rag_search and web_search steps. Use clarify with no actions when "
@@ -82,20 +87,85 @@ class IntentRouter:
             '{"mode":"act","actions":[{"name":"rag_search","arguments":'
             '{"query":"project codename"},"source_span":"Search my documents for the project codename",'
             '"depends_on":[]}],'
-            '"clarification":""}. Never choose web_search when the user excludes it.'
+            '"clarification":""}. Never choose web_search when the user excludes it. '
+            "For act, always use an empty clarification string. Include every explicit research step."
         )
+        if sequence:
+            ordered = copy.deepcopy(SCHEMA)
+            ordered["properties"]["mode"] = {"const": "act"}
+            variants = {
+                variant["properties"]["name"]["const"]: variant for variant in ACTION_VARIANTS
+            }
+            ordered["properties"]["actions"] = {
+                "type": "array",
+                "prefixItems": [variants[name] for name, _ in sequence],
+                "minItems": len(sequence),
+                "maxItems": len(sequence),
+            }
+            clarify = copy.deepcopy(SCHEMA)
+            clarify["properties"]["mode"] = {"const": "clarify"}
+            clarify["properties"]["actions"]["maxItems"] = 0
+            schema = {"oneOf": [ordered, clarify]}
+            prompt += (
+                " The current request explicitly orders these research steps. Emit one action per "
+                "listed step in this order, with a source_span from its own text. Each step after "
+                "the first depends on its predecessor. Steps: "
+                + json.dumps([{"name": name, "text": clause} for name, clause in sequence])
+            )
         chunks = self.llm.stream(
             [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
             [],
             cancel,
-            schema=SCHEMA,
+            schema=schema,
             request_id=request_id,
             request_kind="task",
         )
         body = "".join(str(chunk.get("content") or "") for chunk in chunks)
         if cancel.is_set():
             return Intent("clarify", clarification="Task planning was cancelled.")
-        return self.parse(body, text)
+        try:
+            intent = self.parse(body, text)
+        except PermissionError as exc:
+            return Intent("clarify", clarification=str(exc))
+        if sequence and intent.mode == "act":
+            if len(intent.actions) != len(sequence) or any(
+                action.name != name or action.source_span not in clause
+                for action, (name, clause) in zip(intent.actions, sequence, strict=True)
+            ):
+                return Intent(
+                    "clarify",
+                    clarification=(
+                        "The plan missed a requested step. Try stating each search and its target separately."
+                    ),
+                )
+            actions = tuple(
+                replace(action, depends_on=tuple(sorted({*action.depends_on, index - 1})))
+                if index
+                else action
+                for index, action in enumerate(intent.actions)
+            )
+            return replace(intent, actions=actions)
+        return intent
+
+    def _requested_sequence(self, text: str) -> list[tuple[str, str]]:
+        if any(mark in text for mark in ('"', "“", "”", "'", "‘", "’")):
+            return []
+        clauses = re.split(r"(?:[,;]\s*(?:and\s+)?|\s+and\s+)then\s+", text, flags=re.IGNORECASE)
+        if len(clauses) < 2:
+            return []
+        sequence = []
+        for clause in clauses:
+            command = re.sub(
+                r"^use (?:that|the (?:first|previous)) results? to\s+",
+                "",
+                clause.strip(),
+                flags=re.IGNORECASE,
+            )
+            requested = self.tools.requested(command)
+            if len(requested) != 1:
+                return []
+            sequence.append((next(iter(requested)), clause.strip()))
+        return sequence
 
     def propose_mac_open(self, text: str, candidates: list[str]) -> int | None:
         """Return a candidate index; only the native operator can apply the proposal."""
@@ -179,7 +249,10 @@ class IntentRouter:
         )
         if cancel.is_set():
             return Intent("clarify", clarification="Task evaluation was cancelled.")
-        return self.parse(body, text)
+        try:
+            return self.parse(body, text)
+        except PermissionError as exc:
+            return Intent("clarify", clarification=str(exc))
 
     def parse(self, body: str, text: str) -> Intent:
         try:
@@ -197,6 +270,10 @@ class IntentRouter:
             raise ValueError("Planner returned an invalid clarification")
         if not isinstance(items, list) or len(items) > 12:
             raise ValueError("Planner returned too many actions")
+        if mode == "clarify":
+            if not clarification.strip():
+                raise ValueError("Clarify mode requires a question")
+            return Intent("clarify", clarification=clarification)
         actions: list[PlannedAction] = []
         seen: set[str] = set()
         for index, item in enumerate(items):
@@ -223,7 +300,7 @@ class IntentRouter:
                 or len(source_span) > 300
             ):
                 raise PermissionError("Planner action is not grounded in the current request")
-            arguments = self.tools.validate(name, arguments)
+            arguments = self.tools.authorize_planned(text, source_span, name, arguments)
             safety: SafetyClass = "read" if name in READ_ONLY else "requested_side_effect"
             dependencies = item.get("depends_on", [])
             if (
@@ -238,17 +315,6 @@ class IntentRouter:
                 raise ValueError("Planner returned a duplicate action")
             seen.add(action.idempotency_key)
             actions.append(action)
-        if mode == "act" and not actions:
+        if not actions:
             raise ValueError("Act mode requires an action")
-        if mode != "act" and actions:
-            # Clarification carries no executable authority. Discard schema-filled
-            # actions instead of turning a safely non-acting decision into a failure.
-            actions = []
-        if mode == "clarify" and not clarification.strip():
-            raise ValueError("Clarify mode requires a question")
-        if mode != "clarify":
-            # Small local models sometimes populate every schema field. This
-            # field has no authority outside clarify mode, so normalize it away
-            # after the mode/action invariants above have passed.
-            clarification = ""
-        return Intent(mode, tuple(actions), clarification)
+        return Intent("act", tuple(actions))

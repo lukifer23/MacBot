@@ -409,6 +409,46 @@ def test_planner_dependencies_are_resolved_to_durable_step_ids(tmp_path):
         auth.close()
 
 
+def test_planner_checks_explicit_steps_and_authority_before_proposing(tmp_path):
+    class PlannerOutput:
+        def stream(self, messages, definitions, cancel, **kwargs):
+            yield {"content": json.dumps(payload)}
+
+    settings = Settings(data_dir=tmp_path)
+    prepare(settings)
+    auth = AuthStore(tmp_path)
+    tools = Tools(settings, auth)
+    request = "Search my documents for the warranty, then use that result to search the web for the warranty."
+    local = {
+        "name": "rag_search",
+        "arguments": {"query": "warranty"},
+        "source_span": "Search my documents for the warranty",
+        "depends_on": [],
+    }
+    web = {
+        "name": "web_search",
+        "arguments": {"query": "warranty"},
+        "source_span": "search the web for the warranty",
+        "depends_on": [],
+    }
+    payload = {"mode": "act", "actions": [local], "clarification": ""}
+    try:
+        router = IntentRouter(PlannerOutput(), tools)
+        incomplete = router.route(request, threading.Event())
+        assert incomplete.mode == "clarify"
+        assert "missed a requested step" in incomplete.clarification
+        payload["actions"] = [local, web]
+        complete = router.route(request, threading.Event())
+        assert complete.actions[1].depends_on == (0,)
+        unsupported = "Open Calendar and delete my next appointment."
+        payload["actions"] = [{**web, "source_span": unsupported}]
+        denied = router.route(unsupported, threading.Event())
+        assert denied.mode == "clarify" and not denied.actions
+    finally:
+        tools.close()
+        auth.close()
+
+
 def test_replan_keeps_bounded_evidence_and_omits_raw_tool_output():
     result = recorded_search("web_search", {"query": "MacBot"})
     result["raw_provider_body"] = "private provider payload" * 100

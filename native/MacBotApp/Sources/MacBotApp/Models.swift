@@ -29,7 +29,8 @@ enum ProductState: String, Equatable {
 }
 
 enum AssistantPhase: String, CaseIterable {
-    case starting, idle, listening, transcribing, planning, thinking, acting, speaking, muted, interrupted, error
+    case starting, idle, listening, transcribing, gatheringContext = "gathering_context"
+    case planning, thinking, acting, speaking, muted, interrupted, error
 
     var title: String {
         switch self {
@@ -37,6 +38,7 @@ enum AssistantPhase: String, CaseIterable {
         case .idle: "Ready"
         case .listening: "Listening"
         case .transcribing: "Transcribing"
+        case .gatheringContext: "Gathering context"
         case .planning: "Understanding"
         case .thinking: "Thinking"
         case .acting: "Working"
@@ -53,6 +55,7 @@ enum AssistantPhase: String, CaseIterable {
         case .idle: "sparkles"
         case .listening: "waveform"
         case .transcribing: "text.bubble"
+        case .gatheringContext: "text.magnifyingglass"
         case .planning, .thinking: "brain.head.profile"
         case .acting: "gearshape.2"
         case .speaking: "speaker.wave.2"
@@ -369,6 +372,9 @@ struct TaskItem: Identifiable, Equatable {
     var steps: [TaskStepItem]
     var sources: [TaskSource]
     var authority: TaskAuthority
+    var originalRequest: String?
+
+    var canEditRequest: Bool { state == .failed && steps.isEmpty && originalRequest != nil }
 
     init(
         id: String,
@@ -381,7 +387,8 @@ struct TaskItem: Identifiable, Equatable {
         availableCommands: Set<TaskCommand> = [],
         steps: [TaskStepItem] = [],
         sources: [TaskSource] = [],
-        authority: TaskAuthority = .init()
+        authority: TaskAuthority = .init(),
+        originalRequest: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -394,6 +401,7 @@ struct TaskItem: Identifiable, Equatable {
         self.steps = steps
         self.sources = sources
         self.authority = authority
+        self.originalRequest = originalRequest
     }
 }
 
