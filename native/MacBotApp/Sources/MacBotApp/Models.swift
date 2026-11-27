@@ -456,8 +456,18 @@ struct ModelProfileOption: Identifiable {
     let model: String
     let runtime: String
     let stt: String?
+    let voice: String?
     let installed: Bool
     let modelBytes: Int64
+    let profileBytes: Int64?
+
+    var label: String {
+        switch id {
+        case "release": "Standard"
+        case "compact-voice": "Compact voice"
+        default: id
+        }
+    }
 }
 
 struct VoiceOption: Identifiable, Equatable {
@@ -469,6 +479,7 @@ struct VoiceOption: Identifiable, Equatable {
     static func label(for id: String) -> String {
         switch id {
         case "qwen-aiden-1.7b": "Aiden · Qwen3-TTS 1.7B"
+        case "qwen-aiden-0.6b": "Aiden · Qwen3-TTS 0.6B"
         default: id
         }
     }

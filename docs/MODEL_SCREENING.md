@@ -233,3 +233,21 @@ LibriSpeech speaker. These measurements do not establish microphone latency or
 relative accuracy against Parakeet on the same machine.
 
 [Cactus Whistle model card](https://huggingface.co/Cactus-Compute/whistle)
+
+## Compact voice profile
+
+`compact-voice` selects LFM3 QAD Q4_0, Whistle, and Qwen3-TTS 0.6B Aiden.
+Their provisioned chat and speech files total 2.76 GB versus 6.13 GB for
+Standard. Disk size excludes shared assets and is separate from process memory.
+
+```sh
+uv run --frozen macbot build-inference --build b11960
+uv run --frozen macbot models download lfm3-1.7b-qad-q4-0 whistle qwen3-tts-0.6b
+uv run --frozen macbot model-profile compact-voice
+```
+
+Diagnostics reports the time from first answer text to the first phrase ready
+for synthesis. The opening phrase may start at a clause break from 55 characters
+or at a whole-word boundary by the 96-character buffer threshold. Use the
+speech-end-to-audio-queued metric to compare repeatable spoken turns on the same
+Mac. The combined profile still needs live listening and latency acceptance.

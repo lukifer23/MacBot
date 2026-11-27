@@ -57,6 +57,12 @@ MODEL_PROFILES: dict[str, dict[str, str]] = {
     "lfm3-1.7b-q4": {"llm": "lfm3-1.7b-q4-k-m", "llama_build": "b11960"},
     "lfm3-1.7b-qad": {"llm": "lfm3-1.7b-qad-q4-0", "llama_build": "b11960"},
     "whistle": {"stt": "whistle"},
+    "compact-voice": {
+        "llm": "lfm3-1.7b-qad-q4-0",
+        "llama_build": "b11960",
+        "stt": "whistle",
+        "tts_voice": "qwen-aiden-0.6b",
+    },
     "lfm3-1.7b-qad-whistle": {
         "llm": "lfm3-1.7b-qad-q4-0",
         "llama_build": "b11960",

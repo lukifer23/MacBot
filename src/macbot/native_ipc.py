@@ -20,12 +20,12 @@ import numpy as np
 from .config import MODEL_PROFILES, Settings, model_profile_fields, validate_runtime_selection
 from .config import save as save_settings
 from .provision import (
+    QWEN_TTS_VOICES,
     catalog,
     configure_model_profile,
     llama_binary_directory,
     model_dir,
     voice_model,
-    voices,
 )
 from .runtime import Runtime
 from .task_protocol import PROTOCOL_OPERATIONS, TASK_PROTOCOL_VERSION, require_task_protocol
@@ -394,6 +394,7 @@ class NativeIPCServer:
                     fields["llm"] != self.settings.models.llm
                     or fields["llama_build"] != self.settings.models.llama_build
                     or fields["llm_backend"] != self.settings.models.llm_backend
+                    or fields["stt"] != self.settings.models.stt
                 ):
                     continue
                 voice = fields["tts_voice"]
@@ -411,9 +412,10 @@ class NativeIPCServer:
                 fields = model_profile_fields(profile)
                 model = fields["llm"]
                 entry = artifacts[model]
+                models = (model, fields["stt"], voice_model(fields["tts_voice"]))
                 present = all(
                     (self.settings.data_dir / "models" / artifact / file["name"]).is_file()
-                    for artifact in (model, fields["stt"], voice_model(fields["tts_voice"]))
+                    for artifact in models
                     for file in artifacts[artifact]["files"]
                 )
                 runtime = fields["llama_build"] if fields["llm_backend"] == "llama" else "MLX"
@@ -427,8 +429,14 @@ class NativeIPCServer:
                         "model": model,
                         "runtime": runtime,
                         "stt": fields["stt"],
+                        "tts_voice": fields["tts_voice"],
                         "installed": present,
                         "model_bytes": sum(file["size"] for file in entry["files"]),
+                        "profile_bytes": sum(
+                            file["size"]
+                            for artifact in models
+                            for file in artifacts[artifact]["files"]
+                        ),
                     }
                 )
             return {
@@ -491,7 +499,7 @@ class NativeIPCServer:
                 configure_model_profile(candidate, profile_name)
             if "tts_voice" in values:
                 voice = values["tts_voice"]
-                if not isinstance(voice, str) or voice not in voices():
+                if not isinstance(voice, str) or voice not in QWEN_TTS_VOICES:
                     raise ValueError("TTS voice is not registered")
                 model_dir(self.settings, voice_model(voice))
                 if voice != candidate.models.tts_voice:
@@ -501,6 +509,7 @@ class NativeIPCServer:
                             fields["llm"] == candidate.models.llm
                             and fields["llama_build"] == candidate.models.llama_build
                             and fields["llm_backend"] == candidate.models.llm_backend
+                            and fields["stt"] == candidate.models.stt
                             and fields["tts_voice"] == voice
                         ):
                             candidate.models.profile = profile

@@ -43,6 +43,7 @@ class Turn:
     speech_end_ns: int | None = None
     first_audio_scheduled_ns: int | None = None
     first_pcm_sent_ns: int | None = None
+    first_phrase_ready_ns: int | None = None
     playback_seconds: float = 0.0
     terminal: bool = False
     synthesis_only: bool = False
@@ -698,6 +699,8 @@ class Runtime:
     def _queue_speech(self, turn: Turn, text: str | None):
         if not turn.speak:
             return
+        if text is not None and turn.first_phrase_ready_ns is None:
+            turn.first_phrase_ready_ns = time.monotonic_ns()
         while not turn.cancelled.is_set() and not self.stopping.is_set():
             try:
                 self.speech.put((turn, text), timeout=0.05)
@@ -919,9 +922,12 @@ class Runtime:
             if first_token_ns is None:
                 first_token_ns = time.monotonic_ns()
             response_text += content
-            speech_buffer += content
             self._emit_delta(turn, content)
-            phrases, speech_buffer = split_speech(speech_buffer)
+            if not turn.speak:
+                continue
+            phrases, speech_buffer = split_speech(
+                speech_buffer + content, first_phrase=turn.first_phrase_ready_ns is None
+            )
             for phrase in phrases:
                 self._queue_speech(turn, phrase)
         if speech_buffer:
@@ -983,6 +989,11 @@ class Runtime:
             ),
             "stt_ms": turn.stt_ms,
             "tts_first_chunk_ms": turn.tts_first_chunk_ms,
+            "first_text_to_phrase_ms": (
+                (turn.first_phrase_ready_ns - first_token_ns) / 1e6
+                if turn.first_phrase_ready_ns is not None and first_token_ns is not None
+                else None
+            ),
         }
         with self.lock:
             self.metrics.append(metric)

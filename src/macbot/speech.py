@@ -16,11 +16,13 @@ import numpy as np
 import soundfile as sf
 
 from .config import Settings
-from .provision import QWEN_TTS_VOICES, model_dir, model_file, voices
+from .provision import QWEN_TTS_VOICES, model_dir, model_file
 from .whistle import Whistle
 
 
-def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
+def split_speech(
+    buffer: str, *, final: bool = False, first_phrase: bool = False
+) -> tuple[list[str], str]:
     """Emit phrases at word boundaries, even when model tokens bisect a word."""
     phrases = []
     while buffer:
@@ -34,12 +36,25 @@ def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
                 continue
             cut = match.end()
             break
-        if not cut and len(buffer) >= 180:
-            boundaries = list(re.finditer(r"[,;:](?=\s)", buffer[:180]))
-            cut = next((m.end() for m in reversed(boundaries) if m.end() >= 60), 0)
-            if not cut:
-                spaces = list(re.finditer(r"\s+", buffer[:180]))
-                cut = spaces[-1].end() if spaces else 0
+        if first_phrase and not final:
+            clause = next(
+                (
+                    match.end()
+                    for match in re.finditer(r"[,;:](?=\s)", buffer[:96])
+                    if match.end() >= 55
+                ),
+                0,
+            )
+            if clause and (not cut or clause < cut):
+                cut = clause
+        limit = 96 if first_phrase and not final else 180
+        if len(buffer) >= limit and (not cut or (first_phrase and not final and cut > limit)):
+            boundaries = list(re.finditer(r"[,;:](?=\s)", buffer[:limit]))
+            boundary = next((m.end() for m in reversed(boundaries) if m.end() >= 60), 0)
+            if not boundary:
+                spaces = list(re.finditer(r"\s+", buffer[:limit]))
+                boundary = spaces[-1].end() if spaces else 0
+            cut = boundary or cut
         if not cut:
             if final:
                 cut = len(buffer)
@@ -48,6 +63,7 @@ def split_speech(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
         phrase, buffer = buffer[:cut].strip(), buffer[cut:].lstrip()
         if phrase:
             phrases.append(phrase)
+            first_phrase = False
     return phrases, buffer
 
 
@@ -187,8 +203,6 @@ class Synthesizer:
     def __init__(self, settings: Settings):
         self.settings = settings
         name = settings.models.tts_voice
-        if name not in voices():
-            raise ValueError("TTS voice is not registered")
         self.voice_id = name
         if name not in QWEN_TTS_VOICES:
             raise ValueError("The selected production voice must use Qwen TTS")

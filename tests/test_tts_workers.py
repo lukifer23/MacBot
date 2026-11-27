@@ -58,6 +58,26 @@ def test_speech_retains_partial_final_word_until_flush():
     )
 
 
+def test_opening_speech_can_start_on_a_clause_before_a_full_sentence():
+    opening = "Once the recording has finished and the transcript is ready,"
+    text = opening + " you can copy it or edit it in the composer."
+    assert split_speech(opening + " y", first_phrase=True) == ([opening], "y")
+    assert split_speech(opening + " y") == ([], opening + " y")
+    phrases, rest = split_speech(text, first_phrase=True, final=True)
+    assert phrases == [text]
+    assert rest == ""
+
+
+def test_long_opening_without_punctuation_starts_at_a_complete_word():
+    text = "This answer has enough words to take a while before the end " * 2
+    for end in range(1, len(text)):
+        phrases, pending = split_speech(text[:end], first_phrase=True)
+        if phrases:
+            break
+    assert end == 96
+    assert phrases[0].split() + (pending + text[end:]).split() == text.split()
+
+
 def test_product_configuration_has_no_unimplemented_speech_speed():
     settings = Settings()
     assert "tts_speed" not in type(settings.models).model_fields

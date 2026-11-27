@@ -748,6 +748,7 @@ final class AppState: ObservableObject {
             let context = observations.compactMap { $0["context_ms"] as? Double }
             let firstAnswer = observations.compactMap { $0["generation_to_first_text_ms"] as? Double }
             let firstAudio = observations.compactMap { $0["first_audio_scheduled_ms"] as? Double }
+            let firstPhrase = observations.compactMap { $0["first_text_to_phrase_ms"] as? Double }
             let stt = observations.compactMap { $0["stt_ms"] as? Double }
             let interrupt = status["interruption_ms"] as? [Double] ?? []
             let turnQueue = status["turn_queue"] as? Int ?? 0
@@ -759,6 +760,7 @@ final class AppState: ObservableObject {
                 .init(id: "ttft", label: "First text p50 / p95", value: latencyPair(ttft)),
                 .init(id: "context", label: "Context gathering p50 / p95", value: latencyPair(context)),
                 .init(id: "first-answer", label: "Generation start → first answer p50 / p95", value: latencyPair(firstAnswer)),
+                .init(id: "first-phrase", label: "First answer → speech input p50 / p95", value: latencyPair(firstPhrase)),
                 .init(id: "audio", label: "Speech end → audio queued p50 / p95", value: latencyPair(firstAudio)),
                 .init(id: "stt", label: "Transcription p50 / p95", value: latencyPair(stt)),
                 .init(id: "interrupt", label: "Playback stop ack p50 / p95", value: latencyPair(interrupt)),
@@ -820,8 +822,10 @@ final class AppState: ObservableObject {
                       let runtime = item["runtime"] as? String else { return nil }
                 return ModelProfileOption(id: id, model: model, runtime: runtime,
                                           stt: item["stt"] as? String,
+                                          voice: item["tts_voice"] as? String,
                                           installed: item["installed"] as? Bool == true,
-                                          modelBytes: item["model_bytes"] as? Int64 ?? 0)
+                                          modelBytes: item["model_bytes"] as? Int64 ?? 0,
+                                          profileBytes: item["profile_bytes"] as? Int64)
             }
             availableVoices = (settings["voices"] as? [[String: Any]] ?? []).compactMap { item in
                 guard let id = item["id"] as? String else { return nil }

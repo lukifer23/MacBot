@@ -156,38 +156,39 @@ private struct ConversationView: View {
 
     private var inputControls: some View {
         HStack {
+            Button(action: state.toggleListening) {
+                Label(
+                    state.listening && !state.isDictating ? "End talk" : "Talk",
+                    systemImage: state.listening && !state.isDictating ? "waveform.circle.fill" : "waveform"
+                )
+            }
+            .disabled(!state.canListen || state.isChangingListening || state.isDictating)
+            .help("Talk hands-free with MacBot")
+            .accessibilityIdentifier("conversation.talk")
+            Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
+                .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
+                .help("Turn speech into an editable draft")
+                .accessibilityIdentifier("conversation.dictate")
             Menu {
-                Button(action: state.toggleListening) {
-                    Label(state.listening && !state.isDictating ? "Stop hands-free" : "Start hands-free", systemImage: "waveform")
-                }
-                .disabled(!state.canListen || state.isChangingListening || state.isDictating)
-                Button(state.isDictating ? "Stop dictation" : "Dictate", systemImage: "text.bubble", action: state.toggleDictation)
-                    .disabled(!state.canListen || state.isChangingListening || (state.listening && !state.isDictating))
                 Button(state.muted ? "Unmute" : "Mute", systemImage: state.muted ? "mic.slash.fill" : "mic.fill", action: state.toggleMuted)
                     .disabled(!state.listening || state.isChangingListening)
+                Button("Transcribe audio file…", systemImage: "paperclip", action: state.chooseAudioToTranscribe)
+                    .disabled(!state.connected || state.transcribingFile)
                 Button("Copy latest transcript", systemImage: "document.on.document", action: state.copyTranscript)
                     .disabled(state.heard.isEmpty)
             } label: {
-                Label(state.listening ? (state.muted ? "Muted" : "Microphone on") : "Microphone", systemImage: state.muted ? "mic.slash" : "mic")
+                Label(state.muted ? "Microphone muted" : "Audio options", systemImage: state.muted ? "mic.slash.fill" : "ellipsis.circle")
+                    .labelStyle(.iconOnly)
             }
-            Button("Audio file…", systemImage: "paperclip", action: state.chooseAudioToTranscribe)
-                .disabled(!state.connected || state.transcribingFile)
+            .fixedSize()
             Spacer()
             if state.composerMode == .conversation {
                 Toggle("Speak replies", isOn: $state.speakTypedReplies).toggleStyle(.checkbox)
                     .disabled(!state.canConverse)
             }
-            Button("Stop", systemImage: "stop.fill") {
-                if state.canInterrupt {
-                    state.interrupt()
-                } else if state.isDictating {
-                    state.toggleDictation()
-                } else if state.listening {
-                    state.toggleListening()
-                }
-            }
-            .disabled(!(state.canInterrupt || state.listening) || state.isInterrupting || state.isChangingListening)
-            .help("Stop the response or turn off the microphone")
+            Button("Stop reply", systemImage: "stop.fill", action: state.interrupt)
+            .disabled(!state.canInterrupt || state.isInterrupting)
+            .help("Interrupt the current response")
             .accessibilityIdentifier("conversation.stop")
         }
         .font(.callout)
@@ -730,7 +731,7 @@ private struct SettingsView: View {
                 if !state.modelProfiles.isEmpty {
                     Picker("Model profile", selection: $state.candidateProfile) {
                         ForEach(state.modelProfiles) { profile in
-                            Text(profile.id + (profile.installed ? "" : " · not provisioned"))
+                            Text(profile.label + (profile.installed ? "" : " · not provisioned"))
                                 .tag(profile.id)
                         }
                     }.disabled(!state.canChangeSettings || state.isSavingSettings)
@@ -739,7 +740,11 @@ private struct SettingsView: View {
                         if let stt = profile.stt {
                             LabeledContent("Transcription model", value: stt == "whistle" ? "Whistle · Cactus CPU" : stt)
                         }
-                        LabeledContent("Language model files", value: ByteCountFormatter.string(fromByteCount: profile.modelBytes, countStyle: .file))
+                        if let voice = profile.voice {
+                            LabeledContent("Spoken reply voice", value: VoiceOption.label(for: voice))
+                        }
+                        LabeledContent(profile.profileBytes == nil ? "Language model files" : "Chat and speech files",
+                                       value: ByteCountFormatter.string(fromByteCount: profile.profileBytes ?? profile.modelBytes, countStyle: .file))
                         if !profile.installed {
                             Text("Provision the model and runtime before choosing this profile.").font(.callout)
                         }
