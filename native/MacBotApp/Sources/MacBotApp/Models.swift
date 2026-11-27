@@ -338,6 +338,13 @@ struct TaskStepItem: Identifiable, Equatable {
     }
 }
 
+struct TaskSource: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let url: URL?
+    let excerpt: String
+}
+
 struct TaskItem: Identifiable, Equatable {
     let id: String
     var title: String
@@ -348,6 +355,7 @@ struct TaskItem: Identifiable, Equatable {
     var turnID: String?
     var availableCommands: Set<TaskCommand>
     var steps: [TaskStepItem]
+    var sources: [TaskSource]
     var authority: TaskAuthority
 
     init(
@@ -360,6 +368,7 @@ struct TaskItem: Identifiable, Equatable {
         turnID: String? = nil,
         availableCommands: Set<TaskCommand> = [],
         steps: [TaskStepItem] = [],
+        sources: [TaskSource] = [],
         authority: TaskAuthority = .init()
     ) {
         self.id = id
@@ -371,6 +380,7 @@ struct TaskItem: Identifiable, Equatable {
         self.turnID = turnID
         self.availableCommands = availableCommands
         self.steps = steps
+        self.sources = sources
         self.authority = authority
     }
 }
@@ -439,6 +449,7 @@ struct DocumentItem: Identifiable, Equatable {
 enum SidebarPage: String, CaseIterable, Identifiable {
     case conversation = "Conversation"
     case tasks = "Task Center"
+    case macActions = "Mac Actions"
     case library = "Library"
     case diagnostics = "Diagnostics"
     case settings = "Settings"
@@ -447,6 +458,7 @@ enum SidebarPage: String, CaseIterable, Identifiable {
         switch self {
         case .conversation: "bubble.left.and.bubble.right"
         case .tasks: "checklist"
+        case .macActions: "macwindow"
         case .library: "books.vertical"
         case .diagnostics: "gauge.with.dots.needle.67percent"
         case .settings: "gearshape"

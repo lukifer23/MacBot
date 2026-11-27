@@ -21,6 +21,12 @@ The native Agent Kernel is the only release loop. It must pass the stable
 research corpus, recovery, authorization, provenance, cancellation, latency,
 and device gates without a fallback planner or external session store.
 
+Final synthesis receives the original research question, bounded outcome
+records, and numbered excerpts built from persisted tool results. The UI
+shows these recorded sources alongside the answer. Source ID validation
+rejects references to missing entries. Checking whether each claim is
+supported by the cited excerpt remains a separate quality gate.
+
 ## Boundary for any future architecture review
 
 Any future proposal must be evaluated as a replacement architecture, not an

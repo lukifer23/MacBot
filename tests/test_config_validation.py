@@ -89,13 +89,14 @@ def test_model_directory_attests_registered_hash_before_use(tmp_path, monkeypatc
     import hashlib
 
     entry = {
+        "revision": "fixture",
         "files": [
             {
                 "name": "model.bin",
                 "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
-        ]
+        ],
     }
     monkeypatch.setattr(provision, "catalog", lambda: {"test-model": entry})
     settings = Settings(data_dir=tmp_path)
@@ -103,9 +104,12 @@ def test_model_directory_attests_registered_hash_before_use(tmp_path, monkeypatc
     target.parent.mkdir(parents=True)
     target.write_bytes(payload)
     assert provision.model_dir(settings, "test-model") == target.parent
+    assert provision.verify(settings, "test-model")["verified"]
     target.write_bytes(b"fake model bytes")
     with pytest.raises(ValueError, match="checksum mismatch"):
         provision.model_dir(settings, "test-model")
+    with pytest.raises(ValueError, match="failed verification: model.bin"):
+        provision.verify(settings, "test-model")
 
 
 def test_qwen_voice_registry_has_pinned_reproducible_sources_and_outputs():
@@ -171,6 +175,18 @@ def test_release_manifest_selects_exactly_one_typed_artifact_per_role(tmp_path):
     inventory = installed_model_inventory(Settings(data_dir=tmp_path))
     assert inventory["extra"] == ["qwen3.5-2b"]
     assert (tmp_path / "models/qwen3.5-2b").is_dir()
+
+
+def test_qwen_4b_quant_comparison_uses_one_pinned_lab_revision():
+    names = ("qwen3.5-4b-q4-k-m", "qwen3.5-4b-q5-k-m")
+    entries = catalog()
+    assert len({entries[name]["revision"] for name in names}) == 1
+    for name in names:
+        item = entries[name]
+        artifact = item["files"][0]
+        assert item["revision"] in artifact["url"]
+        assert len(artifact["sha256"]) == 64
+        assert model_roles(name) == ()
 
 
 def test_browser_data_url_and_invalid_audio():

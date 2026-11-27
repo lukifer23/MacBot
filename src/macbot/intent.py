@@ -7,6 +7,7 @@ import threading
 from typing import Any
 
 from .llm import LocalLLM
+from .research_context import replan_context
 from .tasks import Intent, PlannedAction, SafetyClass
 from .tools import READ_ONLY, SCHEMAS, TASK_RELEASE_CAPABILITIES, Tools
 
@@ -108,11 +109,13 @@ class IntentRouter:
             for chunk in self.llm.stream(
                 [
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": "ORIGINAL_REQUEST\n" + text},
                     {
                         "role": "user",
-                        "content": "UNTRUSTED_DURABLE_OBSERVATIONS\n"
-                        + json.dumps(observations, ensure_ascii=False),
+                        "content": "ORIGINAL_REQUEST\n" + text + "\n\nUNTRUSTED_DURABLE_OBSERVATIONS\n"
+                        + replan_context(
+                            observations,
+                            min(6000, self.tools.settings.models.context_length),
+                        ),
                     },
                 ],
                 [],

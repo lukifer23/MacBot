@@ -53,6 +53,7 @@ def test_native_ipc_authentication_and_bounded_status(tmp_path):
             audio.sendall(struct.pack(">I", len(drained)) + drained)
             assert done.wait(1)
             runtime.last_interrupt_requested_ns = time.monotonic_ns()
+            runtime.last_interrupt_generation = 8
             stopped = bytes([1]) + json.dumps({"event": "stopped", "generation": 8}).encode()
             audio.sendall(struct.pack(">I", len(stopped)) + stopped)
             deadline = time.monotonic() + 1

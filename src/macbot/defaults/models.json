@@ -767,5 +767,31 @@
         "size": 2776833
       }
     ]
+  },
+  "qwen3.5-4b-q4-k-m": {
+    "repo": "unsloth/Qwen3.5-4B-GGUF",
+    "revision": "9b57f22a6a894e8db976ae8cc55f794b3ad18b94",
+    "license": "apache-2.0",
+    "files": [
+      {
+        "name": "Qwen3.5-4B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/9b57f22a6a894e8db976ae8cc55f794b3ad18b94/Qwen3.5-4B-Q4_K_M.gguf",
+        "size": 2740937888,
+        "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+      }
+    ]
+  },
+  "qwen3.5-4b-q5-k-m": {
+    "repo": "unsloth/Qwen3.5-4B-GGUF",
+    "revision": "9b57f22a6a894e8db976ae8cc55f794b3ad18b94",
+    "license": "apache-2.0",
+    "files": [
+      {
+        "name": "Qwen3.5-4B-Q5_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/9b57f22a6a894e8db976ae8cc55f794b3ad18b94/Qwen3.5-4B-Q5_K_M.gguf",
+        "size": 3143656608,
+        "sha256": "8814232b85594dcd46c50e5b8b29324a7efe9e746edbe8a3d1df3d3fce7aad39"
+      }
+    ]
   }
 }

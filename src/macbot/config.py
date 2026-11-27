@@ -178,6 +178,8 @@ def release_model_manifest() -> dict[str, dict[str, Any]]:
         if not isinstance(compatibility, dict) or compatibility.get("platform") != "macOS":
             raise ValueError(f"Release role {role} has invalid compatibility metadata")
         selected[role] = dict(entry)
+    if len({entry["artifact"] for entry in selected.values()}) != len(selected):
+        raise ValueError("Release roles must reference distinct artifacts")
     return selected
 
 

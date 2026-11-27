@@ -1,6 +1,8 @@
+import numpy as np
+
 from macbot.config import Settings, prepare
 from macbot.events import EventJournal
-from macbot.runtime import Runtime
+from macbot.runtime import Runtime, Turn
 
 
 def test_event_reads_are_scoped_to_authenticated_session(tmp_path):
@@ -28,6 +30,29 @@ def test_clear_uses_explicit_session_and_preserves_other_sessions(tmp_path):
         assert runtime._history_for("session-a") == []
         assert runtime._history_for("session-b")[0]["content"] == "private-b"
     finally:
+        runtime.close()
+
+
+def test_dictation_delivers_private_draft_without_starting_a_conversation(tmp_path, monkeypatch):
+    settings = Settings(data_dir=tmp_path, privacy={"history_enabled": False})
+    prepare(settings)
+    runtime = Runtime(settings, load_speech=False)
+    persisted = []
+    runtime.events.sink = lambda _, event: persisted.append(event)
+    monkeypatch.setattr(runtime, "transcriber", object())
+    monkeypatch.setattr(runtime, "_transcribe_final", lambda _turn: " Text for my draft. ")
+    turn = Turn("draft", "native", None, False, audio=np.zeros(512), dictation_only=True)
+    try:
+        runtime._process(turn)
+        events = runtime.events.read(0, session_id="native")["events"]
+        assert turn.terminal
+        assert events[-1]["kind"] == "dictation"
+        assert events[-1]["data"]["text"] == "Text for my draft."
+        assert all(event["kind"] != "dictation" for event in persisted)
+        assert runtime._history_for("native") == []
+        assert runtime.speech.empty()
+    finally:
+        runtime.transcriber = None
         runtime.close()
 
 

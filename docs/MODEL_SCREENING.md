@@ -92,3 +92,27 @@ MacBot reports directory. The production manifest selects Aiden 1.7B as its
 sole TTS artifact. Blinded listener acceptance, full-stack RSS, physical
 first-audio latency, and endurance gates remain open, so this is not a voice
 quality claim.
+
+## Next lab comparison
+
+Two checksum-pinned Qwen3.5-4B GGUF artifacts are available from the same
+[Unsloth repository revision](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/tree/9b57f22a6a894e8db976ae8cc55f794b3ad18b94).
+They are 2,740,937,888 bytes for Q4_K_M and 3,143,656,608 bytes for Q5_K_M.
+Use these to screen quantization at a fixed context window. Qualification still
+requires a locally converted official artifact for any new production LLM.
+
+Run each comparison after device validation resumes and the resident app stack
+has stopped. Use distinct report files for each artifact and context setting.
+
+```sh
+uv run --frozen macbot models download qwen3.5-4b-q4-k-m qwen3.5-4b-q5-k-m
+uv run --frozen macbot models verify qwen3.5-4b-q4-k-m qwen3.5-4b-q5-k-m
+uv run --frozen python scripts/benchmark_models.py qwen3.5-4b-q4-k-m \
+  --case-set holdout --context-length 8192 --output reports/qwen35-4b-q4-8k.jsonl
+uv run --frozen python scripts/benchmark_models.py qwen3.5-4b-q5-k-m \
+  --case-set holdout --context-length 8192 --output reports/qwen35-4b-q5-8k.jsonl
+```
+
+The optional MLX language path requires `uv run --frozen --extra mlx`.
+The default install runs llama.cpp for its language model and still uses MLX
+where the selected speech engines require it.

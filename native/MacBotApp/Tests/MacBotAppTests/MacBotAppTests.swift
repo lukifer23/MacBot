@@ -54,6 +54,17 @@ func timelineUsesEventSequenceAcrossMessagesAndActions() {
 }
 
 @MainActor @Test
+func dictationDraftMovesIntoComposerWithoutReplacingExistingText() {
+    let state = AppState()
+    state.draft = "Existing question"
+    state.dictationText = "  Additional context.  "
+    state.useDictationInComposer()
+
+    #expect(state.draft == "Existing question\n\nAdditional context.")
+    #expect(state.dictationText.isEmpty)
+}
+
+@MainActor @Test
 func toolResultsArePresentedWithoutRawDictionaryText() {
     #expect(
         AppState.summarize(["status": "completed", "datetime": "2026-08-29T05:45:00-05:00"])

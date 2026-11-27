@@ -12,6 +12,7 @@ final class AudioController: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let captureQueue = DispatchQueue(label: "local.macbot.capture", qos: .userInteractive)
+    private let captureSlots = DispatchSemaphore(value: 6)
     private let writeQueue = DispatchQueue(label: "local.macbot.audio-write", qos: .userInteractive)
     private let playbackQueue = DispatchQueue(label: "local.macbot.playback", qos: .userInteractive)
     private var descriptor: Int32 = -1
@@ -21,37 +22,30 @@ final class AudioController: @unchecked Sendable {
     private var pending: [UInt64: Int] = [:]
     private var ended: Set<UInt64> = []
     private var scheduled: Set<UInt64> = []
+    private var playbackFloor: UInt64 = 0
 
     func connect(path: String, token: String) throws {
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw NativeClientError.socket("Could not create the audio socket") }
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8CString)
-        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-            Darwin.close(fd); throw NativeClientError.socket("Audio socket path is too long")
+        descriptor = try connectNativeSocket(path: path)
+        do {
+            var sendDeadline = timeval(tv_sec: 1, tv_usec: 0)
+            guard setsockopt(
+                descriptor, SOL_SOCKET, SO_SNDTIMEO, &sendDeadline, socklen_t(MemoryLayout<timeval>.size)
+            ) == 0 else {
+                throw NativeClientError.socket("Could not bound audio writes")
+            }
+            try sendJSON([
+                "op": "authenticate", "token": token,
+                "protocol_version": TaskProtocolV3.version,
+            ])
+            let reply = try readJSON()
+            guard reply["ok"] as? Bool == true else {
+                throw NativeClientError.protocolError("Native audio authentication failed")
+            }
+            try startPlaybackOnly()
+        } catch {
+            close()
+            throw error
         }
-        withUnsafeMutableBytes(of: &address.sun_path) { target in
-            target.initializeMemory(as: UInt8.self, repeating: 0)
-            bytes.withUnsafeBytes { source in target.copyBytes(from: source) }
-        }
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + bytes.count)
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, length) }
-        }
-        guard result == 0 else {
-            Darwin.close(fd); throw NativeClientError.socket("MacBot audio service is not reachable")
-        }
-        descriptor = fd
-        try sendJSON([
-            "op": "authenticate", "token": token,
-            "protocol_version": TaskProtocolV3.version,
-        ])
-        let reply = try readJSON()
-        guard reply["ok"] as? Bool == true else {
-            close(); throw NativeClientError.protocolError("Native audio authentication failed")
-        }
-        try startPlaybackOnly()
         playbackQueue.async { [weak self] in self?.readPlayback() }
     }
 
@@ -80,14 +74,21 @@ final class AudioController: @unchecked Sendable {
         converter = conversion
         try connectPlaybackGraph(outputSampleRate: inputFormat.sampleRate)
         engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
-                  let source = buffer.floatChannelData, let destination = copy.floatChannelData else { return }
+            guard let self, self.captureSlots.wait(timeout: .now()) == .success else { return }
+            guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
+                  let source = buffer.floatChannelData, let destination = copy.floatChannelData else {
+                self.captureSlots.signal()
+                return
+            }
             copy.frameLength = buffer.frameLength
             for channel in 0..<Int(buffer.format.channelCount) {
                 memcpy(destination[channel], source[channel], Int(buffer.frameLength) * MemoryLayout<Float>.size)
             }
             let captured = CapturedBuffer(copy)
-            self.captureQueue.async { self.convertAndSend(captured.value, to: mono) }
+            self.captureQueue.async {
+                defer { self.captureSlots.signal() }
+                self.convertAndSend(captured.value, to: mono, using: conversion)
+            }
         }
         engine.prepare()
         try engine.start()
@@ -169,8 +170,10 @@ final class AudioController: @unchecked Sendable {
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)
     }
 
-    private func convertAndSend(_ source: AVAudioPCMBuffer, to format: AVAudioFormat) {
-        guard capturing, descriptor >= 0, let converter else { return }
+    private func convertAndSend(
+        _ source: AVAudioPCMBuffer, to format: AVAudioFormat, using converter: AVAudioConverter
+    ) {
+        guard capturing, descriptor >= 0, self.converter === converter else { return }
         let capacity = AVAudioFrameCount(Double(source.frameLength) * 16_000 / source.format.sampleRate + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
         var supplied = false
@@ -181,7 +184,17 @@ final class AudioController: @unchecked Sendable {
         }
         guard error == nil, output.frameLength > 0, let samples = output.floatChannelData else { return }
         let frame = Data([2]) + Data(bytes: samples[0], count: Int(output.frameLength) * 4)
-        writeQueue.async { [weak self] in try? self?.sendFrame(frame) }
+        // Keep the admission slot until the socket write finishes. A slow
+        // reader cannot move the same unbounded backlog to the write queue.
+        writeQueue.sync {
+            guard capturing, self.converter === converter else { return }
+            do {
+                try sendFrame(frame)
+            } catch {
+                // A partial frame makes this byte stream unusable.
+                if descriptor >= 0 { Darwin.shutdown(descriptor, SHUT_RDWR) }
+            }
+        }
     }
 
     private func readPlayback() {
@@ -199,6 +212,8 @@ final class AudioController: @unchecked Sendable {
     private func schedulePCM(_ body: Data.SubSequence) {
         guard body.count >= 12, (body.count - 12) % 4 == 0 else { return }
         let generation = body.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        guard generation >= playbackFloor, !ended.contains(generation) else { return }
+        playbackFloor = generation
         let rate = body.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         let sampleData = Data(body.dropFirst(12))
         let count = sampleData.count / 4
@@ -221,6 +236,8 @@ final class AudioController: @unchecked Sendable {
     private func stopPlayback(_ body: Data.SubSequence) {
         guard body.count == 8 else { return }
         let generation = body.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        guard generation >= playbackFloor else { return }
+        playbackFloor = generation
         player.stop()
         pending.removeAll()
         ended.removeAll()
@@ -232,12 +249,15 @@ final class AudioController: @unchecked Sendable {
     private func finishPlayback(_ body: Data.SubSequence) {
         guard body.count == 8 else { return }
         let generation = body.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        guard generation >= playbackFloor else { return }
+        playbackFloor = generation
         ended.insert(generation)
         emitDrainedIfReady(generation)
     }
 
     private func played(_ generation: UInt64) {
-        pending[generation] = max(0, (pending[generation] ?? 1) - 1)
+        guard let count = pending[generation], count > 0 else { return }
+        pending[generation] = count - 1
         emitDrainedIfReady(generation)
     }
 

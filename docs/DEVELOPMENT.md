@@ -3,7 +3,7 @@
 Use Python 3.12 and uv. `pyproject.toml` is the only dependency definition; commit `uv.lock` after deliberate dependency changes. `requirements*.txt` are compatibility redirects, not separate pins. No LiveKit initialization, PyPDF2 or heavyweight unused embedding load belongs in the supported runtime.
 
 ```sh
-uv sync --frozen --all-extras --group dev
+uv sync --frozen --group dev
 uv run --frozen python -c 'import macbot; print(macbot.__file__)'
 uv run --frozen macbot doctor
 uv run --frozen macbot setup
@@ -19,7 +19,14 @@ playback; there is no Python audio-helper build. Xcode Command Line Tools,
 CMake, and FFmpeg are system prerequisites; setup does not install Homebrew or
 rewrite system settings.
 
-Model downloads are explicit. Each registry entry includes upstream revision, filenames, size, SHA-256 and licensing provenance. `macbot models verify NAME...` rehashes installed artifacts. Runtime checks presence and size and fails when required artifacts are missing; inference never calls provisioning. Run full hash verification after transfers or before release.
+Model downloads are explicit. Each registry entry includes its upstream revision, filenames, size, SHA-256, and license. Use `macbot models list --release` to see selected artifacts and `macbot models verify --release` to rehash them. The same actions accept explicit artifact names for lab work. Runtime performs a local checksum attestation and caches it for unchanged files. Run full verification after transfers and before release.
+
+The release runtime uses llama.cpp b10509, parakeet-mlx 0.5.2, and mlx-audio
+0.5.0. The optional MLX language backend uses mlx-lm 0.32.2 with MLX 0.32.2 from
+the lockfile. Install the extra explicitly with `uv sync --frozen --extra mlx --group dev`
+when comparing the two language backends. Keep speech-engine and llama.cpp
+upgrades separate from model changes so regressions remain attributable.
+Hosted verification checks lock consistency and installs both language paths.
 
 ```sh
 uv build

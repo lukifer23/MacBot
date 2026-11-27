@@ -251,7 +251,7 @@ class NativeIPCServer:
         except (ConnectionError, OSError, ValueError):
             pass
         finally:
-            with self.audio_write_lock:
+            with self.runtime.lock, self.audio_write_lock:
                 if self.audio_connection is connection:
                     self.audio_connection = None
                     self.runtime.native_audio_sender = None
@@ -474,9 +474,12 @@ class NativeIPCServer:
             return {"state": "accepted", "turn_id": turn.id}
         if op == "listen":
             enabled = request.get("enabled")
+            mode = request.get("mode", "conversation")
             if not isinstance(enabled, bool):
                 raise ValueError("enabled must be boolean")
-            self.runtime.listen_native(enabled, session_id="native")
+            if not isinstance(mode, str):
+                raise ValueError("Capture mode must be a string")
+            self.runtime.listen_native(enabled, session_id="native", mode=mode)
             return {"audio": self.runtime.audio_status()}
         if op == "interrupt":
             self.runtime.interrupt()
